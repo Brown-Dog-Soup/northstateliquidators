@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>North State Liquidators — Raleigh, NC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Permanent+Marker&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --nc-red: #CC0000;
+    --nc-red-dark: #991F1F;
+    --warehouse-yellow: #F9D71C;
+    --pallet-orange: #F7941D;
+    --gray-green: #8B9B8B;
+    --nc-navy: #002868;
+    --ink: #0E1116;
+    --paper: #F5F0E6;
+    --concrete: #2A2D31;
+    --rule: #D7CFBF;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    line-height: 1.5;
+  }
+  h1, h2, h3, h4 { font-family: 'Anton', 'Oswald', sans-serif; font-weight: 400; letter-spacing: 0.01em; margin: 0; line-height: 0.95; }
+  a { color: inherit; }
+
+  /* === TOP BAR === */
+  .topbar {
+    background: var(--concrete);
+    color: #EAE6DA;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    padding: 8px 0;
+    border-bottom: 2px solid var(--warehouse-yellow);
+  }
+  .topbar .inner { max-width: 1280px; margin: 0 auto; padding: 0 24px; display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+  .topbar .sep { opacity: 0.3; }
+  .open-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: #4ADE80; margin-right: 6px;
+    box-shadow: 0 0 8px #4ADE80;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .topbar a.phone { color: var(--warehouse-yellow); font-weight: 700; text-decoration: none; }
+
+  /* === NAV === */
+  .nav {
+    background: var(--paper);
+    border-bottom: 1px solid var(--rule);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .nav .inner { max-width: 1280px; margin: 0 auto; padding: 14px 24px; display: flex; gap: 32px; align-items: center; }
+  .nav img { height: 72px; width: auto; }
+  .nav nav { flex: 1; display: flex; gap: 28px; }
+  .nav nav a { text-decoration: none; font-weight: 600; font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--nc-navy); }
+  .nav nav a:hover { color: var(--nc-red); }
+  .nav .actions { display: flex; gap: 12px; }
+  .btn {
+    display: inline-block; padding: 12px 20px; border: none; font-family: 'Anton', sans-serif; font-size: 16px; letter-spacing: 0.06em; text-transform: uppercase;
+    cursor: pointer; text-decoration: none; transition: transform 0.1s;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--nc-red); color: #fff; }
+  .btn-primary:hover { background: var(--nc-red-dark); }
+  .btn-secondary { background: var(--nc-navy); color: #fff; }
+  .btn-ghost { background: transparent; border: 2px solid var(--nc-navy); color: var(--nc-navy); }
+
+  /* === LIVE TICKER === */
+  .ticker {
+    background: var(--warehouse-yellow);
+    border-top: 2px solid var(--ink);
+    border-bottom: 2px solid var(--ink);
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .ticker .scroll {
+    display: inline-block; padding: 10px 0;
+    animation: scroll 45s linear infinite;
+  }
+  .ticker .scroll span { margin: 0 28px; }
+  .ticker .live::before { content: '●'; color: var(--nc-red); margin-right: 6px; animation: pulse 1s infinite; }
+  @keyframes scroll { from{transform:translateX(0)} to{transform:translateX(-50%)} }
+
+  /* === HERO === */
+  .hero {
+    background: var(--concrete);
+    color: #fff;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero .inner { max-width: 1280px; margin: 0 auto; padding: 72px 24px; display: grid; grid-template-columns: 1.1fr 1fr; gap: 48px; align-items: center; }
+  .hero h1 {
+    font-size: clamp(48px, 7vw, 96px);
+    color: #fff;
+    line-height: 0.88;
+  }
+  .hero h1 .hl { background: var(--warehouse-yellow); color: var(--ink); padding: 0 12px; display: inline-block; transform: rotate(-0.8deg); }
+  .hero p { font-size: 18px; max-width: 52ch; color: #D8D4C6; margin: 24px 0 32px; }
+  .hero .cta-row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .hero .photo-box {
+    background: #1a1c1f;
+    aspect-ratio: 4/3;
+    border: 1px solid #35383D;
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+    background-image:
+      linear-gradient(135deg, rgba(249,215,28,0.05) 0%, transparent 50%),
+      repeating-linear-gradient(45deg, rgba(255,255,255,0.02) 0, rgba(255,255,255,0.02) 2px, transparent 2px, transparent 12px);
+  }
+  .hero .photo-box::before {
+    content: 'PHOTO: LOADING DOCK · TRUCK #47 · 04.17';
+    position: absolute; top: 16px; left: 16px;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #666;
+    letter-spacing: 0.12em;
+  }
+  .hero .photo-box::after {
+    content: '📦';
+    font-size: 140px; opacity: 0.15;
+  }
+  .hero .overlay-card {
+    position: absolute; bottom: 24px; left: 24px; right: 24px;
+    background: rgba(0,0,0,0.75); backdrop-filter: blur(4px);
+    border-left: 4px solid var(--warehouse-yellow);
+    padding: 16px 20px;
+    font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    color: #EAE6DA;
+  }
+  .hero .overlay-card strong { color: var(--warehouse-yellow); }
+
+  /* === STRIP: COUNTS === */
+  .counts {
+    background: var(--nc-navy); color: #fff;
+    padding: 36px 0;
+  }
+  .counts .inner { max-width: 1280px; margin: 0 auto; padding: 0 24px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; }
+  .counts .num { font-family: 'Anton', sans-serif; font-size: 56px; line-height: 1; color: var(--warehouse-yellow); }
+  .counts .lbl { font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #C9CFE0; margin-top: 4px; }
+
+  /* === SECTION FRAME === */
+  section.block { max-width: 1280px; margin: 0 auto; padding: 72px 24px; }
+  .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--nc-red); margin-bottom: 8px; }
+  section h2 { font-size: clamp(40px, 5vw, 64px); margin-bottom: 8px; }
+  .subhead { color: #555; font-size: 16px; max-width: 60ch; margin-bottom: 32px; }
+  .hdr-row { display: flex; justify-content: space-between; align-items: end; margin-bottom: 24px; flex-wrap: wrap; gap: 16px; }
+  .hdr-row .updated { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #777; letter-spacing: 0.08em; text-transform: uppercase; }
+
+  /* === PALLET LEDGER === */
+  .ledger {
+    background: #fff;
+    border: 1px solid var(--rule);
+    box-shadow: 0 1px 0 #E8E0CF;
+    overflow: hidden;
+  }
+  .ledger table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .ledger th {
+    background: var(--ink); color: var(--warehouse-yellow);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    text-align: left; padding: 12px 16px; font-weight: 700;
+  }
+  .ledger td { padding: 16px; border-top: 1px solid #EDE4D0; }
+  .ledger tr:hover td { background: #FFFBEC; }
+  .ledger .lot { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--nc-navy); }
+  .ledger .cat { font-weight: 600; }
+  .ledger .cat small { display: block; color: #777; font-weight: 400; font-size: 12px; margin-top: 2px; }
+  .ledger .ask { font-family: 'Anton', sans-serif; font-size: 22px; color: var(--nc-red); }
+  .ledger .msrp { color: #777; text-decoration: line-through; font-size: 13px; }
+  .ledger .cond { display: inline-block; padding: 3px 8px; font-size: 11px; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.05em; text-transform: uppercase; background: #EFE9D8; border-radius: 2px; }
+  .ledger .cond.new { background: #E6F4EA; color: #1B7E3A; }
+  .ledger .cond.returns { background: #FDF0E0; color: #8A4A0B; }
+  .ledger .cond.shelf { background: #E8EEF8; color: var(--nc-navy); }
+  .ledger .view { color: var(--nc-red); font-weight: 700; text-decoration: none; font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .ledger .view:hover { text-decoration: underline; }
+  .ledger .thumb {
+    width: 56px; height: 56px; background: #F0EAD6 repeating-linear-gradient(45deg, #E5DDC4 0, #E5DDC4 2px, #F0EAD6 2px, #F0EAD6 10px);
+    border: 1px solid var(--rule);
+    display: inline-block; vertical-align: middle; margin-right: 10px;
+  }
+
+  /* === RETAIL HUNT === */
+  .hunt-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+  .hunt-card {
+    background: #fff;
+    border: 1px solid var(--rule);
+    position: relative;
+    transition: transform 0.15s;
+  }
+  .hunt-card:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
+  .hunt-card .photo {
+    aspect-ratio: 1/1;
+    background: #F0EAD6 repeating-linear-gradient(45deg, #E5DDC4 0, #E5DDC4 2px, #F0EAD6 2px, #F0EAD6 10px);
+    position: relative;
+  }
+  .hunt-card .photo::after {
+    content: attr(data-icon); position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 72px; opacity: 0.4;
+  }
+  .price-tag {
+    position: absolute; top: 14px; right: -8px;
+    background: var(--warehouse-yellow); color: var(--ink);
+    font-family: 'Permanent Marker', cursive; font-size: 28px;
+    padding: 4px 18px;
+    transform: rotate(3deg);
+    box-shadow: 2px 3px 0 rgba(0,0,0,0.12);
+    border: 2px solid var(--ink);
+  }
+  .hunt-card .meta { padding: 14px 16px 18px; }
+  .hunt-card h3 { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 0; margin-bottom: 4px; }
+  .hunt-card .was { color: #777; font-size: 12px; text-decoration: line-through; }
+  .hunt-card .note { font-size: 13px; color: #444; margin-top: 6px; }
+
+  /* === OWNERS === */
+  .owners { background: var(--nc-navy); color: #fff; }
+  .owners .inner { max-width: 1280px; margin: 0 auto; padding: 80px 24px; display: grid; grid-template-columns: 1fr 1.2fr; gap: 48px; align-items: center; }
+  .owners h2 { font-size: clamp(40px, 5vw, 64px); color: #fff; }
+  .owners h2 .hl { background: var(--nc-red); padding: 0 10px; display: inline-block; transform: rotate(-0.5deg); }
+  .owners p { color: #CED4E3; font-size: 17px; margin: 20px 0; }
+  .owners .sig { font-family: 'Permanent Marker', cursive; font-size: 28px; color: var(--warehouse-yellow); margin-top: 16px; }
+  .owner-photos { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .owner-photos .p {
+    aspect-ratio: 3/4;
+    background: #1a1c1f;
+    border: 1px solid #35383D;
+    position: relative;
+    background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.02) 0, rgba(255,255,255,0.02) 2px, transparent 2px, transparent 12px);
+  }
+  .owner-photos .p .tag {
+    position: absolute; bottom: 16px; left: 16px; right: 16px;
+    background: rgba(0,0,0,0.75);
+    border-left: 3px solid var(--warehouse-yellow);
+    padding: 10px 12px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.06em;
+    color: #EAE6DA;
+  }
+  .owner-photos .p .tag strong { display: block; color: var(--warehouse-yellow); font-size: 14px; }
+
+  /* === HOW IT WORKS === */
+  .how { background: #fff; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  .how .inner { max-width: 1280px; margin: 0 auto; padding: 72px 24px; }
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; margin-top: 32px; }
+  .step { border-top: 4px solid var(--nc-red); padding-top: 20px; }
+  .step .num { font-family: 'Anton', sans-serif; font-size: 56px; line-height: 1; color: var(--nc-red); }
+  .step h3 { font-family: 'Anton', sans-serif; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase; margin: 8px 0; }
+  .step p { color: #555; font-size: 14px; }
+
+  /* === FINE PRINT === */
+  .fine { background: var(--concrete); color: #C9CFE0; font-size: 13px; padding: 48px 0 16px; }
+  .fine .inner { max-width: 1280px; margin: 0 auto; padding: 0 24px; display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 32px; }
+  .fine h4 { font-family: 'Anton', sans-serif; font-size: 18px; color: #fff; margin-bottom: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .fine a { color: #C9CFE0; text-decoration: none; display: block; padding: 4px 0; }
+  .fine a:hover { color: var(--warehouse-yellow); }
+  .fine .addr { font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; }
+  .copyright { max-width: 1280px; margin: 24px auto 0; padding: 16px 24px 0; border-top: 1px solid #3a3d42; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #777; display: flex; justify-content: space-between; }
+
+  @media (max-width: 900px) {
+    .hero .inner, .owners .inner { grid-template-columns: 1fr; }
+    .counts .inner, .steps, .hunt-grid { grid-template-columns: repeat(2, 1fr); }
+    .fine .inner { grid-template-columns: 1fr 1fr; }
+    .nav nav { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="inner">
+    <span><span class="open-dot"></span>OPEN NOW</span>
+    <span class="sep">|</span>
+    <span>MON–FRI 9–6 · SAT 9–4 · CLOSED SUN</span>
+    <span class="sep">|</span>
+    <a class="phone" href="tel:+19195260112">📞 (919) 526-0112</a>
+    <span class="sep">|</span>
+    <span>RALEIGH, NC · PICKUP OR SHIP</span>
+  </div>
+</div>
+
+<!-- NAV -->
+<header class="nav">
+  <div class="inner">
+    <img src="north_state_liquidators_logo.jpeg" alt="North State Liquidators">
+    <nav>
+      <a href="#pallets">Wholesale Pallets</a>
+      <a href="#hunt">Shop Retail</a>
+      <a href="#how">How It Works</a>
+      <a href="#owners">About</a>
+      <a href="#contact">Contact</a>
+    </nav>
+    <div class="actions">
+      <a class="btn btn-ghost" href="#login">Reseller Login</a>
+      <a class="btn btn-primary" href="#pallets">Browse Pallets</a>
+    </div>
+  </div>
+</header>
+
+<!-- LIVE TICKER -->
+<div class="ticker">
+  <div class="scroll">
+    <span class="live">TRUCK #47 ARRIVED — 14 PALLETS LIVE</span>
+    <span class="sep">·</span>
+    <span>NEXT TRUCK: MON 04/21, 11 AM</span>
+    <span class="sep">·</span>
+    <span class="live">3 LOTS CLOSE TODAY</span>
+    <span class="sep">·</span>
+    <span>RETAIL FLOOR RESTOCK: THURSDAY 9 AM</span>
+    <span class="sep">·</span>
+    <span>NEW: AMAZON RETURNS — ELECTRONICS, 186 UNITS</span>
+    <span class="sep">·</span>
+    <span class="live">TRUCK #47 ARRIVED — 14 PALLETS LIVE</span>
+    <span class="sep">·</span>
+    <span>NEXT TRUCK: MON 04/21, 11 AM</span>
+    <span class="sep">·</span>
+    <span class="live">3 LOTS CLOSE TODAY</span>
+    <span class="sep">·</span>
+    <span>RETAIL FLOOR RESTOCK: THURSDAY 9 AM</span>
+    <span class="sep">·</span>
+    <span>NEW: AMAZON RETURNS — ELECTRONICS, 186 UNITS</span>
+  </div>
+</div>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="inner">
+    <div>
+      <h1>AMAZON RETURNS.<br><span class="hl">DIRECT TO YOU.</span><br>RALEIGH, NC.</h1>
+      <p>We buy truckloads of returns and overstock from Amazon and the big boxes. We sort it, grade it, price it, and move it. You save 40–80% off retail — by the pallet or by the piece.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#pallets">Browse Pallets →</a>
+        <a class="btn btn-secondary" href="#hunt">Shop Retail →</a>
+      </div>
+    </div>
+    <div class="photo-box">
+      <div class="overlay-card">
+        <strong>ON THE DOCK RIGHT NOW</strong>
+        14 pallets · 2,410 units · est. MSRP $58,200 · ask $14,300
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- COUNTS -->
+<div class="counts">
+  <div class="inner">
+    <div><div class="num">14</div><div class="lbl">Pallets on dock</div></div>
+    <div><div class="num">2,410</div><div class="lbl">Units available</div></div>
+    <div><div class="num">$14.3K</div><div class="lbl">Total ask today</div></div>
+    <div><div class="num">76%</div><div class="lbl">Off retail, avg</div></div>
+  </div>
+</div>
+
+<!-- PALLET LEDGER -->
+<section class="block" id="pallets">
+  <div class="hdr-row">
+    <div>
+      <div class="eyebrow">B2B · Wholesale</div>
+      <h2>On the dock today.</h2>
+      <p class="subhead">Live inventory. First come, first served. Pallet photos and manifests on each lot. Raleigh pickup or we'll freight it anywhere in the Southeast.</p>
+    </div>
+    <div class="updated">↻ UPDATED 2 MIN AGO</div>
+  </div>
+
+  <div class="ledger">
+    <table>
+      <thead>
+        <tr>
+          <th>Lot</th>
+          <th>Category</th>
+          <th>Units</th>
+          <th>Est. MSRP</th>
+          <th>Ask</th>
+          <th>Condition</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="thumb"></span><span class="lot">#2041</span></td>
+          <td class="cat">Home Goods — Mixed<small>Kitchen, bath, small appliance</small></td>
+          <td>186</td>
+          <td class="msrp">$4,920</td>
+          <td class="ask">$1,180</td>
+          <td><span class="cond returns">Customer Return</span></td>
+          <td><a class="view" href="#">View Manifest →</a></td>
+        </tr>
+        <tr>
+          <td><span class="thumb"></span><span class="lot">#2042</span></td>
+          <td class="cat">Electronics<small>Headphones, chargers, smart home</small></td>
+          <td>312</td>
+          <td class="msrp">$8,740</td>
+          <td class="ask">$2,100</td>
+          <td><span class="cond shelf">Shelf Pull</span></td>
+          <td><a class="view" href="#">View Manifest →</a></td>
+        </tr>
+        <tr>
+          <td><span class="thumb"></span><span class="lot">#2043</span></td>
+          <td class="cat">Apparel — Women's<small>Seasonal mix, mostly S/M</small></td>
+          <td>420</td>
+          <td class="msrp">$6,300</td>
+          <td class="ask">$1,450</td>
+          <td><span class="cond new">New — In Box</span></td>
+          <td><a class="view" href="#">View Manifest →</a></td>
+        </tr>
+        <tr>
+          <td><span class="thumb"></span><span class="lot">#2044</span></td>
+          <td class="cat">Tools & Hardware<small>Cordless, hand tools, fasteners</small></td>
+          <td>94</td>
+          <td class="msrp">$3,980</td>
+          <td class="ask">$980</td>
+          <td><span class="cond returns">Customer Return</span></td>
+          <td><a class="view" href="#">View Manifest →</a></td>
+        </tr>
+        <tr>
+          <td><span class="thumb"></span><span class="lot">#2045</span></td>
+          <td class="cat">Seasonal — Spring/Summer<small>Outdoor, patio, garden</small></td>
+          <td>148</td>
+          <td class="msrp">$5,120</td>
+          <td class="ask">$1,240</td>
+          <td><span class="cond shelf">Shelf Pull</span></td>
+          <td><a class="view" href="#">View Manifest →</a></td>
+        </tr>
+        <tr>
+          <td><span class="thumb"></span><span class="lot">#2046</span></td>
+          <td class="cat">General Merchandise<small>Untested / assorted</small></td>
+          <td>610</td>
+          <td class="msrp">$9,800</td>
+          <td class="ask">$1,900</td>
+          <td><span class="cond returns">Customer Return</span></td>
+          <td><a class="view" href="#">View Manifest →</a></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="margin-top:16px; display:flex; justify-content:space-between; align-items:center; font-family: 'JetBrains Mono', monospace; font-size:12px; color:#555;">
+    <span>Showing 6 of 14 pallets</span>
+    <a href="#" style="color: var(--nc-red); text-decoration:none; font-weight:700;">VIEW ALL 14 PALLETS →</a>
+  </div>
+</section>
+
+<!-- RETAIL HUNT -->
+<section class="block" id="hunt" style="background: transparent;">
+  <div class="hdr-row">
+    <div>
+      <div class="eyebrow">B2C · Retail Floor</div>
+      <h2>This week's hunt.</h2>
+      <p class="subhead">Single-item finds from the retail floor. Pulled from pallets, tested where we can, priced to move. Restocked Mondays and Thursdays.</p>
+    </div>
+    <div class="updated">↻ RESTOCKED MON 04/14</div>
+  </div>
+
+  <div class="hunt-grid">
+    <div class="hunt-card">
+      <div class="photo" data-icon="🔧"></div>
+      <div class="price-tag">$80</div>
+      <div class="meta">
+        <h3>Craftsman 6-Drawer Tool Chest</h3>
+        <div class="was">Was $349 at Lowe's</div>
+        <div class="note">Open-box, tested. One drawer has a dent. All drawers slide.</div>
+      </div>
+    </div>
+    <div class="hunt-card">
+      <div class="photo" data-icon="🎧"></div>
+      <div class="price-tag">$140</div>
+      <div class="meta">
+        <h3>Sony WH-1000XM4 Headphones</h3>
+        <div class="was">Was $348 at Best Buy</div>
+        <div class="note">Amazon return. Tested — all functions work. No box.</div>
+      </div>
+    </div>
+    <div class="hunt-card">
+      <div class="photo" data-icon="☕"></div>
+      <div class="price-tag">$45</div>
+      <div class="meta">
+        <h3>Keurig K-Supreme Plus</h3>
+        <div class="was">Was $189 at Target</div>
+        <div class="note">Shelf pull. New, sealed. Dented outer box.</div>
+      </div>
+    </div>
+    <div class="hunt-card">
+      <div class="photo" data-icon="🪜"></div>
+      <div class="price-tag">$32</div>
+      <div class="meta">
+        <h3>Werner 6ft Fiberglass Ladder</h3>
+        <div class="was">Was $109 at Home Depot</div>
+        <div class="note">Customer return. Feet scuffed. Structurally fine.</div>
+      </div>
+    </div>
+    <div class="hunt-card">
+      <div class="photo" data-icon="🧹"></div>
+      <div class="price-tag">$68</div>
+      <div class="meta">
+        <h3>Dyson V8 Cordless Vacuum</h3>
+        <div class="was">Was $329 at Dyson.com</div>
+        <div class="note">Tested. Missing wall mount. Battery holds charge.</div>
+      </div>
+    </div>
+    <div class="hunt-card">
+      <div class="photo" data-icon="📺"></div>
+      <div class="price-tag">$120</div>
+      <div class="meta">
+        <h3>TCL 43" 4K Roku TV</h3>
+        <div class="was">Was $279 at Walmart</div>
+        <div class="note">Return. Powers on, no visible screen damage. No remote.</div>
+      </div>
+    </div>
+    <div class="hunt-card">
+      <div class="photo" data-icon="🪴"></div>
+      <div class="price-tag">$18</div>
+      <div class="meta">
+        <h3>3-pc Ceramic Planter Set</h3>
+        <div class="was">Was $54 at Target</div>
+        <div class="note">Shelf pull. Box scuffed. Pottery is new.</div>
+      </div>
+    </div>
+    <div class="hunt-card">
+      <div class="photo" data-icon="🎒"></div>
+      <div class="price-tag">$22</div>
+      <div class="meta">
+        <h3>North Face Borealis Backpack</h3>
+        <div class="was">Was $99 at REI</div>
+        <div class="note">Customer return. Strap scuff. Zippers all work.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- OWNERS -->
+<section class="owners" id="owners">
+  <div class="inner">
+    <div class="owner-photos">
+      <div class="p"><div class="tag"><strong>NORM TURNER</strong>Co-owner · Does the sorting</div></div>
+      <div class="p"><div class="tag"><strong>ROB TECARR</strong>Co-owner · Talks to the trucks</div></div>
+    </div>
+    <div>
+      <div class="eyebrow" style="color: var(--warehouse-yellow);">Raleigh, NC · Since 2024</div>
+      <h2>We sort. We sell.<br><span class="hl">We answer the phone.</span></h2>
+      <p>Most liquidators hide behind a portal. We don't. We're Norm and Rob. We drive the truck, unload the pallets, and take your call. If you're a reseller trying to find consistent inventory, or a retail shopper hunting a deal — we'd rather have you come see the warehouse than click through a stock-photo website.</p>
+      <p>We buy direct from Amazon and big-box return centers, haul it to Raleigh, and pass the savings. No middle layer. No mystery.</p>
+      <div class="sig">— Norm & Rob</div>
+      <div style="margin-top: 24px;">
+        <a class="btn btn-primary" href="tel:+19195260112">Call Us — (919) 526-0112</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="how" id="how">
+  <div class="inner">
+    <div class="eyebrow">The process</div>
+    <h2>How a pallet gets from Amazon to you.</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="num">01</div>
+        <h3>Truck Arrives</h3>
+        <p>We buy truckloads direct from retail return centers. 15–25 pallets per load. Two loads a week, typically.</p>
+      </div>
+      <div class="step">
+        <div class="num">02</div>
+        <h3>We Sort & Grade</h3>
+        <p>Every pallet gets broken down, cataloged, photographed. Condition tags: New, Shelf Pull, Customer Return, Untested.</p>
+      </div>
+      <div class="step">
+        <div class="num">03</div>
+        <h3>We List Online</h3>
+        <p>Pallets go up here with full manifests. Retail-grade items head to the retail floor and the "Hunt" listing.</p>
+      </div>
+      <div class="step">
+        <div class="num">04</div>
+        <h3>You Buy</h3>
+        <p>Pickup at the Raleigh warehouse, or we freight it. Resellers can set up a standing weekly order.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="fine" id="contact">
+  <div class="inner">
+    <div>
+      <h4>North State Liquidators</h4>
+      <p style="color:#C9CFE0;">Raleigh's direct source for Amazon and big-box liquidation. Pallets, truckloads, and retail-floor finds.</p>
+      <div class="addr" style="margin-top:16px;">
+        WAREHOUSE · RALEIGH, NC<br>
+        [street address]<br>
+        📞 (919) 526-0112<br>
+        ✉ hello@northstateliquidators.com
+      </div>
+    </div>
+    <div>
+      <h4>Wholesale</h4>
+      <a href="#">Today's Pallets</a>
+      <a href="#">Manifests Archive</a>
+      <a href="#">Reseller Login</a>
+      <a href="#">Truckload Orders</a>
+      <a href="#">Freight & Shipping</a>
+    </div>
+    <div>
+      <h4>Retail</h4>
+      <a href="#">This Week's Hunt</a>
+      <a href="#">New Arrivals</a>
+      <a href="#">Warehouse Hours</a>
+      <a href="#">In-Store Pickup</a>
+      <a href="#">Returns Policy</a>
+    </div>
+    <div>
+      <h4>About</h4>
+      <a href="#">Meet Norm &amp; Rob</a>
+      <a href="#">How It Works</a>
+      <a href="#">FAQ</a>
+      <a href="#">Blog / Finds</a>
+      <a href="#">Contact</a>
+    </div>
+  </div>
+  <div class="copyright">
+    <span>© 2026 NORTH STATE LIQUIDATORS · RALEIGH, NC</span>
+    <span>BUILT IN NC · LAST UPDATED 04.17.26</span>
+  </div>
+</footer>
+
+</body>
+</html>

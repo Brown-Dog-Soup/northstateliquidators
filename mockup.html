@@ -60,6 +60,24 @@
   .header .tel small { display: block; font-family: 'Inter'; font-weight: 500; font-size: 11px; color: var(--pencil); letter-spacing: 0.08em; text-transform: uppercase; }
 
   /* === ISSUE BAR === */
+  /* === PREVIEW SWITCHER === */
+  .preview-bar {
+    background: #0b0d10;
+    color: #D8D4C6;
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 8px 0;
+    border-bottom: 2px solid var(--nc-red);
+  }
+  .preview-bar .inner { max-width: 1240px; margin: 0 auto; padding: 0 28px; display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+  .preview-bar .badge { background: var(--nc-red); color: var(--cream); padding: 3px 9px; font-weight: 700; }
+  .preview-bar .dim { color: #777; }
+  .preview-bar a { color: var(--mustard); text-decoration: none; font-weight: 700; border-bottom: 1px solid var(--mustard); }
+  .preview-bar a:hover { color: #fff; border-bottom-color: #fff; }
+  .preview-bar .right { margin-left: auto; }
+
   .issue-bar {
     background: var(--ink); color: var(--paper);
     font-family: 'Inter', sans-serif; font-size: 12px;
@@ -454,6 +472,17 @@
 </style>
 </head>
 <body>
+
+<!-- DESIGN PREVIEW SWITCHER -->
+<div class="preview-bar">
+  <div class="inner">
+    <span class="badge">Preview</span>
+    <span>You're viewing <strong style="color:#fff;">V2 — Editorial / Deal Floor</strong></span>
+    <span class="dim">|</span>
+    <a href="/">← Switch to V1 — Warehouse / Loading Dock</a>
+    <span class="right dim">Two design directions · pick a favorite</span>
+  </div>
+</div>
 
 <!-- HEADER -->
 <header class="header">

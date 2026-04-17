@@ -263,6 +263,29 @@
   .fine .addr { font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; }
   .copyright { max-width: 1280px; margin: 24px auto 0; padding: 16px 24px 0; border-top: 1px solid #3a3d42; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #777; display: flex; justify-content: space-between; }
 
+  /* === PREVIEW SWITCHER === */
+  .preview-bar {
+    background: #0b0d10;
+    color: #D8D4C6;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 8px 0;
+    border-bottom: 2px solid var(--nc-red);
+  }
+  .preview-bar .inner { max-width: 1280px; margin: 0 auto; padding: 0 24px; display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+  .preview-bar .badge { background: var(--nc-red); color: #fff; padding: 3px 9px; font-weight: 700; }
+  .preview-bar .dim { color: #777; }
+  .preview-bar a {
+    color: var(--warehouse-yellow);
+    text-decoration: none;
+    font-weight: 700;
+    border-bottom: 1px solid var(--warehouse-yellow);
+  }
+  .preview-bar a:hover { color: #fff; border-bottom-color: #fff; }
+  .preview-bar .right { margin-left: auto; }
+
   @media (max-width: 900px) {
     .hero .inner, .owners .inner { grid-template-columns: 1fr; }
     .counts .inner, .steps, .hunt-grid { grid-template-columns: repeat(2, 1fr); }
@@ -272,6 +295,17 @@
 </style>
 </head>
 <body>
+
+<!-- DESIGN PREVIEW SWITCHER -->
+<div class="preview-bar">
+  <div class="inner">
+    <span class="badge">Preview</span>
+    <span>You're viewing <strong style="color:#fff;">V1 — Warehouse / Loading Dock</strong></span>
+    <span class="dim">|</span>
+    <a href="/mockup.html">Switch to V2 — Editorial / Deal Floor →</a>
+    <span class="right dim">Two design directions · pick a favorite</span>
+  </div>
+</div>
 
 <!-- TOP BAR -->
 <div class="topbar">

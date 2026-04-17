@@ -117,22 +117,43 @@ In addition to bulk wholesale, they offer direct-to-consumer deals — a "treasu
 
 ---
 
-## Domain & Hosting Plan *(decided 2026-04-17)*
+## Domain & Hosting Plan *(revised 2026-04-17)*
 
 | Item | Value |
 |---|---|
 | Domain | `northstateliquidators.com` — ✅ **registered 2026-04-17** |
 | Registrar | **GoDaddy** (Jeff's existing account) |
-| Hosting account | Existing GoDaddy cPanel (Linux shared) — **not used for this project** |
-| Store platform | **Shopify Basic** ($39/mo) |
+| Repo | https://github.com/Brown-Dog-Soup/northstateliquidators (public) |
+| Hosting | **GitHub Pages** — static site from `main` branch root |
+| Platform change | **Dropped Shopify-first** plan. GH Pages is free; matches pattern from `harpercallahanbooks`. |
 | Email (future) | TBD — Google Workspace or M365 on `@northstateliquidators.com` |
 
-### DNS records to set at GoDaddy (once Shopify store is created)
+### DNS records to set at GoDaddy
 
 | Type | Host | Value |
 |---|---|---|
-| `A` | `@` | `23.227.38.65` |
-| `CNAME` | `www` | `shops.myshopify.com` |
+| `A` | `@` | `185.199.108.153` |
+| `A` | `@` | `185.199.109.153` |
+| `A` | `@` | `185.199.110.153` |
+| `A` | `@` | `185.199.111.153` |
+| `CNAME` | `www` | `Brown-Dog-Soup.github.io` |
+
+Delete any GoDaddy "parked" A record on `@` before adding.
+
+### E-commerce strategy (revised for static hosting)
+
+GitHub Pages is static — no cart or payment processing on-domain. **MVP approach:**
+
+| Use case | Solution | Cost |
+|---|---|---|
+| Retail "hunt" items | Stripe Payment Links (buy-now buttons) | Free + 2.9% + 30¢/tx |
+| Wholesale pallets | Inquiry form (Web3Forms) — "Request Manifest" | Free |
+| Email capture / leads | Web3Forms or Formspree | Free tier |
+
+**Upgrade path if volume grows:**
+- Shopify Buy Button embeds ($5/mo Starter) for unified cart
+- Snipcart drop-in cart (2% fee above $500/mo)
+- Full Shopify ($39/mo) if wholesale tiers + inventory tracking become essential
 
 ### Subdomains worth reserving
 - `shop.` — split retail/wholesale if needed later
@@ -271,3 +292,5 @@ In addition to bulk wholesale, they offer direct-to-consumer deals — a "treasu
 - **2026-04-17** — First mockup built at `mockups/v1-loading-dock.html` — "Loading Dock + NC Local" hybrid. Includes live ticker, pallet ledger (B2B), retail "hunt" grid (B2C), owner section, how-it-works. Open in browser to view.
 - **2026-04-17** — Domain `northstateliquidators.com` confirmed available. Plan: register at GoDaddy (existing account), host store on Shopify, point DNS at Shopify IP/CNAME. GoDaddy cPanel hosting not used for this project.
 - **2026-04-17** — ✅ Domain registered at GoDaddy.
+- **2026-04-17** — ✅ GitHub repo created at Brown-Dog-Soup/northstateliquidators (public). Initial commit pushed: mockup as index.html, CNAME, logo, README, .gitignore. GitHub Pages enabled on main/root.
+- **2026-04-17** — **Pivot:** dropped Shopify-first hosting plan. Site hosts on free GitHub Pages (matching harpercallahanbooks pattern). Selling via Stripe Payment Links (retail) + inquiry forms (wholesale) for MVP.

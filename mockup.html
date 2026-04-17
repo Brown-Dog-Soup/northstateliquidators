@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>North State Liquidators — The Deal Floor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,800;1,9..144,400&family=Inter:wght@400;500;600;700&family=Permanent+Marker&family=Caveat:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #F5EFE0;
+    --cream: #FBF6EA;
+    --kraft: #C9B38A;
+    --ink: #1B1410;
+    --pencil: #3A3126;
+    --nc-red: #C1272D;
+    --nc-red-deep: #8E1C21;
+    --mustard: #E8B938;
+    --tape: #F9E8A0;
+    --rule: #D9CDAE;
+    --stamp-blue: #2A3E66;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    line-height: 1.55;
+    background-image:
+      radial-gradient(circle at 15% 20%, rgba(201,179,138,0.12) 0%, transparent 40%),
+      radial-gradient(circle at 80% 70%, rgba(193,39,45,0.04) 0%, transparent 50%);
+  }
+  h1, h2, h3, h4 { font-family: 'Fraunces', 'Georgia', serif; margin: 0; line-height: 1.02; letter-spacing: -0.015em; }
+  a { color: inherit; }
+
+  /* === HEADER === */
+  .header {
+    border-bottom: 1px solid var(--rule);
+    background: var(--cream);
+  }
+  .header .inner { max-width: 1240px; margin: 0 auto; padding: 18px 28px; display: flex; align-items: center; gap: 32px; }
+  .header img { height: 64px; width: auto; }
+  .header nav { flex: 1; display: flex; gap: 28px; margin-left: 8px; }
+  .header nav a {
+    font-family: 'Fraunces', serif; font-weight: 600; font-size: 16px;
+    text-decoration: none; color: var(--ink);
+    position: relative; padding: 2px 0;
+  }
+  .header nav a:hover { color: var(--nc-red); }
+  .header nav a.active::after {
+    content: ''; position: absolute; bottom: -4px; left: 0; right: 0; height: 3px;
+    background: var(--mustard); transform: rotate(-0.5deg);
+  }
+  .header .tel {
+    font-family: 'Fraunces', serif; font-weight: 600; font-size: 16px;
+    text-decoration: none;
+  }
+  .header .tel small { display: block; font-family: 'Inter'; font-weight: 500; font-size: 11px; color: var(--pencil); letter-spacing: 0.08em; text-transform: uppercase; }
+
+  /* === ISSUE BAR === */
+  .issue-bar {
+    background: var(--ink); color: var(--paper);
+    font-family: 'Inter', sans-serif; font-size: 12px;
+    letter-spacing: 0.15em; text-transform: uppercase;
+    padding: 9px 0;
+  }
+  .issue-bar .inner { max-width: 1240px; margin: 0 auto; padding: 0 28px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+  .issue-bar strong { color: var(--mustard); }
+
+  /* === EDITORIAL HERO === */
+  .masthead {
+    max-width: 1240px; margin: 0 auto; padding: 56px 28px 40px;
+    display: grid; grid-template-columns: 1.1fr 1fr; gap: 56px; align-items: center;
+  }
+  .masthead .kicker {
+    font-family: 'Caveat', cursive; font-size: 32px; color: var(--nc-red);
+    transform: rotate(-2deg); margin-bottom: 12px; display: inline-block;
+  }
+  .masthead h1 {
+    font-size: clamp(44px, 5.5vw, 84px);
+    font-weight: 800;
+    font-style: italic;
+  }
+  .masthead h1 .plain { font-style: normal; font-weight: 600; }
+  .masthead h1 .red { color: var(--nc-red); }
+  .masthead .deck {
+    font-family: 'Fraunces', serif; font-weight: 400;
+    font-size: 21px; color: var(--pencil);
+    max-width: 52ch; margin: 24px 0 28px;
+    line-height: 1.4;
+  }
+  .masthead .byline {
+    font-family: 'Inter'; font-size: 13px; color: var(--pencil);
+    letter-spacing: 0.06em; text-transform: uppercase;
+    border-top: 1px solid var(--rule); padding-top: 16px;
+  }
+  .masthead .byline strong { color: var(--ink); }
+
+  .hero-photo {
+    position: relative;
+    aspect-ratio: 4/5;
+    background: #DDD1B3 repeating-linear-gradient(45deg, #D2C39C 0, #D2C39C 2px, #DDD1B3 2px, #DDD1B3 14px);
+    border: 1px solid var(--kraft);
+    box-shadow: 8px 10px 0 rgba(27,20,16,0.08);
+  }
+  .hero-photo::after {
+    content: '📦'; position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 160px; opacity: 0.18;
+  }
+  .hero-photo .photo-credit {
+    position: absolute; bottom: -12px; left: 20px;
+    background: var(--cream); border: 1px solid var(--rule);
+    padding: 6px 14px; font-size: 11px;
+    font-family: 'Inter'; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--pencil);
+  }
+  .hero-photo .sticky {
+    position: absolute; top: -24px; right: -24px;
+    width: 130px; height: 130px;
+    background: var(--mustard);
+    transform: rotate(8deg);
+    box-shadow: 3px 5px 10px rgba(0,0,0,0.15);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+    padding: 12px;
+  }
+  .hero-photo .sticky .pm { font-family: 'Permanent Marker', cursive; font-size: 14px; line-height: 1; color: var(--ink); }
+  .hero-photo .sticky .big { font-family: 'Permanent Marker', cursive; font-size: 42px; line-height: 1; color: var(--nc-red); margin: 4px 0; }
+  .hero-photo .sticky .small { font-family: 'Permanent Marker', cursive; font-size: 11px; color: var(--ink); line-height: 1.15; }
+
+  /* === RULES === */
+  .rule-tape {
+    height: 16px;
+    background: var(--tape);
+    transform: rotate(-0.3deg);
+    margin: 40px auto;
+    max-width: 900px;
+    box-shadow: 1px 2px 4px rgba(0,0,0,0.06);
+    border-left: 1px dashed rgba(27,20,16,0.15);
+    border-right: 1px dashed rgba(27,20,16,0.15);
+  }
+
+  /* === DEAL OF THE DAY === */
+  .deal-today { background: var(--cream); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  .deal-today .inner { max-width: 1240px; margin: 0 auto; padding: 56px 28px; display: grid; grid-template-columns: 1fr 1.1fr; gap: 48px; align-items: center; }
+  .deal-today .stamp {
+    display: inline-block;
+    font-family: 'Fraunces', serif; font-weight: 800; font-size: 12px;
+    letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--stamp-blue);
+    border: 2px solid var(--stamp-blue);
+    padding: 6px 14px;
+    transform: rotate(-2deg);
+    margin-bottom: 20px;
+  }
+  .deal-today h2 {
+    font-size: clamp(36px, 4.5vw, 56px);
+    font-weight: 800;
+    font-style: italic;
+    margin-bottom: 18px;
+  }
+  .deal-today .story {
+    font-family: 'Fraunces', serif; font-size: 18px; color: var(--pencil);
+    line-height: 1.55; max-width: 50ch;
+  }
+  .deal-today .spec {
+    display: grid; grid-template-columns: auto 1fr; gap: 6px 20px;
+    margin: 26px 0;
+    font-family: 'Inter'; font-size: 14px;
+  }
+  .deal-today .spec dt { color: var(--pencil); letter-spacing: 0.06em; text-transform: uppercase; font-size: 11px; padding-top: 2px; }
+  .deal-today .spec dd { margin: 0; font-weight: 600; }
+  .deal-today .price-line {
+    display: flex; align-items: baseline; gap: 16px; margin: 10px 0 24px;
+    border-top: 1px solid var(--rule); padding-top: 20px;
+  }
+  .deal-today .price-line .now { font-family: 'Fraunces'; font-size: 64px; font-weight: 800; color: var(--nc-red); line-height: 1; font-style: italic; }
+  .deal-today .price-line .was { font-family: 'Fraunces'; font-size: 22px; color: var(--pencil); text-decoration: line-through; font-style: italic; }
+  .deal-today .price-line .saving { font-family: 'Caveat'; font-size: 26px; color: var(--nc-red); transform: rotate(-3deg); }
+  .buy-btn {
+    display: inline-block;
+    background: var(--nc-red); color: var(--cream);
+    font-family: 'Fraunces', serif; font-weight: 800; font-size: 18px; font-style: italic;
+    padding: 18px 34px;
+    text-decoration: none;
+    box-shadow: 4px 5px 0 var(--ink);
+    transition: transform 0.08s, box-shadow 0.08s;
+  }
+  .buy-btn:hover { background: var(--nc-red-deep); }
+  .buy-btn:active { transform: translate(2px, 2px); box-shadow: 2px 3px 0 var(--ink); }
+  .buy-btn .arrow { display: inline-block; margin-left: 8px; transition: transform 0.1s; }
+  .buy-btn:hover .arrow { transform: translateX(4px); }
+
+  .deal-photo {
+    position: relative; aspect-ratio: 1/1;
+    background: #D6C8A6 repeating-linear-gradient(45deg, #CABB95 0, #CABB95 2px, #D6C8A6 2px, #D6C8A6 14px);
+    border: 1px solid var(--kraft);
+    box-shadow: 6px 8px 0 rgba(27,20,16,0.1);
+    transform: rotate(-1.2deg);
+  }
+  .deal-photo::after {
+    content: '🔧'; position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 180px; opacity: 0.2;
+  }
+  .deal-photo .tape-top {
+    position: absolute; top: -14px; left: 30%; width: 120px; height: 28px;
+    background: rgba(249,232,160,0.85);
+    transform: rotate(-4deg);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+    border-left: 1px dashed rgba(27,20,16,0.2);
+    border-right: 1px dashed rgba(27,20,16,0.2);
+  }
+  .deal-photo .caption {
+    position: absolute; bottom: -40px; left: 50%; transform: translateX(-50%) rotate(1deg);
+    font-family: 'Caveat', cursive; font-size: 22px; color: var(--pencil);
+    background: var(--cream); padding: 4px 16px; white-space: nowrap;
+    border: 1px solid var(--rule);
+  }
+
+  /* === SECTION HEADS === */
+  .sec-head { max-width: 1240px; margin: 0 auto; padding: 60px 28px 24px; display: flex; align-items: end; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+  .sec-head .left .tag {
+    font-family: 'Caveat', cursive; font-size: 26px; color: var(--nc-red);
+    transform: rotate(-2deg); display: inline-block; margin-bottom: 4px;
+  }
+  .sec-head h2 { font-size: clamp(36px, 4.5vw, 56px); font-weight: 800; font-style: italic; }
+  .sec-head .updated {
+    font-family: 'Inter'; font-size: 12px; color: var(--pencil);
+    letter-spacing: 0.1em; text-transform: uppercase;
+    border-left: 2px solid var(--nc-red); padding-left: 10px;
+  }
+
+  /* === MASONRY RETAIL GRID === */
+  .masonry {
+    max-width: 1240px; margin: 0 auto; padding: 0 28px 40px;
+    column-count: 3; column-gap: 24px;
+  }
+  .find {
+    break-inside: avoid; margin-bottom: 24px;
+    background: var(--cream);
+    border: 1px solid var(--rule);
+    position: relative;
+    transition: transform 0.15s;
+  }
+  .find:hover { transform: translateY(-3px); box-shadow: 0 10px 22px rgba(27,20,16,0.08); }
+  .find:nth-child(3n+1) { transform: rotate(-0.4deg); }
+  .find:nth-child(3n+2) { transform: rotate(0.3deg); }
+  .find:nth-child(3n+3) { transform: rotate(-0.2deg); }
+  .find .photo {
+    background: #DDD1B3 repeating-linear-gradient(45deg, #D2C39C 0, #D2C39C 2px, #DDD1B3 2px, #DDD1B3 14px);
+    position: relative;
+  }
+  .find .photo.tall { aspect-ratio: 3/4; }
+  .find .photo.square { aspect-ratio: 1/1; }
+  .find .photo.wide { aspect-ratio: 4/3; }
+  .find .photo::after {
+    content: attr(data-icon); position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 88px; opacity: 0.3;
+  }
+  .find .sharpie-tag {
+    position: absolute; top: 14px; left: 14px;
+    background: var(--mustard);
+    font-family: 'Permanent Marker', cursive;
+    padding: 8px 14px;
+    transform: rotate(-5deg);
+    border: 1px solid var(--ink);
+    box-shadow: 2px 3px 0 rgba(27,20,16,0.15);
+    color: var(--ink);
+    font-size: 22px;
+  }
+  .find .body {
+    padding: 18px 20px 22px;
+  }
+  .find .cat {
+    font-family: 'Inter'; font-size: 10px;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--nc-red); margin-bottom: 6px;
+  }
+  .find h3 {
+    font-family: 'Fraunces', serif; font-weight: 600;
+    font-size: 20px; font-style: italic; line-height: 1.2; margin-bottom: 8px;
+  }
+  .find .desc {
+    font-family: 'Fraunces', serif; font-size: 15px;
+    color: var(--pencil); line-height: 1.5;
+  }
+  .find .foot {
+    display: flex; justify-content: space-between; align-items: end;
+    margin-top: 14px; padding-top: 12px;
+    border-top: 1px dashed var(--rule);
+    font-size: 13px;
+  }
+  .find .foot .was {
+    color: var(--pencil); text-decoration: line-through;
+    font-family: 'Fraunces'; font-size: 14px; font-style: italic;
+  }
+  .find .foot .cta {
+    color: var(--nc-red); font-weight: 700;
+    font-family: 'Fraunces'; font-style: italic;
+    text-decoration: none;
+  }
+  .find .foot .cta::after { content: ' →'; }
+
+  /* === WHOLESALE SECTION === */
+  .wholesale {
+    background: var(--ink); color: var(--cream);
+    margin-top: 60px; padding: 70px 0;
+    position: relative;
+  }
+  .wholesale::before {
+    content: ''; position: absolute; top: -1px; left: 0; right: 0; height: 18px;
+    background-image: linear-gradient(135deg, var(--paper) 25%, transparent 25%),
+                      linear-gradient(225deg, var(--paper) 25%, transparent 25%);
+    background-size: 18px 18px;
+  }
+  .wholesale .inner { max-width: 1240px; margin: 0 auto; padding: 0 28px; }
+  .wholesale .tag { font-family: 'Caveat', cursive; font-size: 26px; color: var(--mustard); transform: rotate(-2deg); display: inline-block; }
+  .wholesale h2 { font-size: clamp(40px, 5vw, 64px); font-weight: 800; font-style: italic; margin: 6px 0 14px; color: var(--cream); }
+  .wholesale .deck { font-family: 'Fraunces'; font-size: 19px; color: #D8C8A7; max-width: 58ch; margin-bottom: 36px; }
+  .pallet-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .pallet {
+    background: #2B2116;
+    border: 1px solid #3D2F22;
+    padding: 28px 26px 24px;
+    position: relative;
+    transition: transform 0.15s, border-color 0.15s;
+  }
+  .pallet:hover { transform: translateY(-2px); border-color: var(--mustard); }
+  .pallet .lot {
+    font-family: 'Fraunces'; font-weight: 800; font-size: 13px;
+    color: var(--mustard); letter-spacing: 0.1em;
+  }
+  .pallet h3 {
+    font-family: 'Fraunces', serif; font-weight: 600; font-style: italic;
+    font-size: 26px; color: var(--cream); margin: 4px 0 14px;
+  }
+  .pallet .cat { color: #BBAD8D; font-size: 13px; margin-bottom: 20px; font-family: 'Fraunces'; font-style: italic; }
+  .pallet .stats {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px;
+    padding: 16px 0; border-top: 1px solid #3D2F22; border-bottom: 1px solid #3D2F22;
+    margin-bottom: 18px;
+  }
+  .pallet .stats .k { font-size: 10px; color: #9A8F76; text-transform: uppercase; letter-spacing: 0.1em; }
+  .pallet .stats .v { font-family: 'Fraunces'; font-size: 20px; color: var(--cream); font-weight: 600; }
+  .pallet .stats .v.price { color: var(--mustard); }
+  .pallet .cond {
+    display: inline-block; padding: 3px 10px; font-size: 10px;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    background: rgba(232,185,56,0.15); color: var(--mustard);
+    border: 1px solid rgba(232,185,56,0.3);
+  }
+  .pallet .ask-row { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
+  .pallet .inquire {
+    font-family: 'Fraunces', serif; font-weight: 600; font-style: italic;
+    color: var(--mustard); text-decoration: none;
+    font-size: 15px;
+  }
+  .pallet .inquire::after { content: ' →'; }
+
+  /* === OWNERS (editorial portrait) === */
+  .owners {
+    max-width: 1240px; margin: 0 auto; padding: 80px 28px;
+    display: grid; grid-template-columns: 1.1fr 1fr; gap: 56px; align-items: center;
+  }
+  .owners-photo {
+    aspect-ratio: 4/5;
+    background: #D6C8A6 repeating-linear-gradient(45deg, #CABB95 0, #CABB95 2px, #D6C8A6 2px, #D6C8A6 14px);
+    border: 1px solid var(--kraft);
+    position: relative;
+    box-shadow: -6px 8px 0 rgba(27,20,16,0.08);
+  }
+  .owners-photo::after { content: '👷'; position: absolute; inset: 0; display:flex; align-items:center; justify-content:center; font-size: 180px; opacity: 0.18; }
+  .owners-photo .caption {
+    position: absolute; bottom: -50px; left: 20px; right: 20px;
+    background: var(--cream); border: 1px solid var(--rule); padding: 14px 18px;
+    font-family: 'Fraunces'; font-size: 14px; font-style: italic; color: var(--pencil);
+  }
+  .owners-photo .caption strong { color: var(--ink); font-style: normal; display: block; font-family: 'Inter'; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 3px; }
+
+  .owners-copy .tag { font-family: 'Caveat'; font-size: 26px; color: var(--nc-red); transform: rotate(-2deg); display: inline-block; margin-bottom: 6px; }
+  .owners-copy h2 { font-size: clamp(38px, 5vw, 60px); font-weight: 800; font-style: italic; margin-bottom: 20px; }
+  .owners-copy p { font-family: 'Fraunces', serif; font-size: 19px; color: var(--pencil); line-height: 1.55; margin: 16px 0; }
+  .owners-copy p:first-of-type::first-letter {
+    font-family: 'Fraunces'; font-weight: 800; font-style: italic;
+    font-size: 76px; float: left; line-height: 0.85;
+    margin: 6px 10px 0 0; color: var(--nc-red);
+  }
+  .owners-copy .signature { font-family: 'Caveat'; font-size: 36px; color: var(--ink); margin-top: 20px; }
+
+  /* === NEWSLETTER === */
+  .newsletter {
+    background: var(--mustard);
+    padding: 64px 28px;
+    position: relative;
+  }
+  .newsletter::before, .newsletter::after {
+    content: ''; position: absolute; left: 0; right: 0; height: 14px;
+    background-image: linear-gradient(135deg, var(--paper) 25%, transparent 25%),
+                      linear-gradient(225deg, var(--paper) 25%, transparent 25%);
+    background-size: 14px 14px;
+  }
+  .newsletter::before { top: -1px; }
+  .newsletter::after { bottom: -1px; transform: rotate(180deg); }
+  .newsletter .inner { max-width: 900px; margin: 0 auto; text-align: center; }
+  .newsletter .tag { font-family: 'Caveat'; font-size: 26px; transform: rotate(-2deg); display: inline-block; color: var(--nc-red); }
+  .newsletter h2 { font-size: clamp(36px, 5vw, 56px); font-weight: 800; font-style: italic; margin: 4px 0 12px; }
+  .newsletter p { font-family: 'Fraunces'; font-size: 19px; color: var(--ink); max-width: 52ch; margin: 0 auto 28px; }
+  .newsletter form { display: flex; gap: 10px; max-width: 520px; margin: 0 auto; }
+  .newsletter input[type=email] {
+    flex: 1; padding: 16px 20px;
+    border: 2px solid var(--ink); background: var(--cream);
+    font-family: 'Fraunces'; font-size: 17px;
+  }
+  .newsletter button {
+    background: var(--ink); color: var(--cream);
+    border: none; padding: 16px 26px;
+    font-family: 'Fraunces', serif; font-weight: 800; font-style: italic; font-size: 17px;
+    cursor: pointer;
+    box-shadow: 3px 4px 0 var(--nc-red);
+  }
+  .newsletter button:active { transform: translate(2px, 2px); box-shadow: 1px 2px 0 var(--nc-red); }
+
+  /* === FOOTER === */
+  footer {
+    background: var(--ink); color: var(--paper);
+    padding: 56px 28px 32px;
+    font-size: 14px;
+  }
+  footer .inner { max-width: 1240px; margin: 0 auto; display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr; gap: 40px; }
+  footer h4 { font-family: 'Fraunces'; font-weight: 600; font-style: italic; color: var(--cream); font-size: 20px; margin-bottom: 14px; }
+  footer a { display: block; color: #BBAD8D; text-decoration: none; padding: 3px 0; font-family: 'Fraunces'; font-size: 15px; font-style: italic; }
+  footer a:hover { color: var(--mustard); }
+  footer .addr { color: #BBAD8D; font-family: 'Fraunces'; font-style: italic; line-height: 1.7; }
+  footer .addr strong { color: var(--cream); font-style: normal; display: block; margin-bottom: 6px; font-family: 'Inter'; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; }
+  .fine {
+    max-width: 1240px; margin: 40px auto 0; padding-top: 24px;
+    border-top: 1px solid #2B2116;
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px;
+    font-family: 'Inter'; font-size: 11px; color: #7A6F57; letter-spacing: 0.1em; text-transform: uppercase;
+  }
+
+  @media (max-width: 900px) {
+    .masthead, .deal-today .inner, .owners, footer .inner { grid-template-columns: 1fr; gap: 28px; }
+    .masonry { column-count: 2; }
+    .pallet-cards { grid-template-columns: 1fr; }
+    .header nav { display: none; }
+  }
+  @media (max-width: 560px) {
+    .masonry { column-count: 1; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="header">
+  <div class="inner">
+    <img src="north_state_liquidators_logo.jpeg" alt="North State Liquidators">
+    <nav>
+      <a href="#deals" class="active">The Deal Floor</a>
+      <a href="#wholesale">Wholesale</a>
+      <a href="#story">The Story</a>
+      <a href="#visit">Visit Us</a>
+    </nav>
+    <a class="tel" href="tel:+19195260112">
+      (919) 526-0112
+      <small>Mon–Sat · Raleigh, NC</small>
+    </a>
+  </div>
+</header>
+
+<!-- ISSUE BAR -->
+<div class="issue-bar">
+  <div class="inner">
+    <span>Vol. 1 · <strong>Issue 14</strong> · Week of April 14, 2026</span>
+    <span>Raleigh, NC · Est. 2024</span>
+    <span><strong>14 new pallets</strong> on the floor</span>
+  </div>
+</div>
+
+<!-- EDITORIAL MASTHEAD -->
+<section class="masthead">
+  <div>
+    <span class="kicker">This week on the floor —</span>
+    <h1><span class="plain">14 pallets from</span><br><span>Amazon returns.</span><br><span class="red">Come dig.</span></h1>
+    <p class="deck">
+      Truck #47 pulled in Wednesday morning. Two thousand four hundred ten units, sorted and priced by Thursday lunch. Electronics that someone returned because the box was bent. A Keurig because the owner wanted a different color. A tool chest because the wrong drawer liner came with it. One person's return is the next person's steal — and we've got a floor full of them.
+    </p>
+    <div class="byline">Dispatch from the warehouse · <strong>Norman &amp; Rob</strong> · Raleigh, NC</div>
+  </div>
+
+  <div class="hero-photo">
+    <div class="sticky">
+      <div class="pm">this week</div>
+      <div class="big">$14K</div>
+      <div class="small">14 pallets ready<br>go go go</div>
+    </div>
+    <div class="photo-credit">PHOTO · LOADING DOCK · 04.17.26</div>
+  </div>
+</section>
+
+<div class="rule-tape"></div>
+
+<!-- DEAL OF THE DAY -->
+<section class="deal-today">
+  <div class="inner">
+    <div>
+      <span class="stamp">★ Deal of the Day ★</span>
+      <h2>A Craftsman tool chest, for eighty bucks.</h2>
+      <p class="story">
+        Six drawers, all slide. One small dent on the front panel — otherwise untouched. Came in Monday on a home-goods pallet; we pulled it for the retail floor. Lowe's sells this one for three-forty-nine. Someone is taking this home for the price of a tank of gas.
+      </p>
+      <dl class="spec">
+        <dt>Condition</dt><dd>Open-box · Tested</dd>
+        <dt>Origin</dt><dd>Lowe's — shelf pull</dd>
+        <dt>Pickup</dt><dd>Raleigh warehouse · today</dd>
+      </dl>
+      <div class="price-line">
+        <span class="now">$80</span>
+        <span class="was">$349</span>
+        <span class="saving">save $269</span>
+      </div>
+      <a class="buy-btn" href="#">Take it home<span class="arrow">→</span></a>
+    </div>
+
+    <div class="deal-photo">
+      <div class="tape-top"></div>
+      <div class="caption">— one tiny dent, otherwise perfect —</div>
+    </div>
+  </div>
+</section>
+
+<!-- RETAIL FINDS -->
+<div class="sec-head" id="deals">
+  <div class="left">
+    <span class="tag">Fresh this week —</span>
+    <h2>Retail floor finds.</h2>
+  </div>
+  <span class="updated">Restocked Mon &amp; Thu · Last pull 04.14.26</span>
+</div>
+
+<div class="masonry">
+
+  <div class="find">
+    <div class="photo tall" data-icon="🎧">
+      <div class="sharpie-tag">$140</div>
+    </div>
+    <div class="body">
+      <div class="cat">Electronics</div>
+      <h3>Sony WH-1000XM4 headphones</h3>
+      <p class="desc">Amazon return. Every function tested. No retail box, but the case is there and the ear pads are new. Retails at $348 depending on where you look.</p>
+      <div class="foot">
+        <span class="was">$348 at Best Buy</span>
+        <a class="cta" href="#">Take a look</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="find">
+    <div class="photo square" data-icon="☕">
+      <div class="sharpie-tag">$45</div>
+    </div>
+    <div class="body">
+      <div class="cat">Kitchen</div>
+      <h3>Keurig K-Supreme Plus</h3>
+      <p class="desc">New, sealed, factory-fresh. Just the outer shipping box got dinged on the way. If you don't care about the box this is the one.</p>
+      <div class="foot">
+        <span class="was">$189 at Target</span>
+        <a class="cta" href="#">Grab it</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="find">
+    <div class="photo wide" data-icon="🧹">
+      <div class="sharpie-tag">$68</div>
+    </div>
+    <div class="body">
+      <div class="cat">Home</div>
+      <h3>Dyson V8 cordless vacuum</h3>
+      <p class="desc">Missing the wall mount — everything else is there and works. Battery held a full charge through two test runs on our warehouse floor. Take our word for it.</p>
+      <div class="foot">
+        <span class="was">$329 on dyson.com</span>
+        <a class="cta" href="#">Snag it</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="find">
+    <div class="photo tall" data-icon="🪜">
+      <div class="sharpie-tag">$32</div>
+    </div>
+    <div class="body">
+      <div class="cat">Tools</div>
+      <h3>Werner 6-ft fiberglass ladder</h3>
+      <p class="desc">Customer return. The feet are scuffed up — we checked the rails and rivets, structurally it's fine. Good for a garage ladder you won't baby.</p>
+      <div class="foot">
+        <span class="was">$109 at Home Depot</span>
+        <a class="cta" href="#">Take it</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="find">
+    <div class="photo square" data-icon="📺">
+      <div class="sharpie-tag">$120</div>
+    </div>
+    <div class="body">
+      <div class="cat">Electronics</div>
+      <h3>TCL 43" 4K Roku TV</h3>
+      <p class="desc">Powers on, full picture, no visible screen damage. No remote in the box but any Roku remote will pair. Works with the app too.</p>
+      <div class="foot">
+        <span class="was">$279 at Walmart</span>
+        <a class="cta" href="#">Claim it</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="find">
+    <div class="photo wide" data-icon="🪴">
+      <div class="sharpie-tag">$18</div>
+    </div>
+    <div class="body">
+      <div class="cat">Home</div>
+      <h3>3-pc ceramic planter set</h3>
+      <p class="desc">Shelf pull — the pottery is new, the outer gift box got crushed in shipping. Three sizes, matte finish, neutral clay tone.</p>
+      <div class="foot">
+        <span class="was">$54 at Target</span>
+        <a class="cta" href="#">Take 'em</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="find">
+    <div class="photo tall" data-icon="🎒">
+      <div class="sharpie-tag">$22</div>
+    </div>
+    <div class="body">
+      <div class="cat">Outdoor</div>
+      <h3>North Face Borealis backpack</h3>
+      <p class="desc">One shoulder strap has a small scuff. All zippers work. Interior is clean. Somebody probably bought it for a kid who changed their mind about school colors.</p>
+      <div class="foot">
+        <span class="was">$99 at REI</span>
+        <a class="cta" href="#">Grab it</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="find">
+    <div class="photo square" data-icon="🧴">
+      <div class="sharpie-tag">$14</div>
+    </div>
+    <div class="body">
+      <div class="cat">Home</div>
+      <h3>Simplehuman sensor soap pump</h3>
+      <p class="desc">New, tested — sensor fires, pump works. Box is fine. Why it's on our floor instead of a shelf somewhere, we couldn't tell you. Their loss.</p>
+      <div class="foot">
+        <span class="was">$62 at Bed Bath</span>
+        <a class="cta" href="#">Take it</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="find">
+    <div class="photo wide" data-icon="☀️">
+      <div class="sharpie-tag">$52</div>
+    </div>
+    <div class="body">
+      <div class="cat">Outdoor</div>
+      <h3>Solar string lights — 100 ft</h3>
+      <p class="desc">Shelf pull from a seasonal pallet. Plastic packaging is torn; lights are new and tested, every bulb fires. Good before patio season kicks.</p>
+      <div class="foot">
+        <span class="was">$139 at Lowe's</span>
+        <a class="cta" href="#">Grab a set</a>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- WHOLESALE -->
+<section class="wholesale" id="wholesale">
+  <div class="inner">
+    <span class="tag">For the resellers —</span>
+    <h2>Pallets on the dock.</h2>
+    <p class="deck">Fourteen lots ready to move today. We post manifests before we price, so you see what's in a pallet before you commit. Raleigh pickup preferred; we'll freight anywhere in the Southeast for the right lot.</p>
+
+    <div class="pallet-cards">
+
+      <div class="pallet">
+        <div class="lot">LOT 2041</div>
+        <h3>Home goods, mixed.</h3>
+        <div class="cat">Kitchen · bath · small appliance</div>
+        <div class="stats">
+          <div class="k">Units</div><div class="v">186</div>
+          <div class="k">MSRP</div><div class="v">$4,920</div>
+          <div class="k">Ask</div><div class="v price">$1,180</div>
+          <div class="k">Condition</div><div class="v"><span class="cond">Customer Return</span></div>
+        </div>
+        <div class="ask-row">
+          <a class="inquire" href="#">View manifest</a>
+        </div>
+      </div>
+
+      <div class="pallet">
+        <div class="lot">LOT 2042</div>
+        <h3>Electronics lot.</h3>
+        <div class="cat">Headphones · chargers · smart home</div>
+        <div class="stats">
+          <div class="k">Units</div><div class="v">312</div>
+          <div class="k">MSRP</div><div class="v">$8,740</div>
+          <div class="k">Ask</div><div class="v price">$2,100</div>
+          <div class="k">Condition</div><div class="v"><span class="cond">Shelf Pull</span></div>
+        </div>
+        <div class="ask-row">
+          <a class="inquire" href="#">View manifest</a>
+        </div>
+      </div>
+
+      <div class="pallet">
+        <div class="lot">LOT 2043</div>
+        <h3>Apparel, women's.</h3>
+        <div class="cat">Seasonal mix · mostly S/M</div>
+        <div class="stats">
+          <div class="k">Units</div><div class="v">420</div>
+          <div class="k">MSRP</div><div class="v">$6,300</div>
+          <div class="k">Ask</div><div class="v price">$1,450</div>
+          <div class="k">Condition</div><div class="v"><span class="cond">New, In Box</span></div>
+        </div>
+        <div class="ask-row">
+          <a class="inquire" href="#">View manifest</a>
+        </div>
+      </div>
+
+    </div>
+
+    <p style="margin-top:28px; font-family:Fraunces; font-style:italic; color:#BBAD8D; font-size:16px;">
+      Eleven more pallets on the dock. <a href="#" style="color:var(--mustard); border-bottom:1px solid var(--mustard);">See the whole list →</a>
+    </p>
+  </div>
+</section>
+
+<!-- OWNERS PORTRAIT -->
+<section class="owners" id="story">
+  <div class="owners-photo">
+    <div class="caption">
+      <strong>Norman Turner &amp; Rob TeCarr</strong>
+      Co-owners, photographed at the Raleigh warehouse, April 2026.
+    </div>
+  </div>
+  <div class="owners-copy">
+    <span class="tag">The story —</span>
+    <h2>Two guys, a truck, and a loading dock in Raleigh.</h2>
+    <p>We started North State because we got tired of watching perfectly good merchandise get ground up in the return stream. Amazon, Lowe's, Target — they can't put an open-box item back on the shelf. So it ends up in a return center, and from there it's headed to a landfill unless somebody buys the pallet.</p>
+    <p>That's where we come in. We drive the truck, we unload the pallets, we sort every unit by hand. Brand-new gets one bin; open-box-tested gets another; untested-return gets another. Then it comes out here on the floor, or it goes back out on a pallet to a reseller. No middle layer. No mystery.</p>
+    <p>If you're a shopper, come walk the floor. If you're a reseller, call the number at the top. We pick up. That's a promise most liquidators won't make.</p>
+    <div class="signature">— Norm &amp; Rob</div>
+  </div>
+</section>
+
+<!-- NEWSLETTER -->
+<section class="newsletter">
+  <div class="inner">
+    <span class="tag">Don't miss a pallet —</span>
+    <h2>The Haul — our weekly email.</h2>
+    <p>Every Friday morning: what came in that week, what's left on the floor, and one deal we think somebody is going to regret missing. No fluff, no spam. Unsubscribe any time.</p>
+    <form onsubmit="event.preventDefault()">
+      <input type="email" placeholder="you@example.com" required>
+      <button type="submit">Send it</button>
+    </form>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer id="visit">
+  <div class="inner">
+    <div>
+      <h4>North State Liquidators</h4>
+      <div class="addr">
+        <strong>Warehouse · Raleigh, NC</strong>
+        [street address — coming soon]<br>
+        Mon–Fri · 9–6<br>
+        Saturday · 9–4<br>
+        Closed Sunday
+      </div>
+      <p style="margin-top:22px; font-family:Fraunces; font-size:15px; color:#BBAD8D; font-style:italic;">
+        Amazon returns, big-box overstock, shelf pulls.<br>
+        We sort, we sell, we answer the phone.
+      </p>
+    </div>
+    <div>
+      <h4>Shop</h4>
+      <a href="#">The Deal Floor</a>
+      <a href="#">This Week's Finds</a>
+      <a href="#">Deal of the Day</a>
+      <a href="#">Visit in person</a>
+    </div>
+    <div>
+      <h4>Wholesale</h4>
+      <a href="#">Pallets today</a>
+      <a href="#">Manifests</a>
+      <a href="#">Truckload orders</a>
+      <a href="#">Reseller account</a>
+    </div>
+    <div>
+      <h4>About</h4>
+      <a href="#">The Story</a>
+      <a href="#">How it works</a>
+      <a href="#">FAQ</a>
+      <a href="tel:+19195260112">(919) 526-0112</a>
+    </div>
+  </div>
+  <div class="fine">
+    <span>© 2026 North State Liquidators · Raleigh, NC</span>
+    <span>Built in NC · Vol. 1, Issue 14</span>
+  </div>
+</footer>
+
+</body>
+</html>

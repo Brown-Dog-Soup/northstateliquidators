@@ -200,10 +200,14 @@ GitHub Pages is static — no cart or payment processing on-domain. **MVP approa
 | 2026-04-17 | Domain registered | ✅ |
 | 2026-04-17 | Logo received | ✅ |
 | 2026-04-17 | First design mockup | ✅ |
+| 2026-04-17 | GitHub repo created | ✅ |
+| 2026-04-17 | GitHub Pages enabled | ✅ |
+| 2026-04-17 | DNS configured (GoDaddy API) | ✅ |
 | | Requirements gathered | ⏳ |
-| | Shopify store created | ⏳ |
-| | Theme installed + branded | ⏳ |
-| | DNS pointed at Shopify | ⏳ |
+| | HTTPS cert issued + enforced | ⏳ |
+| | Design iterations with Norm/Rob | ⏳ |
+| | Stripe Payment Links for retail items | ⏳ |
+| | Inquiry form (Web3Forms) for wholesale | ⏳ |
 | | Initial product listings | ⏳ |
 | | Payment + shipping configured | ⏳ |
 | | Soft launch (internal test) | ⏳ |
@@ -294,3 +298,4 @@ GitHub Pages is static — no cart or payment processing on-domain. **MVP approa
 - **2026-04-17** — ✅ Domain registered at GoDaddy.
 - **2026-04-17** — ✅ GitHub repo created at Brown-Dog-Soup/northstateliquidators (public). Initial commit pushed: mockup as index.html, CNAME, logo, README, .gitignore. GitHub Pages enabled on main/root.
 - **2026-04-17** — **Pivot:** dropped Shopify-first hosting plan. Site hosts on free GitHub Pages (matching harpercallahanbooks pattern). Selling via Stripe Payment Links (retail) + inquiry forms (wholesale) for MVP.
+- **2026-04-17** — ✅ DNS configured via GoDaddy Domain API. 4 A records (185.199.108-111.153) on apex + CNAME www → brown-dog-soup.github.io. Reusable `Set-GoDaddyDns.ps1` script added to repo. Propagating now; site will be live at https://northstateliquidators.com once DNS clears (usually <30 min).

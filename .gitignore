@@ -23,3 +23,9 @@ build/
 # Temp
 *.tmp
 *.bak
+
+# Screenshots (never commit — may contain secrets)
+Screenshot*.png
+screenshot*.png
+Screenshot*.jpg
+screenshot*.jpg

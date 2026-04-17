@@ -32,9 +32,9 @@ $setScript = Join-Path $PSScriptRoot 'Set-GoDaddyDns.ps1'
 if (-not (Test-Path $setScript)) { throw "Set-GoDaddyDns.ps1 not found next to this script." }
 
 Write-Host ""
-Write-Host "══════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "  Configure GitHub Pages DNS — $domain" -ForegroundColor Cyan
-Write-Host "══════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "==================================================" -ForegroundColor Cyan
+Write-Host "  Configure GitHub Pages DNS - $domain" -ForegroundColor Cyan
+Write-Host "==================================================" -ForegroundColor Cyan
 
 # 1. Apex A records → GitHub Pages
 & $setScript -Domain $domain -Type 'A' -Name '@' -Values $githubIps -WhatIf:$WhatIfPreference
@@ -43,10 +43,10 @@ Write-Host "══════════════════════�
 & $setScript -Domain $domain -Type 'CNAME' -Name 'www' -Values $cnameTarget -WhatIf:$WhatIfPreference
 
 Write-Host ""
-Write-Host "══════════════════════════════════════════════════" -ForegroundColor Green
+Write-Host "==================================================" -ForegroundColor Green
 Write-Host "  Next steps:" -ForegroundColor Green
-Write-Host "    1. Wait 5–30 min for DNS propagation"
+Write-Host "    1. Wait 5-30 min for DNS propagation"
 Write-Host "    2. Visit https://github.com/Brown-Dog-Soup/northstateliquidators/settings/pages"
 Write-Host "    3. Enable 'Enforce HTTPS' once cert is issued"
 Write-Host "    4. Test: https://northstateliquidators.com"
-Write-Host "══════════════════════════════════════════════════" -ForegroundColor Green
+Write-Host "==================================================" -ForegroundColor Green

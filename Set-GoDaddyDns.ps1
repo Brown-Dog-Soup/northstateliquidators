@@ -93,7 +93,7 @@ $headers = @{
 
 Write-Host ""
 Write-Host "  GoDaddy DNS Update" -ForegroundColor Cyan
-Write-Host "  ──────────────────"
+Write-Host "  ------------------"
 Write-Host "  Domain  : $Domain"
 Write-Host "  Record  : $Type $Name"
 Write-Host "  Values  :"
@@ -105,13 +105,13 @@ Write-Host ""
 if ($PSCmdlet.ShouldProcess("$Type $Name @ $Domain", 'Replace DNS records')) {
     try {
         $response = Invoke-RestMethod -Method Put -Uri $uri -Headers $headers -Body $body
-        Write-Host "  ✓ Success — records replaced" -ForegroundColor Green
+        Write-Host "  [OK] Success - records replaced" -ForegroundColor Green
         return $response
     }
     catch {
         $status = $_.Exception.Response.StatusCode.value__
         $reason = $_.Exception.Response.StatusDescription
-        Write-Host "  ✗ FAILED: HTTP $status $reason" -ForegroundColor Red
+        Write-Host "  [FAIL] HTTP $status $reason" -ForegroundColor Red
 
         switch ($status) {
             401 { Write-Host "  → Invalid API key/secret" -ForegroundColor Yellow }

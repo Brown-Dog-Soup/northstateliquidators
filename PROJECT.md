@@ -20,8 +20,8 @@ Website build-out for **North State Liquidators**. Collaborative project with fr
 
 | Name | Role | Contact |
 |---|---|---|
-| Norman Turner | Owner & Operator | — |
-| Rob TeCarr | Owner & Operator | — |
+| Norman Turner | Owner & Operator | Norman.Northstateliq@gmail.com |
+| Rob TeCarr | Owner & Operator | rob.northstateliq@gmail.com |
 | Main line | | (919) 526-0112 |
 
 ### Build team

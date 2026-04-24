@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>North State Liquidators — Services Proposal — NSL-202604-0001</title>
+<style>
+  @page { size: Letter; margin: 0.5in 0.55in 0.7in 0.55in; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    color: #1f2a44;
+    font-size: 10.5pt;
+    line-height: 1.4;
+    margin: 0;
+  }
+  h1, h2, h3, h4 { color: #0f1e3f; margin: 0; }
+  .brand { font-size: 26pt; font-weight: 700; color: #0f1e3f; letter-spacing: -0.5px; }
+  .tagline { color: #e0742a; font-style: italic; margin-top: 2px; font-size: 10pt; }
+  .rule { height: 3px; background: #e0742a; margin: 10px 0 14px; }
+  .right { text-align: right; }
+  .muted { color: #6b7280; }
+  .small { font-size: 8.5pt; }
+  .xsmall { font-size: 7.8pt; }
+  .bold { font-weight: 700; }
+  .center { text-align: center; }
+  .section-title {
+    font-size: 11pt; font-weight: 700; color: #0f1e3f;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin: 18px 0 8px;
+  }
+  .header-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 6px 24px; margin-bottom: 10px;
+  }
+  .header-grid .label {
+    font-size: 8pt; text-transform: uppercase; color: #6b7280;
+    letter-spacing: 0.6px; font-weight: 600;
+  }
+  .header-grid .value { font-weight: 600; color: #0f1e3f; }
+  .hero {
+    background: #f4f6fb; border-left: 4px solid #e0742a;
+    padding: 14px 18px; margin: 12px 0 18px;
+    display: grid; grid-template-columns: 2fr 1fr; gap: 18px;
+  }
+  .hero h2 { font-size: 17pt; margin-bottom: 4px; }
+  .hero .sub { color: #4b5563; font-size: 9.8pt; }
+  .hero .client-label { font-size: 8pt; text-transform: uppercase; color: #6b7280; letter-spacing: 0.6px; font-weight: 600; }
+  .hero .client-name { font-weight: 700; color: #0f1e3f; font-size: 11.5pt; }
+  table.t { width: 100%; border-collapse: collapse; margin: 4px 0 10px; }
+  table.t th {
+    background: #0f1e3f; color: white; font-weight: 600;
+    text-transform: uppercase; font-size: 8.5pt; letter-spacing: 0.5px;
+    padding: 8px 10px; text-align: left;
+  }
+  table.t td {
+    padding: 9px 10px; border-bottom: 1px solid #e5e7eb;
+    vertical-align: top; font-size: 10pt;
+  }
+  table.t tr:nth-child(even) td { background: #fafbfc; }
+  table.t .label-col { font-weight: 700; color: #0f1e3f; border-left: 3px solid #e0742a; }
+  .check { color: #16a34a; font-weight: 700; }
+  .anchor-callout {
+    background: #fff7ed; border: 1px solid #fed7aa;
+    padding: 10px 14px; margin: 10px 0; border-radius: 4px;
+    font-size: 9.8pt;
+  }
+  .anchor-callout .big { font-size: 14pt; font-weight: 700; color: #0f1e3f; }
+  .scope-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 12px; margin: 6px 0 10px;
+  }
+  .scope-card {
+    border: 1.5px solid #d1d5db; border-radius: 6px;
+    padding: 12px 14px; background: white;
+    page-break-inside: avoid; break-inside: avoid;
+  }
+  .scope-card .name { font-size: 11pt; font-weight: 700; color: #0f1e3f; text-transform: uppercase; letter-spacing: 0.5px; }
+  .scope-card .price { font-size: 18pt; font-weight: 700; color: #0f1e3f; margin: 4px 0 0; }
+  .scope-card .note { font-size: 8.5pt; color: #e0742a; font-weight: 600; margin-bottom: 6px; }
+  .scope-card ul { list-style: none; padding-left: 0; margin: 6px 0 0; font-size: 9pt; }
+  .scope-card li { padding: 3px 0 3px 16px; position: relative; line-height: 1.35; }
+  .scope-card li::before { content: "✓"; position: absolute; left: 0; color: #16a34a; font-weight: 700; }
+  .total-bar {
+    background: #0f1e3f; color: white;
+    padding: 14px 20px; display: flex; justify-content: space-between;
+    align-items: center; margin: 8px 0 4px; border-radius: 4px;
+  }
+  .total-bar .label { font-size: 10pt; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
+  .total-bar .amount { font-size: 17pt; font-weight: 700; color: #5eead4; }
+  .savings-box {
+    background: #ecfdf5; border: 1px solid #86efac; color: #065f46;
+    padding: 10px 14px; border-radius: 4px; margin: 8px 0;
+    font-size: 9.8pt;
+  }
+  .savings-box .big { font-weight: 700; color: #047857; }
+  .friend-box {
+    background: #fef3c7; border: 1px solid #fcd34d; color: #78350f;
+    padding: 10px 14px; border-radius: 4px; margin: 8px 0;
+    font-size: 9.8pt;
+  }
+  .friend-box .big { font-weight: 700; color: #92400e; }
+  .footer { display: none; }
+  .page-break { page-break-before: always; }
+  .sig-grid {
+    display: grid; grid-template-columns: 2fr 2fr 1fr;
+    gap: 30px; margin-top: 40px;
+  }
+  .sig-block { border-top: 1px solid #0f1e3f; padding-top: 6px; }
+  .sig-block .label { font-size: 8pt; text-transform: uppercase; color: #6b7280; letter-spacing: 0.6px; font-weight: 600; }
+  table.t { page-break-inside: auto; }
+  table.t tr { page-break-inside: avoid; break-inside: avoid; }
+  .total-bar, .savings-box, .anchor-callout, .hero, .friend-box { page-break-inside: avoid; break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<!-- ===================== PAGE 1 ===================== -->
+<div>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; align-items: end;">
+    <div>
+      <div class="brand">TenantIQ</div>
+      <div class="tagline">One View. Total Clarity.</div>
+    </div>
+    <div class="right">
+      <div style="font-size: 11pt; font-weight: 700; color: #0f1e3f; letter-spacing: 0.8px;">SERVICES PROPOSAL</div>
+      <div class="muted small">NSL-202604-0001</div>
+    </div>
+  </div>
+  <div class="rule"></div>
+
+  <div class="header-grid">
+    <div><div class="label">Prepared For</div><div class="value">North State Liquidators, LLC</div></div>
+    <div><div class="label">Proposal Number</div><div class="value">NSL-202604-0001</div></div>
+    <div><div class="label">Attention</div><div class="value">Norman Turner &amp; Rob TeCarr, Managing Members</div></div>
+    <div><div class="label">Valid Through</div><div class="value">May 24, 2026</div></div>
+    <div><div class="label">Date Issued</div><div class="value">April 24, 2026</div></div>
+    <div><div class="label">Prepared By</div><div class="value">TenantIQ Pro LLC</div></div>
+  </div>
+
+  <div class="hero">
+    <div>
+      <h2>Email, E-Commerce &amp; Website Enablement</h2>
+      <div class="sub">Microsoft 365 business email · Shopify online sales · Website hosting on your domain</div>
+    </div>
+    <div>
+      <div class="client-label">Client</div>
+      <div class="client-name">North State Liquidators, LLC</div>
+      <div class="muted small" style="margin-top: 2px;">Raleigh, NC · northstateliquidators.com</div>
+    </div>
+  </div>
+
+  <div class="section-title">Engagement Overview</div>
+  <p style="margin: 2px 0 10px;">
+    TenantIQ Pro LLC will stand up the three core pieces of North State Liquidators' digital operation:
+    <strong>branded business email</strong> on <code>@northstateliquidators.com</code>, a
+    <strong>Shopify storefront</strong> with a phone-app workflow for listing inventory from the warehouse floor,
+    and continued hosting of the public marketing website at <a href="https://northstateliquidators.com">northstateliquidators.com</a>.
+    Mailboxes are hosted as a guest domain inside TenantIQ Pro's Microsoft 365 tenant — NSL gets the full
+    business-grade experience without having to operate its own tenant.
+  </p>
+
+  <div class="friend-box">
+    <span class="big">Friends &amp; Family Engagement —</span> all TenantIQ Pro labor (setup, DNS, onboarding,
+    training, and ongoing administration) is provided at <strong>$0</strong>. NSL pays only the true third-party
+    pass-through costs (Microsoft, Shopify, GoDaddy) at cost with no markup. This proposal exists to document
+    scope, ownership, and terms in writing — not to bill time.
+  </div>
+
+  <div class="section-title">Scope at a Glance</div>
+  <div class="scope-grid">
+
+    <div class="scope-card">
+      <div class="name">Business Email</div>
+      <div class="price">$8.00<span style="font-size: 10pt; font-weight: 400; color: #6b7280;"> / mo</span></div>
+      <div class="note">2 × Microsoft 365 Business licenses · pass-through</div>
+      <ul>
+        <li>norm@northstateliquidators.com</li>
+        <li>rob@northstateliquidators.com</li>
+        <li>Shared aliases: hello@, wholesale@, sales@</li>
+        <li>Outlook web + mobile app</li>
+        <li>50 GB mailbox storage each</li>
+        <li>Hosted in TenantIQ Pro's M365 tenant</li>
+        <li>SPF, DKIM, DMARC configured</li>
+      </ul>
+    </div>
+
+    <div class="scope-card">
+      <div class="name">Shopify Storefront</div>
+      <div class="price">$5.00<span style="font-size: 10pt; font-weight: 400; color: #6b7280;"> / mo</span></div>
+      <div class="note">Shopify Starter · pass-through</div>
+      <ul>
+        <li>Shopify Starter plan</li>
+        <li>Unlimited product listings</li>
+        <li>2 staff accounts (Norm + Rob)</li>
+        <li>Phone app for warehouse listings</li>
+        <li>Buy-button embeds on your site</li>
+        <li>Transaction fees: 2.9% + 30¢ (paid to Shopify)</li>
+        <li>Draft-order invoices for wholesale</li>
+      </ul>
+    </div>
+
+    <div class="scope-card">
+      <div class="name">Website Hosting</div>
+      <div class="price">$0.00<span style="font-size: 10pt; font-weight: 400; color: #6b7280;"> / mo</span></div>
+      <div class="note">GitHub Pages · no monthly cost</div>
+      <ul>
+        <li>northstateliquidators.com on GitHub Pages</li>
+        <li>Free HTTPS via Let's Encrypt</li>
+        <li>Custom domain + www redirect</li>
+        <li>DNS managed via GoDaddy API script</li>
+        <li>Unlimited bandwidth (soft)</li>
+        <li>Deploys via git push to main</li>
+      </ul>
+    </div>
+
+    <div class="scope-card">
+      <div class="name">Setup &amp; Onboarding</div>
+      <div class="price">$0.00<span style="font-size: 10pt; font-weight: 400; color: #6b7280;"> one-time</span></div>
+      <div class="note">Waived · friends &amp; family</div>
+      <ul>
+        <li>M365 custom-domain verification + DNS</li>
+        <li>Mailbox + alias provisioning</li>
+        <li>Outlook setup on Norm's + Rob's phones</li>
+        <li>Shopify account creation + theme setup</li>
+        <li>Stripe/Shopify Payments enablement</li>
+        <li>Phone-app training session (1 on-site)</li>
+        <li>First 5–10 product listings walk-through</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="total-bar">
+    <div>
+      <div class="label">Total Monthly Pass-Through</div>
+      <div class="xsmall" style="opacity: 0.7; margin-top: 2px;">M365 $8 + Shopify $5 · billed at cost, no markup</div>
+    </div>
+    <div class="amount">$13.00 / mo</div>
+  </div>
+
+  <div class="savings-box">
+    <span class="big">First-Year Total:</span> approximately <strong>$176</strong> —
+    $13/mo × 12 months ($156) plus the annual <code>northstateliquidators.com</code> domain renewal (~$20)
+    paid directly to GoDaddy. Shopify transaction fees (2.9% + 30¢) are paid by the customer at checkout
+    and flow directly from Shopify to NSL's bank account.
+  </div>
+</div>
+
+<!-- ===================== PAGE 2 ===================== -->
+<div class="page-break">
+  <div class="section-title" style="margin-top: 0;">Line-Item Detail</div>
+  <p class="small muted" style="margin: 0 0 8px;">All TenantIQ Pro labor is provided at $0 under the friends &amp;
+  family arrangement. Pass-through costs below are billed at cost with documentation; NSL may verify any line
+  against the underlying vendor invoice at any time.</p>
+
+  <div class="section-title" style="margin-top: 12px;">Pass-Through Subscriptions (Monthly, At Cost)</div>
+  <table class="t">
+    <thead>
+      <tr><th style="width: 32%;">Line Item</th><th>Description</th><th style="width: 18%;" class="right">Monthly</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="label-col">Microsoft 365 Business — Mailbox 1</td>
+        <td>norm@northstateliquidators.com · 50 GB mailbox · Outlook web &amp; mobile · Microsoft-hosted Exchange</td>
+        <td class="right">$4.00</td>
+      </tr>
+      <tr>
+        <td class="label-col">Microsoft 365 Business — Mailbox 2</td>
+        <td>rob@northstateliquidators.com · 50 GB mailbox · Outlook web &amp; mobile · Microsoft-hosted Exchange</td>
+        <td class="right">$4.00</td>
+      </tr>
+      <tr>
+        <td class="label-col">Shared Aliases</td>
+        <td>hello@, wholesale@, sales@ — no separate licenses required; forward to Norm and/or Rob</td>
+        <td class="right">included</td>
+      </tr>
+      <tr>
+        <td class="label-col">Shopify Starter</td>
+        <td>Flat platform fee · unlimited products · phone admin app · buy-button embeds for the marketing site</td>
+        <td class="right">$5.00</td>
+      </tr>
+      <tr style="background: #f4f6fb;">
+        <td colspan="2" class="right bold">Monthly Pass-Through Total</td>
+        <td class="right bold">$13.00</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="section-title">Pass-Through Items (Annual / As-Incurred, At Cost)</div>
+  <table class="t">
+    <tbody>
+      <tr><td class="label-col" style="width: 32%;">Domain Renewal</td>
+        <td><code>northstateliquidators.com</code> — renews annually through GoDaddy. NSL may pay the renewal
+        directly on its own GoDaddy account, or TenantIQ Pro will pay and pass through.</td>
+        <td class="right">~$18–22 / yr</td></tr>
+      <tr><td class="label-col">Shopify Transaction Fees</td>
+        <td>2.9% + 30¢ per credit/debit card sale. <strong>Not collected by TenantIQ Pro.</strong> Shopify deducts
+        from each payout and remits the balance directly to NSL's business bank account.</td>
+        <td class="right">paid to Shopify</td></tr>
+      <tr><td class="label-col">Tier Upgrades (Optional)</td>
+        <td>If retail volume grows, Shopify Basic ($39/mo) adds abandoned-cart email, discount codes, and
+        shipping-label printing. Triggered on mutual agreement; same at-cost pass-through.</td>
+        <td class="right">as-needed</td></tr>
+    </tbody>
+  </table>
+
+  <div class="section-title">Services Provided at No Charge</div>
+  <table class="t">
+    <thead>
+      <tr><th style="width: 32%;">Service</th><th>Includes</th><th style="width: 18%;" class="right">Rate</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="label-col">Microsoft 365 Setup</td>
+        <td>Add <code>northstateliquidators.com</code> as verified custom domain on TenantIQ Pro's M365 tenant;
+        configure MX, SPF, DKIM, DMARC, and Autodiscover records at GoDaddy; create mailboxes; assign licenses;
+        configure shared aliases; set up Outlook on Norm's and Rob's phones.</td>
+        <td class="right"><strong>$0</strong></td>
+      </tr>
+      <tr>
+        <td class="label-col">Shopify Setup</td>
+        <td>Create Shopify account; connect <code>northstateliquidators.com</code>; configure Shopify Payments;
+        set tax and shipping defaults for NC; install phone app on Norm's and Rob's devices; configure staff
+        accounts; create initial product template.</td>
+        <td class="right"><strong>$0</strong></td>
+      </tr>
+      <tr>
+        <td class="label-col">Onboarding &amp; Training</td>
+        <td>One on-site working session covering: phone-app listing workflow (photo → description → price →
+        publish), order notifications, packing-slip printing, payout reconciliation, and draft-order invoices
+        for wholesale inquiries. First 5–10 retail items listed together to confirm the flow.</td>
+        <td class="right"><strong>$0</strong></td>
+      </tr>
+      <tr>
+        <td class="label-col">Website Hosting &amp; Updates</td>
+        <td>Ongoing GitHub Pages hosting of the marketing site on <code>northstateliquidators.com</code>;
+        design iterations; buy-button embeds; content changes; DNS administration via the existing
+        <code>Set-GoDaddyDns.ps1</code> script.</td>
+        <td class="right"><strong>$0</strong></td>
+      </tr>
+      <tr>
+        <td class="label-col">Ongoing Administration</td>
+        <td>Tenant admin, license management, mailbox troubleshooting, password resets, mobile setup help,
+        and general "something isn't working" support via phone or text.</td>
+        <td class="right"><strong>$0</strong></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="friend-box">
+    <span class="big">Why $0?</span> Norm and Rob are friends first and clients second. This document exists to
+    document <em>what</em> is being delivered and <em>who owns what</em> — not to create a billable
+    relationship for labor. If the engagement later grows into something larger (multi-employee tenant,
+    dedicated B2B portal, integrations), we'll revisit pricing together in writing before any change.
+  </div>
+</div>
+
+<!-- ===================== PAGE 3 ===================== -->
+<div class="page-break">
+  <div class="section-title" style="margin-top: 0;">Terms &amp; Conditions</div>
+  <table class="t">
+    <tbody>
+      <tr><td class="label-col" style="width: 28%;">Engagement Term</td>
+        <td>Month-to-month. No minimum commitment. Either party may terminate with <strong>thirty (30) days'
+        written notice</strong> (email is fine). No termination penalty.</td></tr>
+      <tr><td class="label-col">Billing</td>
+        <td>TenantIQ Pro LLC invoices NSL monthly (or quarterly, at NSL's option) for pass-through subscriptions
+        at cost. Net-15. Annual domain renewal invoiced in the month GoDaddy charges, or paid directly by NSL.
+        <strong>No service fee, no markup, no minimum charge.</strong></td></tr>
+      <tr><td class="label-col">Tenant Ownership &amp; Admin</td>
+        <td>The Microsoft 365 tenant is owned and administered by TenantIQ Pro LLC under the domain
+        <code>tenantiqpro.com</code>. NSL's mailboxes and data reside within that tenant as a verified custom
+        domain (<code>northstateliquidators.com</code>). TenantIQ Pro holds Global Administrator rights and will
+        use them only for authorized troubleshooting, license management, and requested changes. A dedicated
+        delegated-admin account (<code>admin@northstateliquidators.com</code>) can be provisioned for NSL on
+        request.</td></tr>
+      <tr><td class="label-col">Data Ownership</td>
+        <td>All mailbox contents, calendars, contacts, Shopify product data, order data, customer data, and
+        website content remain the <strong>sole property of North State Liquidators, LLC</strong>. NSL may
+        request a full export at any time in standard formats (PST for mailboxes, CSV for Shopify).</td></tr>
+      <tr><td class="label-col">Privacy</td>
+        <td>TenantIQ Pro will not read, copy, forward, or analyze NSL mailbox contents or customer data.
+        Admin access will be used only for legitimate operational tasks (license assignment, delivery
+        troubleshooting, mailbox restore). A mutual non-disclosure applies to any NSL business information
+        observed incidentally during support.</td></tr>
+      <tr><td class="label-col">Exit &amp; Migration</td>
+        <td>If NSL chooses to move to its own Microsoft 365 tenant or a different provider, TenantIQ Pro will
+        <strong>assist with migration at $0 labor</strong> (friends rate). NSL pays only destination-tenant
+        license costs and any third-party migration tooling. TenantIQ Pro will release the custom domain
+        promptly on request.</td></tr>
+      <tr><td class="label-col">Third-Party Agreements</td>
+        <td>NSL's use of Microsoft 365, Shopify, GoDaddy, and GitHub is governed by each vendor's own Terms of
+        Service. TenantIQ Pro is not a party to those agreements and is not liable for vendor outages, price
+        changes, or policy changes.</td></tr>
+      <tr><td class="label-col">Rate &amp; Scope Changes</td>
+        <td>Pass-through costs follow whatever Microsoft, Shopify, or GoDaddy charge. If a vendor raises its
+        price, the new rate is passed through with <strong>at least 30 days' written notice</strong>. Any
+        change from friends-rate ($0 labor) to paid services requires a new written agreement signed by both
+        parties before work begins.</td></tr>
+      <tr><td class="label-col">Support</td>
+        <td>Best-effort support by phone, text, or email. No SLA. Response typically same-day on business days.
+        Emergencies (total mail outage, site down) handled as a priority.</td></tr>
+      <tr><td class="label-col">Limitation of Liability</td>
+        <td>TenantIQ Pro LLC's aggregate liability under this engagement shall not exceed the total
+        pass-through fees paid in the three (3) months preceding the claim. Neither party shall be liable for
+        indirect, incidental, or consequential damages.</td></tr>
+      <tr><td class="label-col">Governing Law</td>
+        <td>North Carolina.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="section-title">Acceptance</div>
+  <p class="small" style="margin: 4px 0 8px;">
+    By signing below, North State Liquidators, LLC authorizes TenantIQ Pro LLC to proceed with the scope
+    described on pages 1–2 under the terms on this page.
+  </p>
+
+  <div style="margin: 14px 0; font-size: 10pt;">
+    <strong>Billing Preference:</strong>
+    <span style="margin: 0 20px;">☐ Monthly invoice (net-15)</span>
+    <span style="margin: 0 20px;">☐ Quarterly invoice (net-15)</span>
+    <span style="margin: 0 20px;">☐ Credit card on file</span>
+  </div>
+  <div style="margin: 6px 0 20px; font-size: 10pt;">
+    <strong>Domain Renewal:</strong>
+    <span style="margin: 0 20px;">☐ NSL pays GoDaddy directly</span>
+    <span style="margin: 0 20px;">☐ TenantIQ Pro pays and passes through</span>
+  </div>
+
+  <div class="sig-grid">
+    <div class="sig-block">
+      <div class="label">Norman Turner — Managing Member, NSL</div>
+    </div>
+    <div class="sig-block">
+      <div class="label">Signature</div>
+    </div>
+    <div class="sig-block">
+      <div class="label">Date</div>
+    </div>
+  </div>
+
+  <div class="sig-grid">
+    <div class="sig-block">
+      <div class="label">Rob TeCarr — Managing Member, NSL</div>
+    </div>
+    <div class="sig-block">
+      <div class="label">Signature</div>
+    </div>
+    <div class="sig-block">
+      <div class="label">Date</div>
+    </div>
+  </div>
+
+  <div class="sig-grid">
+    <div class="sig-block">
+      <div class="label">Jeffrey Blanchard — Founder, TenantIQ Pro LLC</div>
+    </div>
+    <div class="sig-block">
+      <div class="label">Signature</div>
+    </div>
+    <div class="sig-block">
+      <div class="label">Date</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

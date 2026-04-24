@@ -29,3 +29,6 @@ Screenshot*.png
 screenshot*.png
 Screenshot*.jpg
 screenshot*.jpg
+
+# Outbox (drafts with credentials / PII — never commit)
+outbox/

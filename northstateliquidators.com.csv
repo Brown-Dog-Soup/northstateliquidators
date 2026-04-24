@@ -1,0 +1,11 @@
+﻿MX records
+Priority,Host name,Points to address or value,TTL
+0,@,northstateliquidators-com.mail.protection.outlook.com,3600
+
+CNAME records
+Host name,Points to address or value,TTL
+autodiscover,autodiscover.outlook.com,3600
+
+TXT records
+TXT name,TXT value,TTL
+@,v=spf1 include:spf.protection.outlook.com -all,3600

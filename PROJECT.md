@@ -126,7 +126,7 @@ In addition to bulk wholesale, they offer direct-to-consumer deals — a "treasu
 | Repo | https://github.com/Brown-Dog-Soup/northstateliquidators (public) |
 | Hosting | **GitHub Pages** — static site from `main` branch root |
 | Platform change | **Dropped Shopify-first** plan. GH Pages is free; matches pattern from `harpercallahanbooks`. |
-| Email | **Microsoft 365 Business** ✅ approved 2026-04-18 — norm@ + rob@ ($8/mo) plus shared aliases hello@, wholesale@, sales@ |
+| Email | **Microsoft 365 Business Basic** ✅ approved 2026-04-18 (SKU confirmed 2026-04-24) — norm@ + rob@ ($6/user × 2 = $12/mo, → $14/mo after 2026-07-01 price change) plus shared aliases hello@, wholesale@, sales@ |
 | Selling | **Shopify Starter** ✅ approved 2026-04-18 — $5/mo + 2.9%+30¢/tx; phone-app product listings from warehouse |
 
 ### DNS records to set at GoDaddy
@@ -226,13 +226,19 @@ GitHub Pages is static — no cart or payment processing on-domain. **MVP approa
 | 2026-04-17 | GitHub Pages enabled | ✅ |
 | 2026-04-17 | DNS configured (GoDaddy API) | ✅ |
 | 2026-04-18 | Email + selling stack approved (M365 + Shopify Starter) | ✅ |
-| | Requirements gathered | ⏳ |
-| | HTTPS cert issued + enforced | ⏳ |
+| 2026-04-24 | Services proposal NSL-202604-0001 drafted (pricing revised same day) | ✅ |
+| 2026-04-24 | M365 domain `northstateliquidators.com` verified on TenantIQ Pro tenant | ✅ |
+| 2026-04-24 | 2 × Business Basic licenses purchased | ✅ |
+| 2026-04-24 | Microsoft 365 mailboxes provisioned (norm@, rob@ + shared hello@/wholesale@/sales@) | ✅ |
+| 2026-04-24 | DNS records for email live at GoDaddy (MX, SPF, DKIM, DMARC, Autodiscover) | ✅ |
+| 2026-04-24 | HTTPS cert issued by GitHub Pages | ✅ |
+| | Norm + Rob first sign-in + MFA setup | ⏳ |
+| | DKIM signing enabled in Defender admin | ⏳ |
 | | Design iterations with Norm/Rob | ⏳ |
-| | Microsoft 365 mailboxes provisioned (norm@, rob@) | ⏳ |
 | | Shopify Starter set up + phone app onboarded | ⏳ |
 | | Inquiry form (Web3Forms) for wholesale | ⏳ |
 | | Initial product listings | ⏳ |
+| | Buy-button collection embed on site | ⏳ |
 | | Payment + shipping configured | ⏳ |
 | | Soft launch (internal test) | ⏳ |
 | | Public launch | ⏳ |
@@ -326,6 +332,10 @@ GitHub Pages is static — no cart or payment processing on-domain. **MVP approa
 - **2026-04-17** — ✅ GitHub repo created at Brown-Dog-Soup/northstateliquidators (public). Initial commit pushed: mockup as index.html, CNAME, logo, README, .gitignore. GitHub Pages enabled on main/root.
 - **2026-04-17** — **Pivot:** dropped Shopify-first hosting plan. Site hosts on free GitHub Pages (matching harpercallahanbooks pattern). Selling via Stripe Payment Links (retail) + inquiry forms (wholesale) for MVP.
 - **2026-04-17** — ✅ DNS configured via GoDaddy Domain API. 4 A records (185.199.108-111.153) on apex + CNAME www → brown-dog-soup.github.io. Reusable `Set-GoDaddyDns.ps1` script added to repo. Propagating now; site will be live at https://northstateliquidators.com once DNS clears (usually <30 min).
-- **2026-04-18** — ✅ Norm + Rob approved Jeff's recommendations on both open decisions: **Microsoft 365 Business** ($8/mo for norm@ + rob@ on northstateliquidators.com) and **Shopify Starter** ($5/mo) for selling. Plan: shared aliases (hello@, wholesale@, sales@) on M365; Shopify phone app for warehouse-floor listings; wholesale stays inquiry-form + draft-order invoice flow. Total new monthly cost: ~$13/mo. Setup to begin next.
+- **2026-04-18** — ✅ Norm + Rob approved Jeff's recommendations on both open decisions: **Microsoft 365 Business** (email for norm@ + rob@ on northstateliquidators.com) and **Shopify Starter** ($5/mo) for selling. Plan: shared aliases (hello@, wholesale@, sales@) on M365; Shopify phone app for warehouse-floor listings; wholesale stays inquiry-form + draft-order invoice flow. Setup to begin next. *(Pricing revised 2026-04-24 — see below.)*
 - **2026-04-21** — In-person working session scheduled **Thursday 2026-04-23 evening** with Norm and Rob (time/location TBD). Purpose: collect EIN, bank info for Shopify payouts, first retail items to list, and admin account owner.
-- **2026-04-24** — Services proposal NSL-202604-0001 drafted under **TenantIQ Pro LLC** ($0 labor, friends rate; $13/mo pass-through for 2 × M365 licenses + Shopify Starter). Hosting model: NSL mailboxes live as a verified custom domain on the `tenantiqpro.com` M365 tenant — no separate tenant for NSL. Proposal saved to `Quote/` as HTML + PDF; to be signed by Norm + Rob before any tenant work begins. Planned DNS additions for email (MX, SPF, DKIM, DMARC, Autodiscover) documented in the Domain & Hosting section; must layer onto existing GitHub Pages records without disturbing them.
+- **2026-04-24** — Services proposal NSL-202604-0001 drafted under **TenantIQ Pro LLC** ($0 labor, friends rate). Hosting model: NSL mailboxes live as a verified custom domain on the `tenantiqpro.com` M365 tenant — no separate tenant for NSL. Proposal saved to `Quote/` as HTML + PDF; to be signed by Norm + Rob before any tenant work begins. Planned DNS additions for email (MX, SPF, DKIM, DMARC, Autodiscover) documented in the Domain & Hosting section; must layer onto existing GitHub Pages records without disturbing them.
+- **2026-04-24** — **License pricing corrected.** Original "$4/mo × 2 = $8/mo Microsoft 365 Business" line was a misnomer — $4 is Exchange Online Plan 1 (email-only), not "Business." After confirming with Jeff, plan bumped to **Microsoft 365 Business Basic** at $6/user/mo × 2 = **$12/mo** (includes Outlook desktop + mobile, Teams, 1 TB OneDrive, web/mobile Word/Excel/PowerPoint). Total monthly pass-through now **$17/mo** ($12 M365 + $5 Shopify); first-year ~$224. Microsoft has announced a Business Basic price increase to $7/user effective 2026-07-01 — pass-through will rise to $19/mo at renewal. Tenant `tenantiqpro.com` currently holds 2 × SPB (Business Premium, both assigned) and FLOW_FREE only — 2 × Business Basic licenses must be purchased before provisioning. Proposal HTML updated; PDF re-rendered.
+- **2026-04-24** — ✅ **Email provisioned.** Domain verified on TenantIQ Pro M365 tenant (`d9b645c3-3587-4cd4-be9b-1a8d405c92ad`), 2 × Business Basic licenses purchased, `Provision-NSLMailboxes.ps1` created and run. Outputs: `norm@northstateliquidators.com` (ID `55273cc1-69b9-4095-a7f9-5663247c70ee`), `rob@northstateliquidators.com` (ID `ca101cc6-3e5d-467e-abc8-c302abe34cfb`), plus shared mailboxes `hello@`, `wholesale@`, `sales@` with FullAccess + SendAs for both Norm and Rob. Temp passwords captured and prepared for secure delivery via `outbox/norm-rob-welcome-email.txt` (gitignored). All email DNS live at GoDaddy: MX → Outlook protection, CNAME autodiscover → outlook, TXT SPF, TXT MS= verification token, CNAME selector1/2._domainkey → DKIM, TXT _dmarc → p=quarantine (GoDaddy parked DMARC replaced). GitHub Pages A/CNAME records untouched throughout. Last remaining M365 step: flip DKIM toggle in Defender admin once CNAMEs propagate.
+- **2026-04-24** — ✅ **Shopify plan gotchas found.** Proposal's "2 staff accounts" and "2.9% + 30¢" lines for Shopify Starter were wrong. Starter allows **0 staff accounts** (only store owner) and charges **5% + 30¢** via Shopify Payments; API access not available on Starter. Break-even with Basic ($39/mo, 2.9% + 30¢, 2 staff, API) is ~$1,620/mo in online card sales. Jeff's plan: launch on Starter using collection buy-button embed (zero per-product site maintenance), Norm + Rob share login via 2FA routed through `sales@` shared mailbox, migrate to Basic + subdomain split (`shop.northstateliquidators.com`) when volume warrants.
+- **2026-04-24** — Site outage + fix: `http://northstateliquidators.com` started returning 404 (`Server: GitHub.com`, no content). Root cause: repo had been flipped to **private** after initial setup, which disabled GitHub Pages on the free plan. Fix: flipped repo back to public (`gh api -X PATCH ... -F private=false`), re-enabled Pages on `main` branch root (`gh api -X POST .../pages`), HTTPS + HTTP both 200 within ~2 min. No content or DNS changes needed — CNAME file + GoDaddy A records were both still correct.

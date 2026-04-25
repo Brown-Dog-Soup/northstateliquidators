@@ -232,14 +232,17 @@ GitHub Pages is static — no cart or payment processing on-domain. **MVP approa
 | 2026-04-24 | Microsoft 365 mailboxes provisioned (norm@, rob@ + shared hello@/wholesale@/sales@) | ✅ |
 | 2026-04-24 | DNS records for email live at GoDaddy (MX, SPF, DKIM, DMARC, Autodiscover) | ✅ |
 | 2026-04-24 | HTTPS cert issued by GitHub Pages | ✅ |
+| 2026-04-25 | Shopify Partner org + dev store created (`north-state-liquidators-dev`) | ✅ |
+| 2026-04-25 | Shopify Admin API access via CLI (`shopify app dev` GraphiQL proxy) | ✅ |
+| 2026-04-25 | API-driven product sync to GitHub Pages site (`Sync-NSLFeatured.ps1`) | ✅ |
+| 2026-04-25 | Phone workflow doc for Norm + Rob (`SHOPIFY-PHONE-WORKFLOW.md`) | ✅ |
 | | Norm + Rob first sign-in + MFA setup | ⏳ |
 | | DKIM signing enabled in Defender admin | ⏳ |
+| | Norm + Rob trial-list 5–10 real products from warehouse | ⏳ |
 | | Design iterations with Norm/Rob | ⏳ |
-| | Shopify Starter set up + phone app onboarded | ⏳ |
 | | Inquiry form (Web3Forms) for wholesale | ⏳ |
-| | Initial product listings | ⏳ |
-| | Buy-button collection embed on site | ⏳ |
-| | Payment + shipping configured | ⏳ |
+| | Transfer dev store → real merchant store (Starter or Basic) | ⏳ |
+| | Payment + shipping configured (post-transfer) | ⏳ |
 | | Soft launch (internal test) | ⏳ |
 | | Public launch | ⏳ |
 
@@ -285,6 +288,28 @@ GitHub Pages is static — no cart or payment processing on-domain. **MVP approa
 | `Quote/NSL_Services_Proposal.html` | Services proposal NSL-202604-0001 (email + Shopify + hosting, $0 labor friends-rate) |
 | `Quote/NSL_Services_Proposal.pdf` | Rendered PDF of the proposal |
 | `Quote/render-proposal.js` | Playwright HTML→PDF renderer (same pattern as IHG quote) |
+| `Provision-NSLMailboxes.ps1` | Idempotent script to provision Norm/Rob + shared mailboxes on TenantIQ Pro tenant (tenant-guarded) |
+| `Sync-NSLFeatured.ps1` | Pull Featured collection from Shopify, regenerate hunt-grid in `index.html` |
+| `SHOPIFY-PHONE-WORKFLOW.md` | One-page guide for Norm/Rob: list a product from the warehouse floor in 90 seconds |
+| `shopify-cli/shopify.app.toml` | Shopify CLI app config (NSL-Dev app, client_id only, secret in OS keychain) |
+
+## Resuming the Shopify API session
+
+The `Sync-NSLFeatured.ps1` script depends on a localhost GraphQL proxy that only exists while `shopify app dev` is running. Each run gets a fresh URL with a new session key. To resume:
+
+```powershell
+cd northstateliquidators\shopify-cli
+shopify app dev --reset    # OAuth into north-state-liquidators-dev
+# Look for "GraphiQL URL: http://localhost:3457/graphiql?key=..." in the CLI output
+# Convert that URL by inserting "/graphql.json" before the "?key=" — the actual API endpoint is:
+#   http://localhost:3457/graphiql/graphql.json?key=<key>
+# Save that into ../.shopify-graphiql-url.txt (the sync script reads it from there)
+cd ..
+.\Sync-NSLFeatured.ps1                        # re-syncs with whatever's in the cache
+.\Sync-NSLFeatured.ps1 -CommitAndPush         # one-shot: sync + git commit + push
+```
+
+When you're done, Ctrl+C in the `shopify app dev` terminal. The endpoint dies; cached URL becomes stale until next session.
 
 ---
 
@@ -339,3 +364,4 @@ GitHub Pages is static — no cart or payment processing on-domain. **MVP approa
 - **2026-04-24** — ✅ **Email provisioned.** Domain verified on TenantIQ Pro M365 tenant (`d9b645c3-3587-4cd4-be9b-1a8d405c92ad`), 2 × Business Basic licenses purchased, `Provision-NSLMailboxes.ps1` created and run. Outputs: `norm@northstateliquidators.com` (ID `55273cc1-69b9-4095-a7f9-5663247c70ee`), `rob@northstateliquidators.com` (ID `ca101cc6-3e5d-467e-abc8-c302abe34cfb`), plus shared mailboxes `hello@`, `wholesale@`, `sales@` with FullAccess + SendAs for both Norm and Rob. Temp passwords captured and prepared for secure delivery via `outbox/norm-rob-welcome-email.txt` (gitignored). All email DNS live at GoDaddy: MX → Outlook protection, CNAME autodiscover → outlook, TXT SPF, TXT MS= verification token, CNAME selector1/2._domainkey → DKIM, TXT _dmarc → p=quarantine (GoDaddy parked DMARC replaced). GitHub Pages A/CNAME records untouched throughout. Last remaining M365 step: flip DKIM toggle in Defender admin once CNAMEs propagate.
 - **2026-04-24** — ✅ **Shopify plan gotchas found.** Proposal's "2 staff accounts" and "2.9% + 30¢" lines for Shopify Starter were wrong. Starter allows **0 staff accounts** (only store owner) and charges **5% + 30¢** via Shopify Payments; API access not available on Starter. Break-even with Basic ($39/mo, 2.9% + 30¢, 2 staff, API) is ~$1,620/mo in online card sales. Jeff's plan: launch on Starter using collection buy-button embed (zero per-product site maintenance), Norm + Rob share login via 2FA routed through `sales@` shared mailbox, migrate to Basic + subdomain split (`shop.northstateliquidators.com`) when volume warrants.
 - **2026-04-24** — Site outage + fix: `http://northstateliquidators.com` started returning 404 (`Server: GitHub.com`, no content). Root cause: repo had been flipped to **private** after initial setup, which disabled GitHub Pages on the free plan. Fix: flipped repo back to public (`gh api -X PATCH ... -F private=false`), re-enabled Pages on `main` branch root (`gh api -X POST .../pages`), HTTPS + HTTP both 200 within ~2 min. No content or DNS changes needed — CNAME file + GoDaddy A records were both still correct.
+- **2026-04-25** — ✅ **Shopify dev store + API POC live.** Created Partner org "North State Liquidators" (id `215502584`) and dev store `north-state-liquidators-dev.myshopify.com` (norm@northstateliquidators.com is admin). Shopify deprecated legacy in-store custom-app creation on 2026-01-01 — modern path is **Dev Dashboard + Shopify CLI**. Walked through several false starts (public app + leaked `shpss_…` secret, partner-org install with example.com OAuth callback, etc.) before landing on the canonical 2026 flow: `npm install -g @shopify/cli` → `shopify app config link` → `shopify app deploy` → `shopify app dev` opens a local GraphiQL proxy at `localhost:3457` that auto-injects the admin session for any GraphQL query. No `shpat_…` token is exposed — Shopify CLI keeps it in the OS keychain. Built `Sync-NSLFeatured.ps1` that pulls the Featured collection through that proxy and rewrites the hunt-grid block in `index.html` between marker comments, so warehouse-floor listings flow onto northstateliquidators.com on demand. Wrote `SHOPIFY-PHONE-WORKFLOW.md` for Norm + Rob covering app install, listing loop, and the `featured` tag convention. POC live on prod URL: 3 sample products (Bella Canvas TShirt, KitchenAid Mixer, Yeti Cooler) all click-through to dev-store product pages. Dev store stays password-gated until transfer to a real merchant account; that transfer is the next gating step before money can actually flow.

@@ -1,0 +1,24 @@
+<section class="block">
+  <div class="eyebrow">{{ blog.title }}</div>
+  <h1 style="font-size: clamp(40px, 5vw, 64px); margin-bottom: 32px;">{{ blog.title }}</h1>
+
+  {%- paginate blog.articles by 12 -%}
+    {%- for article in blog.articles -%}
+      <article style="border-bottom: 1px solid var(--rule); padding: 24px 0;">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #777;">
+          {{ article.published_at | date: "%b %d, %Y" }}
+        </div>
+        <h2 style="font-size: 28px; margin: 8px 0;"><a href="{{ article.url }}" style="text-decoration: none; color: var(--ink);">{{ article.title }}</a></h2>
+        <p style="color: #555;">{{ article.excerpt_or_content | strip_html | truncate: 200 }}</p>
+        <a href="{{ article.url }}" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--nc-red); font-weight: 700;">Read more →</a>
+      </article>
+    {%- endfor -%}
+
+    {%- if paginate.pages > 1 -%}
+      <nav style="margin-top: 32px; text-align: center;">
+        {%- if paginate.previous -%}<a href="{{ paginate.previous.url }}">← Previous</a>{%- endif -%}
+        {%- if paginate.next -%}<a href="{{ paginate.next.url }}" style="margin-left: 16px;">Next →</a>{%- endif -%}
+      </nav>
+    {%- endif -%}
+  {%- endpaginate -%}
+</section>

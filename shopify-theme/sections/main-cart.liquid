@@ -1,0 +1,65 @@
+{% schema %}
+{
+  "name": "Cart",
+  "settings": [],
+  "presets": []
+}
+{% endschema %}
+
+<section class="cart-page">
+  <h1>{{ 'cart.general.title' | t }}</h1>
+
+  {%- if cart.item_count == 0 -%}
+    <div class="cart-empty">
+      <p>{{ 'cart.general.empty' | t }}</p>
+      <a class="btn btn-primary" href="{{ routes.collections_url }}">{{ 'cart.general.continue_shopping' | t }}</a>
+    </div>
+  {%- else -%}
+    <form action="{{ routes.cart_url }}" method="post" novalidate>
+      <table class="cart-table">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Price</th>
+            <th>Qty</th>
+            <th>Total</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {%- for item in cart.items -%}
+            <tr>
+              <td>
+                <div class="item">
+                  {%- if item.image -%}
+                    <a href="{{ item.url }}"><img src="{{ item.image | image_url: width: 160 }}" alt="{{ item.title | escape }}" width="80" height="80"></a>
+                  {%- endif -%}
+                  <div>
+                    <div class="ititle"><a href="{{ item.url }}" style="color: inherit; text-decoration: none;">{{ item.product.title }}</a></div>
+                    {%- if item.product.has_only_default_variant == false -%}
+                      <div class="ivariant">{{ item.variant.title }}</div>
+                    {%- endif -%}
+                  </div>
+                </div>
+              </td>
+              <td>{{ item.price | money }}</td>
+              <td><input type="number" name="updates[]" value="{{ item.quantity }}" min="0" data-line="{{ forloop.index }}"></td>
+              <td>{{ item.line_price | money }}</td>
+              <td><a href="{{ item.url_to_remove }}" class="remove">{{ 'cart.general.remove' | t }}</a></td>
+            </tr>
+          {%- endfor -%}
+        </tbody>
+      </table>
+
+      <div class="cart-summary">
+        <div class="shipping-note">{{ 'cart.general.shipping_at_checkout' | t }}</div>
+        <div class="subtotal">
+          <small>{{ 'cart.general.subtotal' | t }}</small>
+          {{ cart.total_price | money }}
+        </div>
+        <button type="submit" name="update" class="btn btn-ghost" style="background:#fff;">Update</button>
+        <button type="submit" name="checkout" class="btn btn-primary">{{ 'cart.general.checkout' | t }}</button>
+      </div>
+    </form>
+  {%- endif -%}
+</section>

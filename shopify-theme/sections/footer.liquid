@@ -1,0 +1,44 @@
+{% schema %}
+{
+  "name": "Footer",
+  "settings": [],
+  "blocks": [
+    { "type": "menu", "name": "Menu column", "settings": [
+      { "type": "text", "id": "title", "label": "Title", "default": "Pages" },
+      { "type": "richtext", "id": "links", "label": "Links (one <a> per line)", "default": "<p><a href='/collections/featured'>Featured</a></p><p><a href='/pages/visit'>Visit the warehouse</a></p>" }
+    ]}
+  ],
+  "presets": [{
+    "name": "Footer",
+    "blocks": [
+      { "type": "menu", "settings": { "title": "Shop",   "links": "<p><a href='/collections/featured'>Featured</a></p><p><a href='/collections/wholesale'>Pallets</a></p><p><a href='/collections/all'>All inventory</a></p>" }},
+      { "type": "menu", "settings": { "title": "Visit",  "links": "<p><a href='/pages/visit'>Warehouse hours</a></p><p><a href='/pages/contact'>Contact</a></p>" }},
+      { "type": "menu", "settings": { "title": "Legal",  "links": "<p><a href='/policies/privacy-policy'>Privacy</a></p><p><a href='/policies/refund-policy'>Returns</a></p><p><a href='/policies/terms-of-service'>Terms</a></p>" }}
+    ]
+  }],
+  "enabled_on": { "groups": ["footer"] }
+}
+{% endschema %}
+
+<footer class="fine" role="contentinfo">
+  <div class="inner">
+    <div>
+      <h4>{{ shop.name }}</h4>
+      <div class="addr">
+        {{ settings.address_line }}<br>
+        {{ settings.city }}<br>
+        <a href="tel:{{ settings.phone | replace: ' ', '' | replace: '(', '' | replace: ')', '' | replace: '-', '' }}">{{ settings.phone }}</a>
+      </div>
+    </div>
+    {%- for block in section.blocks -%}
+      <div {{ block.shopify_attributes }}>
+        <h4>{{ block.settings.title }}</h4>
+        {{ block.settings.links }}
+      </div>
+    {%- endfor -%}
+  </div>
+  <div class="copyright">
+    <span>© {{ "now" | date: "%Y" }} {{ shop.name }}, LLC</span>
+    <span>BUILT IN NORTH CAROLINA</span>
+  </div>
+</footer>

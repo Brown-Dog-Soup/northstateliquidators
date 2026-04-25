@@ -1,0 +1,41 @@
+{% schema %}
+{
+  "name": "Featured grid",
+  "settings": [
+    { "type": "text", "id": "eyebrow", "label": "Eyebrow", "default": "B2C · Retail Floor" },
+    { "type": "text", "id": "title", "label": "Title", "default": "This week's hunt." },
+    { "type": "textarea", "id": "subhead", "label": "Subhead", "default": "Single-item finds from the retail floor. Pulled from pallets, tested where we can, priced to move." },
+    { "type": "collection", "id": "collection", "label": "Source collection" },
+    { "type": "range", "id": "limit", "label": "Max items", "min": 4, "max": 16, "step": 4, "default": 8 },
+    { "type": "text", "id": "updated_text", "label": "Updated label", "default": "↻ RESTOCKED MON & THU" }
+  ],
+  "presets": [{ "name": "Featured grid" }]
+}
+{% endschema %}
+
+<section class="block">
+  <div class="hdr-row">
+    <div>
+      <div class="eyebrow">{{ section.settings.eyebrow }}</div>
+      <h2>{{ section.settings.title }}</h2>
+      <p class="subhead">{{ section.settings.subhead }}</p>
+    </div>
+    {%- if section.settings.updated_text != blank -%}
+      <div class="updated">{{ section.settings.updated_text }}</div>
+    {%- endif -%}
+  </div>
+
+  <div class="hunt-grid">
+    {%- assign collection_obj = collections[section.settings.collection] -%}
+    {%- if collection_obj == blank or collection_obj.products.size == 0 -%}
+      {%- assign collection_obj = collections.featured -%}
+    {%- endif -%}
+    {%- if collection_obj.products.size == 0 -%}
+      <p class="subhead" style="grid-column: 1 / -1;">No featured products yet. Add some in Shopify and tag them <code>featured</code>.</p>
+    {%- else -%}
+      {%- for product in collection_obj.products limit: section.settings.limit -%}
+        {%- render 'product-card', product: product -%}
+      {%- endfor -%}
+    {%- endif -%}
+  </div>
+</section>

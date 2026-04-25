@@ -1,0 +1,47 @@
+{
+  "general": {
+    "404": {
+      "title": "Page not found",
+      "subtext": "The page you're looking for doesn't exist.",
+      "link": "Back to the warehouse →"
+    },
+    "password": {
+      "login_form_heading": "Almost open",
+      "login_form_password_label": "Password",
+      "login_form_password_placeholder": "Your password",
+      "login_form_submit": "Enter",
+      "login_form_error": "Wrong password — try again."
+    },
+    "search": {
+      "title": "Search results",
+      "no_results": "No products found. Try a different search."
+    }
+  },
+  "products": {
+    "product": {
+      "add_to_cart": "Add to cart",
+      "sold_out": "Sold out",
+      "unavailable": "Unavailable",
+      "quantity": "Quantity",
+      "vendor": "Sold by",
+      "compare_at_html": "Was {{ price }} MSRP"
+    }
+  },
+  "cart": {
+    "general": {
+      "title": "Your cart",
+      "empty": "Cart's empty.",
+      "continue_shopping": "Keep shopping",
+      "subtotal": "Subtotal",
+      "checkout": "Check out",
+      "remove": "Remove",
+      "shipping_at_checkout": "Shipping & taxes calculated at checkout."
+    }
+  },
+  "blogs": { "article": { "comments_count": "{{ count }} comments" } },
+  "collections": {
+    "general": {
+      "no_matches": "No products match these filters."
+    }
+  }
+}

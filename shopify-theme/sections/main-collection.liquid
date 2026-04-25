@@ -1,0 +1,56 @@
+{% schema %}
+{
+  "name": "Collection",
+  "settings": [
+    { "type": "range", "id": "per_page", "label": "Products per page", "min": 8, "max": 48, "step": 4, "default": 24 }
+  ],
+  "presets": []
+}
+{% endschema %}
+
+<header class="collection-header">
+  <div class="inner">
+    <div class="eyebrow">
+      {%- if collection.handle == 'wholesale' -%}B2B · Pallets
+      {%- elsif collection.handle == 'featured' -%}B2C · Retail Floor
+      {%- else -%}Inventory
+      {%- endif -%}
+    </div>
+    <h1>{{ collection.title }}</h1>
+    {%- if collection.description != blank -%}
+      <p class="description">{{ collection.description }}</p>
+    {%- endif -%}
+  </div>
+</header>
+
+<section class="block">
+  {%- paginate collection.products by section.settings.per_page -%}
+    {%- if collection.products.size == 0 -%}
+      <p class="subhead">{{ 'collections.general.no_matches' | t }}</p>
+    {%- else -%}
+      <div class="hunt-grid">
+        {%- for product in collection.products -%}
+          {%- render 'product-card', product: product -%}
+        {%- endfor -%}
+      </div>
+
+      {%- if paginate.pages > 1 -%}
+        <nav style="margin-top: 32px; display: flex; justify-content: center; gap: 12px; font-family: 'JetBrains Mono', monospace; font-size: 13px;">
+          {%- if paginate.previous -%}
+            <a href="{{ paginate.previous.url }}">← Previous</a>
+          {%- endif -%}
+          {%- for part in paginate.parts -%}
+            {%- if part.is_link -%}
+              <a href="{{ part.url }}">{{ part.title }}</a>
+            {%- else -%}
+              <strong>{{ part.title }}</strong>
+            {%- endif -%}
+          {%- endfor -%}
+          {%- if paginate.next -%}
+            <a href="{{ paginate.next.url }}">Next →</a>
+          {%- endif -%}
+        </nav>
+      {%- endif -%}
+    {%- endif -%}
+  {%- endpaginate -%}
+</section>

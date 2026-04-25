@@ -1,0 +1,15 @@
+{% schema %}
+{
+  "name": "Page content",
+  "settings": [],
+  "presets": []
+}
+{% endschema %}
+
+<section class="block" style="max-width: 800px;">
+  <div class="eyebrow">{{ shop.name }}</div>
+  <h1 style="font-size: clamp(40px, 5vw, 72px); margin-bottom: 24px;">{{ page.title }}</h1>
+  <div class="page-content" style="font-size: 17px; line-height: 1.7;">
+    {{ page.content }}
+  </div>
+</section>

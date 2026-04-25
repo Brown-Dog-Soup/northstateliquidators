@@ -1,0 +1,25 @@
+<section class="block">
+  <div class="eyebrow">Search</div>
+  <h1 style="font-size: clamp(40px, 5vw, 64px); margin-bottom: 16px;">{{ 'general.search.title' | t }}</h1>
+
+  <form action="{{ routes.search_url }}" method="get" class="search-form" role="search">
+    <input type="search" name="q" value="{{ search.terms | escape }}" placeholder="What are you hunting for?" autofocus>
+    <button type="submit" class="btn btn-primary">Search</button>
+  </form>
+
+  {%- if search.performed -%}
+    <p class="subhead" style="margin-top: 16px;">{{ search.results_count }} result{% if search.results_count != 1 %}s{% endif %} for "{{ search.terms | escape }}"</p>
+
+    {%- if search.results_count == 0 -%}
+      <p>{{ 'general.search.no_results' | t }}</p>
+    {%- else -%}
+      <div class="hunt-grid" style="margin-top: 32px;">
+        {%- for item in search.results -%}
+          {%- if item.object_type == 'product' -%}
+            {%- render 'product-card', product: item -%}
+          {%- endif -%}
+        {%- endfor -%}
+      </div>
+    {%- endif -%}
+  {%- endif -%}
+</section>

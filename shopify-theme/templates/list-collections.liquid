@@ -1,0 +1,20 @@
+<section class="block">
+  <div class="eyebrow">Collections</div>
+  <h1 style="font-size: clamp(40px, 5vw, 64px); margin-bottom: 32px;">All inventory categories</h1>
+
+  <div class="hunt-grid">
+    {%- for collection in collections -%}
+      <a href="{{ collection.url }}" class="hunt-card" style="display:block;">
+        <div class="photo"
+             {% if collection.featured_image %}
+               style="background-image: url('{{ collection.featured_image | image_url: width: 800 }}');"
+             {% endif %}>
+        </div>
+        <div class="meta">
+          <h3>{{ collection.title }}</h3>
+          <div class="note">{{ collection.products_count }} item{% if collection.products_count != 1 %}s{% endif %}</div>
+        </div>
+      </a>
+    {%- endfor -%}
+  </div>
+</section>

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="{{ request.locale.iso_code }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="{{ settings.color_paper }}">
+  <link rel="canonical" href="{{ canonical_url }}">
+
+  {%- if settings.logo -%}
+    <link rel="icon" type="image/png" href="{{ settings.logo | image_url: width: 32 }}">
+  {%- endif -%}
+
+  <title>
+    {{ page_title }}{% if current_tags %} &ndash; tagged "{{ current_tags | join: ', ' }}"{% endif %}{% if current_page != 1 %} &ndash; Page {{ current_page }}{% endif %}{% unless page_title contains shop.name %} &ndash; {{ shop.name }}{% endunless %}
+  </title>
+
+  {% if page_description %}<meta name="description" content="{{ page_description | escape }}">{% endif %}
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Permanent+Marker&display=swap" rel="stylesheet">
+
+  {{ content_for_header }}
+
+  <style>
+    :root {
+      --nc-red: {{ settings.color_red }};
+      --nc-red-dark: {{ settings.color_red_dark }};
+      --warehouse-yellow: {{ settings.color_yellow }};
+      --pallet-orange: {{ settings.color_orange }};
+      --nc-navy: {{ settings.color_navy }};
+      --paper: {{ settings.color_paper }};
+      --ink: {{ settings.color_ink }};
+      --concrete: {{ settings.color_concrete }};
+      --rule: #D7CFBF;
+      --gray-green: #8B9B8B;
+    }
+  </style>
+
+  {{ 'base.css' | asset_url | stylesheet_tag }}
+</head>
+<body class="template-{{ template.name }}">
+  <a href="#MainContent" class="skip-link">Skip to content</a>
+
+  {% sections 'header-group' %}
+
+  <main id="MainContent" role="main">
+    {{ content_for_layout }}
+  </main>
+
+  {% sections 'footer-group' %}
+
+  <script src="{{ 'theme.js' | asset_url }}" defer></script>
+</body>
+</html>

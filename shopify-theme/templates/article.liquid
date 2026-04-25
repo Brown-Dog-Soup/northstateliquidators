@@ -1,0 +1,8 @@
+<article class="block" style="max-width: 800px;">
+  <div class="eyebrow">{{ blog.title }} · {{ article.published_at | date: "%b %d, %Y" }}</div>
+  <h1 style="font-size: clamp(40px, 5vw, 64px); margin: 12px 0 24px;">{{ article.title }}</h1>
+  {%- if article.excerpt != blank -%}
+    <p style="font-size: 18px; color: #555; margin-bottom: 32px; padding-bottom: 24px; border-bottom: 1px solid var(--rule);">{{ article.excerpt }}</p>
+  {%- endif -%}
+  <div style="font-size: 17px; line-height: 1.7;">{{ article.content }}</div>
+</article>

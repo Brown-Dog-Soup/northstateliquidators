@@ -1,0 +1,26 @@
+{% schema %}
+{
+  "name": "Announcement bar",
+  "settings": [
+    { "type": "text", "id": "open_text", "label": "Open status", "default": "WAREHOUSE OPEN" },
+    { "type": "text", "id": "hours_text", "label": "Hours", "default": "MON–SAT · 9–6" },
+    { "type": "text", "id": "city_text", "label": "City", "default": "RALEIGH, NC" },
+    { "type": "text", "id": "tagline", "label": "Right-side tagline", "default": "EST. 2024 · DIRECT FROM AMAZON & BIG-BOX RETURNS" }
+  ],
+  "presets": [{ "name": "Announcement bar" }],
+  "enabled_on": { "groups": ["header"] }
+}
+{% endschema %}
+
+<div class="topbar">
+  <div class="inner">
+    <span><span class="open-dot"></span><strong>{{ section.settings.open_text }}</strong></span>
+    <span class="sep">|</span>
+    <span>{{ section.settings.hours_text }}</span>
+    <span class="sep">|</span>
+    <span>{{ section.settings.city_text }}</span>
+    <span class="sep">|</span>
+    <a href="tel:{{ settings.phone | replace: ' ', '' | replace: '(', '' | replace: ')', '' | replace: '-', '' }}" class="phone">{{ settings.phone }}</a>
+    <span style="margin-left: auto;" class="sep">{{ section.settings.tagline }}</span>
+  </div>
+</div>

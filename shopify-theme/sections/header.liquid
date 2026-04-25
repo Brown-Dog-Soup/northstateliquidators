@@ -1,0 +1,51 @@
+{% schema %}
+{
+  "name": "Header",
+  "settings": [
+    { "type": "checkbox", "id": "show_cart_count", "label": "Show cart count badge", "default": true }
+  ],
+  "blocks": [
+    { "type": "link", "name": "Nav link", "settings": [
+      { "type": "text", "id": "label", "label": "Label" },
+      { "type": "url", "id": "url", "label": "URL" }
+    ]}
+  ],
+  "presets": [{
+    "name": "Header",
+    "blocks": [
+      { "type": "link", "settings": { "label": "Pallets",  "url": "/collections/wholesale" }},
+      { "type": "link", "settings": { "label": "Retail",   "url": "/collections/featured" }},
+      { "type": "link", "settings": { "label": "Owners",   "url": "/pages/owners" }},
+      { "type": "link", "settings": { "label": "How it works", "url": "/pages/how-it-works" }},
+      { "type": "link", "settings": { "label": "Visit",    "url": "/pages/visit" }}
+    ]
+  }],
+  "enabled_on": { "groups": ["header"] }
+}
+{% endschema %}
+
+<header class="nav" role="banner">
+  <div class="inner">
+    <a href="{{ routes.root_url }}" aria-label="{{ shop.name }} home">
+      {%- if settings.logo -%}
+        <img src="{{ settings.logo | image_url: width: 200 }}" alt="{{ shop.name }}" width="200">
+      {%- else -%}
+        <img src="{{ 'logo.jpeg' | asset_url }}" alt="{{ shop.name }}" style="height: 72px; width: auto;">
+      {%- endif -%}
+    </a>
+    <nav aria-label="Primary">
+      {%- for block in section.blocks -%}
+        <a href="{{ block.settings.url }}" {{ block.shopify_attributes }}>{{ block.settings.label }}</a>
+      {%- endfor -%}
+    </nav>
+    <div class="actions">
+      <a href="tel:{{ settings.phone | replace: ' ', '' | replace: '(', '' | replace: ')', '' | replace: '-', '' }}" class="btn btn-ghost" style="padding: 10px 16px; font-size: 14px;">Call us</a>
+      <a href="{{ routes.cart_url }}" class="cart-icon" aria-label="Cart">
+        Cart
+        {%- if section.settings.show_cart_count -%}
+          <span class="count" id="cart-count">{{ cart.item_count }}</span>
+        {%- endif -%}
+      </a>
+    </div>
+  </div>
+</header>

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="{{ request.locale.iso_code }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Gift card · {{ shop.name }}</title>
+  {{ 'base.css' | asset_url | stylesheet_tag }}
+</head>
+<body>
+  <section class="block" style="max-width: 600px; text-align: center;">
+    <div class="eyebrow">{{ shop.name | upcase }}</div>
+    <h1 style="font-size: 48px; margin: 16px 0 24px;">Gift card</h1>
+    <p style="font-size: 18px; color: #555; margin-bottom: 24px;">Worth {{ gift_card.initial_value | money }}.</p>
+    <div style="background: var(--ink); color: var(--warehouse-yellow); padding: 24px; font-family: 'JetBrains Mono', monospace; font-size: 18px; letter-spacing: 0.1em;">
+      {{ gift_card.code | format_code }}
+    </div>
+    <p style="margin-top: 24px; font-size: 14px; color: #555;">Apply this at checkout.</p>
+  </section>
+</body>
+</html>

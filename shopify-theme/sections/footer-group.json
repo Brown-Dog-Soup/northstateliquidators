@@ -1,0 +1,16 @@
+{
+  "type": "footer",
+  "name": "Footer",
+  "sections": {
+    "footer": {
+      "type": "footer",
+      "blocks": {
+        "menu-1": { "type": "menu", "settings": { "title": "Shop", "links": "<p><a href='/collections/featured'>Featured</a></p><p><a href='/collections/wholesale'>Pallets</a></p><p><a href='/collections/all'>All inventory</a></p>" } },
+        "menu-2": { "type": "menu", "settings": { "title": "Visit", "links": "<p><a href='/pages/visit'>Warehouse hours</a></p><p><a href='/pages/contact'>Contact</a></p>" } },
+        "menu-3": { "type": "menu", "settings": { "title": "Legal", "links": "<p><a href='/policies/privacy-policy'>Privacy</a></p><p><a href='/policies/refund-policy'>Returns</a></p><p><a href='/policies/terms-of-service'>Terms</a></p>" } }
+      },
+      "block_order": ["menu-1", "menu-2", "menu-3"]
+    }
+  },
+  "order": ["footer"]
+}

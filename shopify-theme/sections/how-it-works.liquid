@@ -1,0 +1,41 @@
+{% schema %}
+{
+  "name": "How it works",
+  "settings": [
+    { "type": "text", "id": "eyebrow", "label": "Eyebrow", "default": "The process" },
+    { "type": "text", "id": "title", "label": "Title", "default": "How a pallet gets from Amazon to you." }
+  ],
+  "blocks": [
+    { "type": "step", "name": "Step", "settings": [
+      { "type": "text", "id": "num", "label": "Number", "default": "01" },
+      { "type": "text", "id": "title", "label": "Title", "default": "Truck Arrives" },
+      { "type": "textarea", "id": "body", "label": "Body", "default": "Loading dock fills up. We unwrap, scan, photograph, and triage." }
+    ]}
+  ],
+  "presets": [{
+    "name": "How it works",
+    "blocks": [
+      { "type": "step", "settings": { "num": "01", "title": "Truck Arrives", "body": "Loading dock fills up. We unwrap, scan, photograph, and triage every pallet that comes through." }},
+      { "type": "step", "settings": { "num": "02", "title": "We Sort & Test", "body": "Returns get tested. Shelf-pulls and overstock get inspected. Trash gets tossed before it ever hits the floor." }},
+      { "type": "step", "settings": { "num": "03", "title": "Priced to Move", "body": "Wholesale pallets get an honest manifest. Retail items get a sticker. No mystery boxes, no fake retail prices." }},
+      { "type": "step", "settings": { "num": "04", "title": "You Pick It Up", "body": "Drive in, walk through, load up. Or order online and pay shipping. We keep it simple." }}
+    ]
+  }]
+}
+{% endschema %}
+
+<section class="how">
+  <div class="inner">
+    <div class="eyebrow">{{ section.settings.eyebrow }}</div>
+    <h2>{{ section.settings.title }}</h2>
+    <div class="steps">
+      {%- for block in section.blocks -%}
+        <div class="step" {{ block.shopify_attributes }}>
+          <div class="num">{{ block.settings.num }}</div>
+          <h3>{{ block.settings.title }}</h3>
+          <p>{{ block.settings.body }}</p>
+        </div>
+      {%- endfor -%}
+    </div>
+  </div>
+</section>

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "theme_info",
+    "theme_name": "NSL Loading Dock",
+    "theme_version": "1.0.0",
+    "theme_author": "TenantIQ Pro LLC",
+    "theme_documentation_url": "https://github.com/Brown-Dog-Soup/northstateliquidators",
+    "theme_support_email": "jeffrey.blanchard@tenantiqpro.com"
+  },
+  {
+    "name": "Brand colors",
+    "settings": [
+      { "type": "color", "id": "color_red", "label": "NC Red", "default": "#CC0000" },
+      { "type": "color", "id": "color_red_dark", "label": "NC Red dark", "default": "#991F1F" },
+      { "type": "color", "id": "color_yellow", "label": "Warehouse yellow", "default": "#F9D71C" },
+      { "type": "color", "id": "color_orange", "label": "Pallet orange", "default": "#F7941D" },
+      { "type": "color", "id": "color_navy", "label": "NC Navy", "default": "#002868" },
+      { "type": "color", "id": "color_paper", "label": "Paper background", "default": "#F5F0E6" },
+      { "type": "color", "id": "color_ink", "label": "Ink (body text)", "default": "#0E1116" },
+      { "type": "color", "id": "color_concrete", "label": "Concrete (dark blocks)", "default": "#2A2D31" }
+    ]
+  },
+  {
+    "name": "Logo & contact",
+    "settings": [
+      { "type": "image_picker", "id": "logo", "label": "Logo image" },
+      { "type": "text", "id": "phone", "label": "Phone number", "default": "(919) 526-0112" },
+      { "type": "text", "id": "city", "label": "City", "default": "Raleigh, NC" },
+      { "type": "text", "id": "address_line", "label": "Street address", "default": "Warehouse · Raleigh, NC" }
+    ]
+  }
+]

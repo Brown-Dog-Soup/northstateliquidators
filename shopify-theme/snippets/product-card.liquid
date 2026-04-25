@@ -1,0 +1,39 @@
+{%- comment -%}
+  Renders a single product card in the hunt-grid style.
+  Usage: {%- render 'product-card', product: product -%}
+{%- endcomment -%}
+
+{%- assign current_variant = product.selected_or_first_available_variant -%}
+{%- assign price = current_variant.price | money_without_trailing_zeros -%}
+{%- assign compare = current_variant.compare_at_price | money_without_trailing_zeros -%}
+{%- assign sold_out_class = '' -%}
+{%- if current_variant.available == false -%}
+  {%- assign sold_out_class = ' sold-out' -%}
+{%- endif -%}
+
+<a class="hunt-card{{ sold_out_class }}" href="{{ product.url }}">
+  <div class="photo"
+       {% if product.featured_media %}
+         style="background-image: url('{{ product.featured_media | image_url: width: 800 }}');"
+       {% endif %}>
+  </div>
+  <div class="price-tag">{{ price }}</div>
+  <div class="meta">
+    {%- if product.vendor != blank -%}
+      <div class="vendor">{{ product.vendor }}</div>
+    {%- endif -%}
+    <h3>{{ product.title | escape }}</h3>
+    {%- if compare != blank and current_variant.compare_at_price > current_variant.price -%}
+      <div class="was">Was {{ compare }} MSRP</div>
+    {%- endif -%}
+    {%- if product.tags contains 'open-box' -%}
+      <div class="note">Open box. Inspected and tested.</div>
+    {%- elsif product.tags contains 'refurbished' -%}
+      <div class="note">Refurbished. Tested.</div>
+    {%- elsif current_variant.available == false -%}
+      <div class="note" style="color: var(--nc-red); font-weight: 700;">Sold out</div>
+    {%- else -%}
+      <div class="note">Inspected at our Raleigh warehouse.</div>
+    {%- endif -%}
+  </div>
+</a>

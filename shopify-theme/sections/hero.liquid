@@ -1,0 +1,42 @@
+{% schema %}
+{
+  "name": "Hero",
+  "settings": [
+    { "type": "text", "id": "eyebrow", "label": "Eyebrow", "default": "PALLETS · RETAIL · CASH-AND-CARRY" },
+    { "type": "text", "id": "headline_line_1", "label": "Headline — line 1 (before highlight)", "default": "Real warehouse. Real " },
+    { "type": "text", "id": "headline_highlight", "label": "Headline — highlighted word(s)", "default": "deals" },
+    { "type": "text", "id": "headline_line_2", "label": "Headline — line 2 (after highlight, on next line)", "default": "No middleman." },
+    { "type": "textarea", "id": "blurb", "label": "Body copy", "default": "We buy direct from Amazon, big-box returns, and shelf-pull pallets. We sort, test, and price to move. Drive up, walk in, take it home — or order online and we'll ship." },
+    { "type": "text", "id": "cta_primary_label", "label": "Primary CTA label", "default": "SHOP RETAIL" },
+    { "type": "url", "id": "cta_primary_url", "label": "Primary CTA URL" },
+    { "type": "text", "id": "cta_secondary_label", "label": "Secondary CTA label", "default": "REQUEST A PALLET" },
+    { "type": "url", "id": "cta_secondary_url", "label": "Secondary CTA URL" },
+    { "type": "text", "id": "overlay_label", "label": "Photo overlay label", "default": "INCOMING TRUCK" },
+    { "type": "text", "id": "overlay_text", "label": "Photo overlay text", "default": "TRUCK #47 · 124 pallets · sorted by Friday" }
+  ],
+  "presets": [{ "name": "Hero" }]
+}
+{% endschema %}
+
+<section class="hero">
+  <div class="inner">
+    <div>
+      <div class="eyebrow" style="color: var(--warehouse-yellow);">{{ section.settings.eyebrow }}</div>
+      <h1>{{ section.settings.headline_line_1 }}<span class="hl">{{ section.settings.headline_highlight }}</span>.<br>{{ section.settings.headline_line_2 }}</h1>
+      <p>{{ section.settings.blurb }}</p>
+      <div class="cta-row">
+        {%- if section.settings.cta_primary_label != blank -%}
+          <a class="btn btn-primary" href="{{ section.settings.cta_primary_url | default: '/collections/featured' }}">{{ section.settings.cta_primary_label }}</a>
+        {%- endif -%}
+        {%- if section.settings.cta_secondary_label != blank -%}
+          <a class="btn btn-secondary" href="{{ section.settings.cta_secondary_url | default: '/collections/wholesale' }}">{{ section.settings.cta_secondary_label }}</a>
+        {%- endif -%}
+      </div>
+    </div>
+    <div class="photo-box">
+      <div class="overlay-card">
+        <strong>{{ section.settings.overlay_label }}</strong> · {{ section.settings.overlay_text }}
+      </div>
+    </div>
+  </div>
+</section>

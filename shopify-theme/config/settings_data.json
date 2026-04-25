@@ -1,0 +1,48 @@
+{
+  "current": {
+    "color_red": "#CC0000",
+    "color_red_dark": "#991F1F",
+    "color_yellow": "#F9D71C",
+    "color_orange": "#F7941D",
+    "color_navy": "#002868",
+    "color_paper": "#F5F0E6",
+    "color_ink": "#0E1116",
+    "color_concrete": "#2A2D31",
+    "phone": "(919) 526-0112",
+    "city": "Raleigh, NC",
+    "address_line": "Warehouse · Raleigh, NC",
+    "sections": {
+      "header": {
+        "type": "header",
+        "blocks": {
+          "link-1": { "type": "link", "settings": { "label": "Pallets", "url": "/collections/wholesale" } },
+          "link-2": { "type": "link", "settings": { "label": "Retail", "url": "/collections/featured" } },
+          "link-3": { "type": "link", "settings": { "label": "Owners", "url": "/pages/owners" } },
+          "link-4": { "type": "link", "settings": { "label": "How it works", "url": "/pages/how-it-works" } },
+          "link-5": { "type": "link", "settings": { "label": "Visit", "url": "/pages/visit" } }
+        },
+        "block_order": ["link-1", "link-2", "link-3", "link-4", "link-5"]
+      },
+      "announcement-bar": {
+        "type": "announcement-bar",
+        "settings": {
+          "open_text": "WAREHOUSE OPEN",
+          "hours_text": "MON–SAT · 9–6",
+          "city_text": "RALEIGH, NC",
+          "tagline": "EST. 2024 · DIRECT FROM AMAZON & BIG-BOX RETURNS"
+        }
+      },
+      "footer": {
+        "type": "footer",
+        "blocks": {
+          "menu-1": { "type": "menu", "settings": { "title": "Shop", "links": "<p><a href='/collections/featured'>Featured</a></p><p><a href='/collections/wholesale'>Pallets</a></p><p><a href='/collections/all'>All inventory</a></p>" } },
+          "menu-2": { "type": "menu", "settings": { "title": "Visit", "links": "<p><a href='/pages/visit'>Warehouse hours</a></p><p><a href='/pages/contact'>Contact</a></p>" } },
+          "menu-3": { "type": "menu", "settings": { "title": "Legal", "links": "<p><a href='/policies/privacy-policy'>Privacy</a></p><p><a href='/policies/refund-policy'>Returns</a></p><p><a href='/policies/terms-of-service'>Terms</a></p>" } }
+        },
+        "block_order": ["menu-1", "menu-2", "menu-3"]
+      }
+    },
+    "content_for_index": ["hero", "ticker", "featured-grid", "owners", "how-it-works"]
+  },
+  "presets": {}
+}

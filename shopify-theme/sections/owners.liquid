@@ -1,0 +1,35 @@
+{% schema %}
+{
+  "name": "Owners",
+  "settings": [
+    { "type": "text", "id": "eyebrow", "label": "Eyebrow", "default": "Raleigh, NC · Since 2024" },
+    { "type": "text", "id": "headline_line_1", "label": "Headline — line 1", "default": "We sort. We sell." },
+    { "type": "text", "id": "headline_highlight", "label": "Headline — highlighted line 2", "default": "We answer the phone." },
+    { "type": "richtext", "id": "body", "label": "Body", "default": "<p>Most liquidators hide behind a portal. We don't. We're Norm and Rob. We drive the truck, unload the pallets, and take your call.</p><p>We buy direct from Amazon and big-box return centers, haul it to Raleigh, and pass the savings. No middle layer. No mystery.</p>" },
+    { "type": "text", "id": "signature", "label": "Signature", "default": "— Norm & Rob" },
+    { "type": "text", "id": "owner_1_name", "label": "Owner 1 name", "default": "NORM TURNER" },
+    { "type": "text", "id": "owner_1_role", "label": "Owner 1 role", "default": "Co-owner · Does the sorting" },
+    { "type": "text", "id": "owner_2_name", "label": "Owner 2 name", "default": "ROB TECARR" },
+    { "type": "text", "id": "owner_2_role", "label": "Owner 2 role", "default": "Co-owner · Talks to the trucks" }
+  ],
+  "presets": [{ "name": "Owners" }]
+}
+{% endschema %}
+
+<section class="owners">
+  <div class="inner">
+    <div class="owner-photos">
+      <div class="p"><div class="tag"><strong>{{ section.settings.owner_1_name }}</strong>{{ section.settings.owner_1_role }}</div></div>
+      <div class="p"><div class="tag"><strong>{{ section.settings.owner_2_name }}</strong>{{ section.settings.owner_2_role }}</div></div>
+    </div>
+    <div>
+      <div class="eyebrow" style="color: var(--warehouse-yellow);">{{ section.settings.eyebrow }}</div>
+      <h2>{{ section.settings.headline_line_1 }}<br><span class="hl">{{ section.settings.headline_highlight }}</span></h2>
+      {{ section.settings.body }}
+      <div class="sig">{{ section.settings.signature }}</div>
+      <div style="margin-top: 24px;">
+        <a class="btn btn-primary" href="tel:{{ settings.phone | replace: ' ', '' | replace: '(', '' | replace: ')', '' | replace: '-', '' }}">Call Us — {{ settings.phone }}</a>
+      </div>
+    </div>
+  </div>
+</section>

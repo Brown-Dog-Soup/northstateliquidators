@@ -1,0 +1,28 @@
+{
+  "type": "header",
+  "name": "Header",
+  "sections": {
+    "announcement-bar": {
+      "type": "announcement-bar",
+      "settings": {
+        "open_text": "WAREHOUSE OPEN",
+        "hours_text": "MON–SAT · 9–6",
+        "city_text": "RALEIGH, NC",
+        "tagline": "EST. 2024 · DIRECT FROM AMAZON & BIG-BOX RETURNS"
+      }
+    },
+    "header": {
+      "type": "header",
+      "blocks": {
+        "link-1": { "type": "link", "settings": { "label": "Pallets", "url": "/collections/wholesale" } },
+        "link-2": { "type": "link", "settings": { "label": "Retail", "url": "/collections/featured" } },
+        "link-3": { "type": "link", "settings": { "label": "Owners", "url": "/pages/owners" } },
+        "link-4": { "type": "link", "settings": { "label": "How it works", "url": "/pages/how-it-works" } },
+        "link-5": { "type": "link", "settings": { "label": "Visit", "url": "/pages/visit" } }
+      },
+      "block_order": ["link-1", "link-2", "link-3", "link-4", "link-5"],
+      "settings": { "show_cart_count": true }
+    }
+  },
+  "order": ["announcement-bar", "header"]
+}

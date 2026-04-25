@@ -1,0 +1,10 @@
+{
+  "sections": {
+    "hero": { "type": "hero" },
+    "ticker": { "type": "ticker" },
+    "featured-grid": { "type": "featured-grid", "settings": { "limit": 8 } },
+    "owners": { "type": "owners" },
+    "how-it-works": { "type": "how-it-works" }
+  },
+  "order": ["hero", "ticker", "featured-grid", "owners", "how-it-works"]
+}

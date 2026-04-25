@@ -1,0 +1,28 @@
+{% schema %}
+{
+  "name": "Live ticker",
+  "settings": [
+    { "type": "textarea", "id": "items", "label": "Ticker items (one per line, prefix with LIVE: for red dot)",
+      "default": "LIVE: 14 PALLETS ON THE FLOOR\n47 RETAIL ITEMS LISTED THIS WEEK\nNEXT TRUCK: TUESDAY\nLOCAL PICKUP · RALEIGH WAREHOUSE\nCASH OR CARD AT THE DOOR" }
+  ],
+  "presets": [{ "name": "Live ticker" }]
+}
+{% endschema %}
+
+<div class="ticker">
+  <div class="scroll">
+    {%- assign items = section.settings.items | newline_to_br | split: '<br />' -%}
+    {%- for round in (1..2) -%}
+      {%- for item in items -%}
+        {%- assign clean = item | strip | strip_newlines -%}
+        {%- if clean != blank -%}
+          {%- if clean contains 'LIVE:' -%}
+            <span class="live">{{ clean | replace: 'LIVE:', '' | strip }}</span>
+          {%- else -%}
+            <span>{{ clean }}</span>
+          {%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+    {%- endfor -%}
+  </div>
+</div>

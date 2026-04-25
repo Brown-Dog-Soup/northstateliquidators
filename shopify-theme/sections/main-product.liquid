@@ -1,0 +1,128 @@
+{% schema %}
+{
+  "name": "Product",
+  "settings": [],
+  "presets": []
+}
+{% endschema %}
+
+{%- assign product = product -%}
+{%- assign current_variant = product.selected_or_first_available_variant -%}
+
+<section class="product">
+  <div class="product-grid">
+    <div class="product-gallery">
+      <div class="main-image" id="ProductMainImage">
+        {%- if current_variant.featured_media -%}
+          <img src="{{ current_variant.featured_media | image_url: width: 1200 }}"
+               alt="{{ current_variant.featured_media.alt | escape }}"
+               width="1200" height="1200" loading="eager">
+        {%- elsif product.featured_media -%}
+          <img src="{{ product.featured_media | image_url: width: 1200 }}"
+               alt="{{ product.featured_media.alt | escape }}"
+               width="1200" height="1200" loading="eager">
+        {%- endif -%}
+      </div>
+      {%- if product.media.size > 1 -%}
+        <div class="thumbs" role="list">
+          {%- for media in product.media limit: 10 -%}
+            <button type="button" data-image-url="{{ media | image_url: width: 1200 }}" data-image-alt="{{ media.alt | escape }}" {% if forloop.first %}class="active"{% endif %}>
+              <img src="{{ media | image_url: width: 200 }}" alt="{{ media.alt | escape }}" width="200" height="200" loading="lazy">
+            </button>
+          {%- endfor -%}
+        </div>
+      {%- endif -%}
+    </div>
+
+    <div class="product-info">
+      {%- if product.vendor != blank -%}
+        <div class="vendor">{{ product.vendor }}</div>
+      {%- endif -%}
+      <h1>{{ product.title }}</h1>
+
+      <div class="price-row">
+        <div class="price" id="ProductPrice">{{ current_variant.price | money }}</div>
+        {%- if current_variant.compare_at_price > current_variant.price -%}
+          <div class="compare-at" id="ProductCompare">{{ current_variant.compare_at_price | money }}</div>
+          {%- assign savings = current_variant.compare_at_price | minus: current_variant.price | times: 100 | divided_by: current_variant.compare_at_price -%}
+          <div class="savings">SAVE {{ savings }}%</div>
+        {%- endif -%}
+      </div>
+
+      {%- if product.description != blank -%}
+        <div class="description">{{ product.description }}</div>
+      {%- endif -%}
+
+      <form action="{{ routes.cart_add_url }}" method="post" enctype="multipart/form-data" class="product-form">
+        {%- if product.has_only_default_variant == false -%}
+          {%- for option in product.options_with_values -%}
+            <div class="field">
+              <label for="Option-{{ forloop.index }}">{{ option.name }}</label>
+              <select name="options[{{ option.name | escape }}]" id="Option-{{ forloop.index }}" data-option-position="{{ option.position }}">
+                {%- for value in option.values -%}
+                  <option value="{{ value | escape }}" {% if option.selected_value == value %}selected{% endif %}>{{ value }}</option>
+                {%- endfor -%}
+              </select>
+            </div>
+          {%- endfor -%}
+        {%- endif -%}
+
+        <input type="hidden" name="id" value="{{ current_variant.id }}" id="VariantId">
+
+        <div class="stock {% if current_variant.inventory_quantity == 0 %}out{% elsif current_variant.inventory_quantity <= 3 %}low{% endif %}" id="StockLine">
+          {%- if current_variant.available == false -%}
+            ✕ Sold out
+          {%- elsif current_variant.inventory_management != blank and current_variant.inventory_quantity > 0 and current_variant.inventory_quantity <= 3 -%}
+            ⚠ Only {{ current_variant.inventory_quantity }} left
+          {%- elsif current_variant.available -%}
+            ● In stock at the warehouse
+          {%- endif -%}
+        </div>
+
+        <div class="field">
+          <label for="Quantity">Quantity</label>
+          <input type="number" name="quantity" id="Quantity" value="1" min="1" {% if current_variant.inventory_management != blank %}max="{{ current_variant.inventory_quantity }}"{% endif %}>
+        </div>
+
+        <div class="add-row">
+          <button type="submit" class="btn btn-primary" {% if current_variant.available == false %}disabled{% endif %} id="AddToCartBtn">
+            {%- if current_variant.available -%}Add to cart{%- else -%}Sold out{%- endif -%}
+          </button>
+        </div>
+      </form>
+
+      <dl class="product-meta">
+        {%- if product.type != blank -%}
+          <div><dt>Category</dt><dd>{{ product.type }}</dd></div>
+        {%- endif -%}
+        {%- if product.tags.size > 0 -%}
+          <div><dt>Condition</dt><dd>
+            {%- if product.tags contains 'open-box' -%}Open box
+            {%- elsif product.tags contains 'refurbished' -%}Refurbished
+            {%- elsif product.tags contains 'new' -%}New
+            {%- else -%}As described in listing
+            {%- endif -%}
+          </dd></div>
+        {%- endif -%}
+        <div><dt>Pickup</dt><dd>Available at warehouse · Raleigh, NC</dd></div>
+        <div><dt>SKU</dt><dd>{{ current_variant.sku | default: product.id }}</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<script>
+  (function () {
+    var thumbs = document.querySelectorAll('.product-gallery .thumbs button');
+    var mainImg = document.querySelector('#ProductMainImage img');
+    thumbs.forEach(function (t) {
+      t.addEventListener('click', function () {
+        if (!mainImg) return;
+        thumbs.forEach(function (x) { x.classList.remove('active'); });
+        t.classList.add('active');
+        mainImg.src = t.dataset.imageUrl;
+        mainImg.alt = t.dataset.imageAlt;
+      });
+    });
+  })();
+</script>

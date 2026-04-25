@@ -340,6 +340,7 @@ When you're done, Ctrl+C in the `shopify app dev` terminal. The endpoint dies; c
 - Budget for hosting + tools (monthly)?
 - Who on the team handles ongoing updates?
 - Payment processing requirements (Stripe, Square, in-person only)?
+- **Re-evaluate hosting (GitHub Pages → Azure Static Web Apps) when adding wholesale inquiry form.** GitHub Pages is fine for static-only; SWA earns its switch when we need server-side endpoints (form submissions, admin panel auth, etc.). Currently overkill — defer.
 
 ---
 

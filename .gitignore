@@ -32,3 +32,9 @@ screenshot*.jpg
 
 # Outbox (drafts with credentials / PII — never commit)
 outbox/
+
+# Shopify CLI scaffolding (per-machine; client_id is fine, secret lives in OS keychain)
+shopify-cli/.shopify/
+
+# Cached GraphiQL endpoint URL (contains rotating local key)
+.shopify-graphiql-url.txt

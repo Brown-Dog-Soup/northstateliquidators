@@ -80,6 +80,12 @@ That's it. Product is live in the Shopify store.
 
 **For now, while we're testing**, text Jeff after you add a `featured` product and he'll re-run the sync. Once the workflow is automatic this won't be needed.
 
+### A note about the password gate during dev mode
+
+We're currently running on a Shopify "development store" — meaning the actual product pages on Shopify are password-protected by design (Shopify forces this on dev stores; we can't disable it). When you click a product card on northstateliquidators.com right now, you'll be asked for a password before you can see the Shopify product page. Ask Jeff for the dev password if you want to preview your own listings.
+
+When NSL goes live for real (Shopify plan upgrade + ownership transfer), the password gate disappears automatically and customers can shop without it. Until then, only people with the password can see the product pages on Shopify.
+
 ---
 
 ## What if you want to STOP showing something on the website?

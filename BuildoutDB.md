@@ -100,6 +100,39 @@ All recommended scanners are **keyboard-wedge** — to any device they appear as
 ### `enrichment_log`
 Audit table — which API gave which answer per line item, for debugging hit rate and tuning.
 
+### `lpn_catalog`
+
+Pre-loaded from Amazon liquidation manifest XLSX files. Amazon LPNs (License Plate Numbers) are internal tracking codes that **do not exist in any public UPC database** — they only appear on the manifest Amazon ships with each pallet. This table is our private lookup layer.
+
+| col | type | notes |
+|---|---|---|
+| lpn | varchar(20) | PK — Amazon LPN, e.g. `LPNAB123XYZ45` |
+| asin | varchar(20) | Amazon Standard ID Number, useful for cross-referencing |
+| upc | varchar(20) | sometimes present in manifest, nullable |
+| title | nvarchar | from manifest |
+| description | nvarchar(max) | from manifest, often sparse |
+| category | nvarchar | from manifest |
+| msrp | money | manifest unit retail |
+| condition | varchar | `customer_return`, `salvage`, `new`, etc. |
+| qty_in_manifest | int | how many of this LPN were on the pallet |
+| source_manifest | varchar | filename of the XLSX it came from |
+| source_pallet_id | varchar | FK-ish reference to which pallet/load |
+| imported_at | datetime | for re-import precedence |
+
+### `manifest_imports`
+
+Tracks which XLSX files have been ingested, so we can audit and re-import safely.
+
+| col | type | notes |
+|---|---|---|
+| id | uniqueidentifier | PK |
+| filename | varchar | original XLSX filename |
+| pallet_reference | varchar | Amazon load # or buyer reference |
+| row_count | int | rows ingested |
+| imported_at | datetime | |
+| imported_by | varchar | user identity |
+| sha256 | varchar | file hash, prevents duplicate import |
+
 ---
 
 ## Azure resource group
@@ -160,15 +193,30 @@ Function:
 
 ### 3. Enrichment worker
 
-Azure Function, queue-triggered. For each message:
-- Call **Go-UPC** (or UPCitemdb) → title, brand, description, image
-- Optional: **Keepa** API → Amazon price history → est_msrp, est_resale
-- Optional: **eBay Browse API** → real-world sold listings
-- Optional: **Azure AI Vision** on photo → tags/category fallback when UPC misses
-- Update `line_items` row, set `enrich_status='hit'` or `'miss'`
-- Log API used + raw response into `enrichment_log`
+Azure Function, queue-triggered. For each message, **lookup order matters**:
 
-Expected hit rate on liquidation inventory: **~60–70%**. Misses get flagged in the UI for manual entry.
+1. **Detect code type** by pattern:
+   - Starts with `LPN` or matches Amazon LPN format → treat as LPN
+   - 12–13 digit numeric → UPC/EAN
+   - Otherwise → unknown, mark for manual review
+2. **If LPN** → query `lpn_catalog` table (private Azure SQL data)
+   - Hit → fill title/description/category/msrp from our manifest catalog, set `enrich_status='hit'`, `enrich_source='lpn_catalog'`
+   - Miss → fall through to ASIN lookup if scanner picked up an ASIN, else flag for manual
+3. **If UPC/EAN** → call **Go-UPC** (or UPCitemdb) → title, brand, description, image
+4. **Optional pricing layer** (any code type, after primary hit):
+   - **Keepa** API → Amazon price history → `est_msrp`, `est_resale`
+   - **eBay Browse API** → real-world sold listings
+5. **Optional vision fallback** when nothing hit:
+   - **Azure AI Vision** on photo → tags/category
+6. Update `line_items` row, set `enrich_status='hit' | 'miss' | 'partial'`
+7. Log API used + raw response into `enrichment_log`
+
+Expected hit rate on liquidation inventory:
+- **Amazon pallets with LPN manifests pre-loaded: ~95%+** (LPN catalog covers nearly everything Amazon shipped)
+- Generic UPC pallets: ~60–70%
+- Estate/random goods: ~30–40%
+
+Misses get flagged in the UI for manual entry.
 
 ### 4. Review dashboard
 
@@ -176,6 +224,38 @@ Power BI report (live to Azure SQL) or simple Static Web App:
 - Per manifest: total items, enrichment hit rate, total est. resale value, total cost, projected margin
 - Drill into line items: filter by `enrich_status='miss'` to fix manually
 - Top of dashboard: **two big buttons** per manifest — "Sell as Lot" / "Individualize"
+
+### 4a. Manifest XLSX importer (Amazon LPN ingest)
+
+Separate Azure Function (HTTP-triggered or Blob-triggered): `POST /api/import-manifest`
+
+**Trigger options:**
+- Drop XLSX file into an Azure Blob container `manifests-incoming/` → Blob trigger fires automatically
+- Or admin uploads via web UI → HTTP trigger
+
+**Function behavior:**
+1. Compute SHA-256 of file; if already in `manifest_imports`, skip (idempotent)
+2. Parse XLSX (use `ClosedXML` or `EPPlus` in .NET, or `openpyxl` in Python — Function runtime choice)
+3. Map columns flexibly — Amazon manifests vary:
+   - LPN column may be labeled `LPN`, `License Plate`, `Item ID`, `Pallet ID`
+   - Title may be `Title`, `Product Name`, `Description`, `ASIN Title`
+   - MSRP may be `Unit Retail`, `MSRP`, `Retail Price`, `Extended Retail`
+   - Build a column-name dictionary; surface unmapped columns to admin
+4. UPSERT into `lpn_catalog` keyed on `lpn` — newer `imported_at` wins
+5. Insert audit row into `manifest_imports`
+6. Report: rows ingested, rows skipped, unmapped columns, duplicate LPNs across manifests
+
+**Powershell helper for bulk import** (pre-MVP, run from home machine):
+```powershell
+# Bulk-load all existing manifest XLSX files into Azure SQL
+Get-ChildItem -Path "C:\NSL\Manifests\*.xlsx" | ForEach-Object {
+    Invoke-RestMethod -Uri "https://func-nsl-api.azurewebsites.net/api/import-manifest" `
+        -Method Post -InFile $_.FullName -ContentType "application/octet-stream" `
+        -Headers @{ "x-functions-key" = $env:NSL_FUNCTION_KEY }
+}
+```
+
+This lets Jeff load all existing XLSX manifests in one batch before going live.
 
 ### 5. Shopify push
 
@@ -250,7 +330,8 @@ North State Liquidators/
 |---|---|---|
 | 0 | Provision SQL, Storage, Functions, Key Vault, Power Apps env (Bicep) | 1 day |
 | 1 | Scan capture → SQL → Blob (no enrichment yet) | 2–3 days |
-| 2 | Enrichment Function + Go-UPC integration | 2 days |
+| 2 | Enrichment Function + Go-UPC integration + LPN catalog lookup | 2–3 days |
+| 2a | Manifest XLSX importer + bulk-load existing Amazon manifests | 1–2 days |
 | 3 | Review dashboard (Power BI or simple web) | 2–3 days |
 | 4 | Shopify push — Lot mode | 1–2 days |
 | 5 | Shopify push — Individualize mode | 2 days |
@@ -280,6 +361,19 @@ North State Liquidators/
 - **No subscription scanner software** — Tera/Zebra hardware is one-time spend
 
 ---
+
+## Amazon LPN — what they are
+
+Yes, **LPN really stands for "License Plate Number"** — it's Amazon warehouse jargon for the unique tracking code applied to each unit moving through their fulfillment system. Used internally for receiving, putaway, picking, returns processing, and (relevantly for us) liquidation manifests.
+
+- Format: typically `LPN` + 9–12 alphanumeric characters, e.g. `LPNAB123XYZ45`
+- Generated per-unit (not per-SKU) — every individual physical item gets its own LPN even if 100 of them are the same product
+- Not searchable on the public internet — they only exist in Amazon's internal systems and the manifests Amazon ships with liquidation pallets
+- Manifest XLSX files map LPN → ASIN → product details (title, MSRP, condition, category)
+
+This is why the Azure flow needs the `lpn_catalog` table — it's our private mirror of every LPN we've ever bought, built up by ingesting the manifests Amazon sends with each pallet. Once an LPN is in our catalog, scanning that exact item later gives us instant high-quality data with no API call.
+
+> Sometimes confused with: Amazon FNSKU (Fulfillment Network SKU, label sellers print for FBA), or ASIN (the public product identifier). LPN is unit-level and internal-only. ASIN is product-level and public.
 
 ## Open decisions
 

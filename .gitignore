@@ -38,3 +38,6 @@ shopify-cli/.shopify/
 
 # Cached GraphiQL endpoint URL (contains rotating local key)
 .shopify-graphiql-url.txt
+
+# Amazon liquidation manifests (vendor data, often confidential per Amazon B-Stock TOS)
+Amazon/

@@ -43,12 +43,12 @@ Build a workflow where pallets are scanned in as they arrive, stored in Azure, e
 
 ## Hardware
 
-| Item | Model | Qty | Cost | Purpose |
-|---|---|---:|---:|---|
-| Scanner (primary) | Tera HW0009 (2D, tri-mode, LCD) | 2 | ~$140–160 | Receiving + POS counter |
-| Scanner (backup) | Zebra DS2208 | 1 | ~$150 | Damaged-label rescue at receiving |
-| Label printer | Brother QL-820NWB (thermal, no ink) | 1 | ~$150 | In-house barcodes for items missing UPC |
-| Tablet | iPad / Android (existing) | 1+ | reuse | Power Apps scan form |
+| Item | Model | Qty | Cost | Purpose | Status |
+|---|---|---:|---:|---|---|
+| Scanner (primary) | Tera HW0009 (2D, tri-mode, LCD) | 2 | ~$140–160 | Receiving + POS counter | **Ordered by Rob (2026-04-27)** |
+| Scanner (backup) | Zebra DS2208 | 1 | ~$150 | Damaged-label rescue at receiving | TBD |
+| Label printer | Brother QL-820NWB (thermal, no ink) | 1 | ~$150 | In-house barcodes for items missing UPC | TBD |
+| Tablet | iPad / Android (existing) | 1+ | reuse | Power Apps scan form | reuse |
 | **Total hardware** | | | **~$440–460 one-time** | |
 
 ### Why HW0009 over HW0002
@@ -295,3 +295,5 @@ North State Liquidators/
 ## Next concrete step
 
 Scaffold `infra/main.bicep` + `db/schema.sql` so the resource group can be deployed and the SQL database has its tables ready. From there, the ingest Function is the first piece of real code.
+
+Jeff to build initial scaffold on home machine. Hardware (HW0009 ×2) ordered by Rob — should arrive before infra is ready, so receiving can dry-run scanning into Google Sheets while Azure side comes online.

@@ -30,15 +30,12 @@ public sealed class SqlService
 
     public async Task<SqlConnection> OpenAsync(CancellationToken ct = default)
     {
+        // SqlClient handles auth natively based on the connection string —
+        // SQL auth (User ID + Password), Entra Default (Authentication=Active
+        // Directory Default), Entra Password, etc. We do not need to manage
+        // AccessToken here. SWA managed Functions doesn't expose IMDS, so we
+        // ship today with SQL auth credentials in the connection string.
         var conn = new SqlConnection(_connectionString);
-        // If the connection string already specifies Authentication=Active Directory Default,
-        // SqlClient will handle token acquisition; otherwise we set AccessToken explicitly.
-        if (!_connectionString.Contains("Authentication=", StringComparison.OrdinalIgnoreCase))
-        {
-            var token = await _credential.GetTokenAsync(
-                new TokenRequestContext(new[] { "https://database.windows.net/.default" }), ct);
-            conn.AccessToken = token.Token;
-        }
         await conn.OpenAsync(ct);
         return conn;
     }

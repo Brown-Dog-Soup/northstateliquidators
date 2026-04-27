@@ -26,9 +26,9 @@ param resourceGroupName string = 'rg-nsl-website'
 @description('Static Web App resource name. Must be globally unique-ish; lowercase + dashes.')
 param staticSiteName string = 'stapp-nsl-website'
 
-@description('Static Web App SKU. Free is sufficient for a marketing site with a custom domain.')
+@description('Static Web App SKU. Standard ($9/mo) unlocks managed Functions in api/ — needed for the inventory-pipeline backend (scan ingest, enrichment, Shopify push). Free is fine for marketing-only.')
 @allowed(['Free', 'Standard'])
-param staticSiteSku string = 'Free'
+param staticSiteSku string = 'Standard'
 
 @description('Tags applied to RG and all resources.')
 param tags object = {

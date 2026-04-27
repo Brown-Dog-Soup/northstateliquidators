@@ -41,3 +41,8 @@ shopify-cli/.shopify/
 
 # Amazon liquidation manifests (vendor data, often confidential per Amazon B-Stock TOS)
 Amazon/
+
+# .NET build output for the api/ project
+api/bin/
+api/obj/
+api/local.settings.json

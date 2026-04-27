@@ -26,27 +26,33 @@ resource storage 'Microsoft.Storage/storageAccounts@2024-01-01' existing = {
   name: storageAccountName
 }
 
+// B1 Basic Linux App Service Plan instead of Y1 Consumption — dedicated
+// compute (~$13/mo) avoids the per-region Dynamic-VMs quota wall that new
+// Application subscriptions hit.
 resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: functionPlanName
   location: location
   tags: tags
   sku: {
-    name: 'Y1'
-    tier: 'Dynamic'
+    name: 'B1'
+    tier: 'Basic'
   }
-  properties: { reserved: false }
+  kind: 'linux'
+  properties: { reserved: true }
 }
 
 resource fn 'Microsoft.Web/sites@2024-04-01' = {
   name: functionAppName
   location: location
   tags: tags
-  kind: 'functionapp'
+  kind: 'functionapp,linux'
   identity: { type: 'SystemAssigned' }
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
     siteConfig: {
+      linuxFxVersion: 'DOTNET-ISOLATED|9.0'
+      alwaysOn: true
       appSettings: [
         { name: 'AzureWebJobsStorage__accountName', value: storageAccountName }
         { name: 'AzureWebJobsStorage', value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccountName};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}' }
@@ -64,7 +70,6 @@ resource fn 'Microsoft.Web/sites@2024-04-01' = {
       ]
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
-      netFrameworkVersion: 'v9.0'
     }
   }
 }

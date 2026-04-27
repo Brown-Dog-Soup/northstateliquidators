@@ -20,7 +20,6 @@ resource kv 'Microsoft.KeyVault/vaults@2024-04-01-preview' = {
     enableRbacAuthorization: true
     enableSoftDelete: true
     softDeleteRetentionInDays: 7
-    enablePurgeProtection: false
     publicNetworkAccess: 'Enabled'
     networkAcls: {
       bypass: 'AzureServices'

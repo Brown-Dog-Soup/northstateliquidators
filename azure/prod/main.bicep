@@ -2,23 +2,29 @@
 // NSL — Inventory Pipeline (Phase 0 infra)
 //
 // Subscription-scoped deployment that creates `rg-nsl-prod` and provisions
-// the backend pieces of the scan-to-Shopify pipeline:
+// the BACKEND DATA-PLANE pieces of the scan-to-Shopify pipeline:
 //   - Log Analytics + Application Insights (observability)
 //   - Storage Account (Blob for photos, Queue for enrichment work)
 //   - Key Vault (Shopify token, UPC API keys, Keepa key, etc.)
 //   - SQL Server + Database Basic 2GB (manifests / line_items / lpn_catalog)
-//   - Function App on Consumption plan (.NET 9 isolated worker)
+//
+// API COMPUTE LIVES IN THE STATIC WEB APP (rg-nsl-website / stapp-nsl-website
+// Standard SKU) as managed Functions out of the repo's api/ directory.
+// This avoids the App Service Y1/B1 quota wall on the "Application"
+// subscription. The SWA's managed Function identity gets RBAC to the
+// resources here (granted post-deploy by Grant-SwaAccess.ps1).
 //
 // Tenant: TenantIQpro.com (Entra ID).
 //   Hard tenant guard enforced at deploy script level (Deploy-NSLProd.ps1).
-//
-// Companion to azure/website/ (rg-nsl-website is the marketing site only).
 // ============================================================================
 
 targetScope = 'subscription'
 
-@description('Azure region. Pick one with cheap Azure SQL Basic + Functions Consumption availability.')
+@description('Azure region for the resource group + most resources.')
 param location string = 'eastus2'
+
+@description('Override region for Azure SQL Server. Some regions throttle new SQL Server creates; use this to pin SQL to a different region without moving everything else. Default: same as location.')
+param sqlLocation string = location
 
 @description('Resource group name for backend pipeline.')
 param resourceGroupName string = 'rg-nsl-prod'
@@ -48,8 +54,6 @@ var sqlServerName      = 'sql-${namePrefix}-prod-${take(uniqueString(subscriptio
 var sqlDatabaseName    = 'sqldb-${namePrefix}-prod'
 var logWorkspaceName   = 'log-${namePrefix}-prod'
 var appInsightsName    = 'appi-${namePrefix}-prod'
-var functionAppName    = 'func-${namePrefix}-api'
-var functionPlanName   = 'plan-${namePrefix}-prod'
 
 // ----------------------------------------------------------------------------
 // Resource group
@@ -100,7 +104,7 @@ module sql 'modules/sql.bicep' = {
   scope: rg
   name: 'deploy-sql'
   params: {
-    location: location
+    location: sqlLocation
     sqlServerName: sqlServerName
     sqlDatabaseName: sqlDatabaseName
     tenantId: subscription().tenantId
@@ -110,36 +114,8 @@ module sql 'modules/sql.bicep' = {
   }
 }
 
-module fn 'modules/function-app.bicep' = {
-  scope: rg
-  name: 'deploy-function-app'
-  params: {
-    location: location
-    functionAppName: functionAppName
-    functionPlanName: functionPlanName
-    storageAccountName: storage.outputs.name
-    appInsightsConnectionString: logs.outputs.appInsightsConnectionString
-    sqlConnectionString: sql.outputs.connectionString
-    keyVaultName: kv.outputs.name
-    tags: tags
-  }
-}
-
 // ----------------------------------------------------------------------------
-// RBAC: grant the Function App's managed identity access to Storage + Key Vault
-// ----------------------------------------------------------------------------
-module rbac 'modules/rbac.bicep' = {
-  scope: rg
-  name: 'deploy-rbac'
-  params: {
-    storageAccountName: storage.outputs.name
-    keyVaultName: kv.outputs.name
-    functionAppPrincipalId: fn.outputs.principalId
-  }
-}
-
-// ----------------------------------------------------------------------------
-// Outputs
+// Outputs — used by Grant-SwaAccess.ps1 to wire SWA managed Function identity
 // ----------------------------------------------------------------------------
 output resourceGroupName string = rg.name
 output storageAccountName string = storage.outputs.name
@@ -147,7 +123,7 @@ output keyVaultName string = kv.outputs.name
 output sqlServerName string = sql.outputs.serverName
 output sqlServerFqdn string = sql.outputs.fqdn
 output sqlDatabaseName string = sql.outputs.databaseName
-output functionAppName string = fn.outputs.name
-output functionAppHostname string = fn.outputs.defaultHostname
+output sqlConnectionString string = sql.outputs.connectionString
 output appInsightsName string = logs.outputs.appInsightsName
+output appInsightsConnectionString string = logs.outputs.appInsightsConnectionString
 output logWorkspaceName string = logs.outputs.workspaceName

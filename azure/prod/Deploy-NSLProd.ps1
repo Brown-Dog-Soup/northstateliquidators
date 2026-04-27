@@ -27,6 +27,7 @@
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$Location = 'eastus2',
+    [string]$SqlLocation = '',
     [string]$ResourceGroupName = 'rg-nsl-prod'
 )
 
@@ -100,6 +101,7 @@ if ($PSCmdlet.ShouldProcess($ResourceGroupName, 'Deploy NSL inventory-pipeline b
         "sqlAdminEntraObjectId=$sqlAdminOid"
         "sqlAdminEntraLogin=$sqlAdminUpn"
     )
+    if ($SqlLocation) { $params += "sqlLocation=$SqlLocation" }
 
     az deployment sub create `
         --name $deploymentName `

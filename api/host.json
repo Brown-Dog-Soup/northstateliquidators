@@ -1,0 +1,21 @@
+{
+  "version": "2.0",
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled": true,
+        "excludedTypes": "Request"
+      }
+    },
+    "logLevel": {
+      "default": "Information",
+      "NSL": "Debug"
+    }
+  },
+  "functionTimeout": "00:30:00",
+  "extensions": {
+    "http": {
+      "routePrefix": "api"
+    }
+  }
+}

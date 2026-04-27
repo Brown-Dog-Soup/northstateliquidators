@@ -138,7 +138,7 @@ public sealed class ManifestParser
     public static string ComputeSha256(byte[] data)
     {
         var hash = SHA256.HashData(data);
-        return Convert.ToHexStringLower(hash);
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     private static string? NormalizeBarcode(string raw)

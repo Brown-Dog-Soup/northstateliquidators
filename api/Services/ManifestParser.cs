@@ -49,7 +49,12 @@ public sealed class ManifestParser
 
     public ParseResult Parse(Stream xlsxStream, string sourceFilename)
     {
-        using var workbook = new XLWorkbook(xlsxStream);
+        // Loading without recalc means cells with formulas yield their cached
+        // (saved) values. Amazon manifests contain formulas like
+        // "Ext. Retail = Qty * Unit Retail" — ClosedXML can't always evaluate
+        // those, so we read cached values rather than re-evaluating.
+        var loadOptions = new LoadOptions { RecalculateAllFormulas = false };
+        using var workbook = new XLWorkbook(xlsxStream, loadOptions);
         var sheet = workbook.Worksheets.FirstOrDefault(s =>
             string.Equals(s.Name, "Manifest", StringComparison.OrdinalIgnoreCase))
             ?? workbook.Worksheets.FirstOrDefault(s =>
@@ -101,22 +106,22 @@ public sealed class ManifestParser
 
                 switch (field)
                 {
-                    case "Lpn":            entry.Lpn = cell.GetString().Trim(); break;
-                    case "Asin":           entry.Asin = cell.GetString().Trim(); break;
-                    case "Upc":            entry.Upc = NormalizeBarcode(cell.GetString()); break;
-                    case "Ean":            entry.Ean = NormalizeBarcode(cell.GetString()); break;
-                    case "Title":          entry.Title = TrimToMax(cell.GetString(), 500); break;
-                    case "Brand":          entry.Brand = TrimToMax(cell.GetString(), 200); break;
-                    case "SellerCategory": entry.SellerCategory = TrimToMax(cell.GetString(), 200); break;
-                    case "Condition":      entry.Condition = TrimToMax(cell.GetString(), 40); break;
-                    case "OrderNumber":    entry.OrderNumber = TrimToMax(cell.GetString(), 100); orderNumber ??= entry.OrderNumber; break;
+                    case "Lpn":            entry.Lpn = SafeGetString(cell).Trim(); break;
+                    case "Asin":           entry.Asin = SafeGetString(cell).Trim(); break;
+                    case "Upc":            entry.Upc = NormalizeBarcode(SafeGetString(cell)); break;
+                    case "Ean":            entry.Ean = NormalizeBarcode(SafeGetString(cell)); break;
+                    case "Title":          entry.Title = TrimToMax(SafeGetString(cell), 500); break;
+                    case "Brand":          entry.Brand = TrimToMax(SafeGetString(cell), 200); break;
+                    case "SellerCategory": entry.SellerCategory = TrimToMax(SafeGetString(cell), 200); break;
+                    case "Condition":      entry.Condition = TrimToMax(SafeGetString(cell), 40); break;
+                    case "OrderNumber":    entry.OrderNumber = TrimToMax(SafeGetString(cell), 100); orderNumber ??= entry.OrderNumber; break;
                     case "Qty":            entry.QtyInManifest = ParseInt(cell); break;
                     case "Msrp":           entry.Msrp = ParseDecimal(cell); break;
                     case "UnitCost":       entry.UnitCost = ParseDecimal(cell); break;
-                    case "ProductClass":   entry.ProductClass = TrimToMax(cell.GetString(), 200); break;
-                    case "Subcategory":    entry.Subcategory = TrimToMax(cell.GetString(), 200); break;
-                    case "PalletId":       entry.PalletId = TrimToMax(cell.GetString(), 200); palletRef ??= entry.PalletId; break;
-                    case "LotId":          entry.LotId = TrimToMax(cell.GetString(), 200); break;
+                    case "ProductClass":   entry.ProductClass = TrimToMax(SafeGetString(cell), 200); break;
+                    case "Subcategory":    entry.Subcategory = TrimToMax(SafeGetString(cell), 200); break;
+                    case "PalletId":       entry.PalletId = TrimToMax(SafeGetString(cell), 200); palletRef ??= entry.PalletId; break;
+                    case "LotId":          entry.LotId = TrimToMax(SafeGetString(cell), 200); break;
                 }
             }
 
@@ -160,14 +165,14 @@ public sealed class ManifestParser
     private static int? ParseInt(IXLCell cell)
     {
         if (cell.DataType == XLDataType.Number) return (int)cell.GetDouble();
-        if (int.TryParse(cell.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) return n;
+        if (int.TryParse(SafeGetString(cell), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) return n;
         return null;
     }
 
     private static decimal? ParseDecimal(IXLCell cell)
     {
         if (cell.DataType == XLDataType.Number) return Convert.ToDecimal(cell.GetDouble());
-        if (decimal.TryParse(cell.GetString(), NumberStyles.Number | NumberStyles.AllowCurrencySymbol, CultureInfo.InvariantCulture, out var d)) return d;
+        if (decimal.TryParse(SafeGetString(cell), NumberStyles.Number | NumberStyles.AllowCurrencySymbol, CultureInfo.InvariantCulture, out var d)) return d;
         return null;
     }
 }

@@ -2,6 +2,7 @@ using Azure.Core;
 using Azure.Identity;
 using Dapper;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NSL.Api.Models;
 

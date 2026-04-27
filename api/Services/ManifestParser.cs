@@ -164,15 +164,40 @@ public sealed class ManifestParser
 
     private static int? ParseInt(IXLCell cell)
     {
-        if (cell.DataType == XLDataType.Number) return (int)cell.GetDouble();
+        try { if (cell.DataType == XLDataType.Number) return (int)cell.GetDouble(); } catch { }
         if (int.TryParse(SafeGetString(cell), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) return n;
         return null;
     }
 
     private static decimal? ParseDecimal(IXLCell cell)
     {
-        if (cell.DataType == XLDataType.Number) return Convert.ToDecimal(cell.GetDouble());
+        try { if (cell.DataType == XLDataType.Number) return Convert.ToDecimal(cell.GetDouble()); } catch { }
         if (decimal.TryParse(SafeGetString(cell), NumberStyles.Number | NumberStyles.AllowCurrencySymbol, CultureInfo.InvariantCulture, out var d)) return d;
         return null;
+    }
+
+    /// <summary>
+    /// Reads a cell's text value safely. For formula cells, returns the
+    /// cached formula result rather than re-evaluating (which can fail with
+    /// "Function not supported" on Excel functions ClosedXML doesn't
+    /// implement). Empty cells return string.Empty rather than null.
+    /// </summary>
+    private static string SafeGetString(IXLCell cell)
+    {
+        if (cell == null || cell.IsEmpty()) return string.Empty;
+        try
+        {
+            if (cell.HasFormula)
+            {
+                var v = cell.CachedValue;
+                return v.IsBlank ? string.Empty : v.ToString() ?? string.Empty;
+            }
+            return cell.GetString();
+        }
+        catch
+        {
+            try { return cell.GetFormattedString(); }
+            catch { return string.Empty; }
+        }
     }
 }

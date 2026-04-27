@@ -2,6 +2,7 @@
 
 **Project:** Scan-to-Shopify inventory pipeline on Azure
 **Owner:** Jeff Blanchard / North State Liquidators
+**Tenant:** TenantIQPro.com (Entra ID)
 **Status:** Architecture / planning phase
 **Last updated:** 2026-04-27
 
@@ -310,7 +311,7 @@ North State Liquidators/
 
 ## Move-to-Azure steps
 
-1. **Subscription decision** — separate Azure subscription under existing Surya/NCMB Entra tenant, clean billing boundary.
+1. **Subscription decision** — separate Azure subscription under the **TenantIQPro.com Entra tenant** (not Surya). Clean billing boundary, identity ties to the TenantIQPro org.
 2. **Provision infra** via Bicep:
    ```powershell
    az deployment group create --resource-group rg-nsl-prod --template-file ./infra/main.bicep
@@ -356,7 +357,7 @@ North State Liquidators/
 - **Cheap** — under $40/mo Azure, scales to thousands of pallets
 - **Resilient** — enrichment fails? Item sits in `pending`; retry safely
 - **Audit-friendly** — every row has timestamps, every API call logged
-- **Plays to existing stack** — Powershell-friendly Azure CLI deploys, Entra auth, M365/Power Apps for UI
+- **Plays to existing stack** — Powershell-friendly Azure CLI deploys, Entra auth (TenantIQPro tenant), M365/Power Apps for UI
 - **No Shopify lock-in** — same data model can push elsewhere later
 - **No subscription scanner software** — Tera/Zebra hardware is one-time spend
 
@@ -377,7 +378,7 @@ This is why the Azure flow needs the `lpn_catalog` table — it's our private mi
 
 ## Open decisions
 
-- [ ] Single Entra tenant (Surya) vs. separate NSL tenant?
+- [x] ~~Single Entra tenant (Surya) vs. separate NSL tenant?~~ — **Decided: TenantIQPro.com tenant** (2026-04-27)
 - [ ] Power Apps (faster) vs. PWA (more flexible) for scan UI v1?
 - [ ] Service Bus (paid tier) vs. Storage Queue (free) for enrich queue?
 - [ ] Power BI (license cost) vs. custom dashboard for review UI?

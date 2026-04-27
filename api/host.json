@@ -12,7 +12,7 @@
       "NSL": "Debug"
     }
   },
-  "functionTimeout": "00:30:00",
+  "functionTimeout": "00:09:30",
   "extensions": {
     "http": {
       "routePrefix": "api"

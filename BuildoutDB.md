@@ -363,6 +363,49 @@ North State Liquidators/
 
 ---
 
+## Scanner + DB display capability
+
+**Question:** Can the HW0009 scan a code and display product info from Azure SQL on its own LCD?
+
+**Answer:** No, not on the scanner itself. The HW0009's built-in display is a "dumb" LCD — it only shows the raw scanned code, scan count, battery, and connection status. The scanner has no WiFi, no cellular, no network stack; it cannot query Azure SQL or any other database directly. It's a keyboard-wedge peripheral.
+
+### How we deliver "scan → DB lookup → on-screen display"
+
+Pair the scanner with a network-capable screen (iPad, tablet, or PC) running the Power Apps scan form. From the user's perspective it works identically to a smart scanner.
+
+**Flow with HW0009 + iPad:**
+1. Receiver scans an LPN/UPC with the HW0009
+2. Code types into a "Lookup" field in Power Apps on the iPad
+3. Power Apps queries Azure SQL (`lpn_catalog` first, then `line_items`, then public APIs as fallback) — sub-second over WiFi
+4. iPad displays: title, image, MSRP, condition, qty in manifest, our cost
+5. Receiver confirms or flags discrepancy
+
+The iPad is the "screen" — much bigger, color, touch-capable, far more useful than the 1-inch LCD on the scanner.
+
+### All-in-one alternatives (future upgrade option)
+
+If receiving staff outgrow the scanner+tablet combo, professional Android handheld computers integrate scanner + screen + WiFi into one device:
+
+| Device | Type | Approx cost | Notes |
+|---|---|---:|---|
+| Zebra TC22 / TC52 | Android handheld | $1,000–1,800 | Industry standard, runs Power Apps directly |
+| Honeywell CT40 / CT45 | Android handheld | $1,200–2,000 | Zebra competitor |
+| Datalogic Memor 11/20 | Android handheld | $900–1,400 | Cheaper Zebra alternative |
+| iPhone + Socket Mobile sled | iOS + sled | $300–500 sled + phone | Lightweight |
+| Unitech EA630 | Android handheld | $700–1,000 | Budget pro handheld |
+
+Same Power Apps form runs on these unchanged — no architecture change required to upgrade later.
+
+### Decision for NSL v1
+
+**Stick with HW0009 + iPad.** Reasons:
+- HW0009s already ordered (Rob, 2026-04-27)
+- iPad is cheaper, multi-purpose (also Shopify POS, photos, email)
+- Larger screen for product info + decision buttons
+- Receiving cart mount (~$30) handles mobility
+
+**Upgrade path:** add 1× Zebra TC22 for heavy receiving role if needed; keep HW0009s for POS counter and floor scanning.
+
 ## Amazon LPN — what they are
 
 Yes, **LPN really stands for "License Plate Number"** — it's Amazon warehouse jargon for the unique tracking code applied to each unit moving through their fulfillment system. Used internally for receiving, putaway, picking, returns processing, and (relevantly for us) liquidation manifests.

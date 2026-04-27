@@ -29,15 +29,14 @@ resource swa 'Microsoft.Web/staticSites@2024-04-01' = {
     name: sku
     tier: sku
   }
+  // Intentionally empty properties — no GitHub repo binding via Bicep so we
+  // can deploy from a workflow file in the repo using the SWA's deployment
+  // token. Azure auto-selects "manual upload" mode when no repository URL
+  // is provided. Setting `provider: 'None'` along with `branch` here causes
+  // ARM to reject the create with "RepositoryUrl cannot be empty".
   properties: {
-    // No GitHub repo binding here — we deploy via a workflow file in the repo
-    // that uses the SWA's deployment token. Keeps Bicep idempotent and avoids
-    // having to give Azure write access to the GitHub repo.
-    provider: 'None'
-    branch: 'main'
     stagingEnvironmentPolicy: 'Enabled'
     allowConfigFileUpdates: true
-    enterpriseGradeCdnStatus: 'Disabled'
   }
 }
 

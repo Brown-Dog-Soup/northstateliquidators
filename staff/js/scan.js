@@ -218,15 +218,30 @@ async function loadRecent() {
     recentItems = (detail.items || []).slice(0, 8);
     palletEl.textContent = `${detail.pallet.display_name} · ${detail.pallet.item_count} items`;
     recent.innerHTML = recentItems.map(it => `
-      <div class="item-row">
+      <div class="item-row" data-id="${it.id}">
         <div class="thumb"${it.photo_blob_url ? ` style="background-image:url('${escape(it.photo_blob_url)}')"` : ''}></div>
         <div class="body">
           <h4>${escape(it.title || it.lpn || it.upc || '(no title)')}</h4>
           <div class="meta">qty ${it.qty} · ${escape(it.condition || '—')} · ${escape(it.brand || '')} · ${escape((it.lpn || it.upc || '').slice(0, 16))}</div>
         </div>
-        <div class="price">${fmtMoney(it.est_msrp)}</div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+          <div class="price">${fmtMoney(it.est_resale || it.est_msrp)}</div>
+          <button class="undo-scan" data-id="${it.id}" title="Remove this scan" style="background:none;border:1px solid #d4ada6;color:#b00;padding:2px 8px;font-size:12px;cursor:pointer;font-family:'JetBrains Mono',monospace;">✕ undo</button>
+        </div>
       </div>
     `).join('') || '<div class="lookup-empty">No items yet on this pallet.</div>';
+
+    document.querySelectorAll('.undo-scan').forEach(b => b.addEventListener('click', async e => {
+      const id = e.currentTarget.dataset.id;
+      const it = recentItems.find(i => i.id === id);
+      const label = it?.title || it?.lpn || it?.upc || 'this scan';
+      if (!confirm(`Undo scan: "${label}"?`)) return;
+      try {
+        await apiClient.deleteItem(id);
+        toast('Removed', 'ok');
+        await loadRecent();
+      } catch (err) { toast(`Remove failed: ${err.message}`, 'err', 4000); }
+    }));
   } catch (e) { /* ignore */ }
 }
 

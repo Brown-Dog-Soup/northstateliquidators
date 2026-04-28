@@ -97,17 +97,85 @@ async function showDetail(id) {
     b.classList.toggle('active', b.dataset.mode === current.sell_mode)
   );
 
-  // items list
+  // items list — each row is collapsible; click "Edit" to expand inline editor
   $('#items').innerHTML = currentItems.map(it => `
     <div class="item-row" data-id="${it.id}">
       <div class="thumb"${it.photo_blob_url ? ` style="background-image:url('${escape(it.photo_blob_url)}')"` : ''}></div>
       <div class="body">
         <h4>${escape(it.title || it.lpn || it.upc || '(no title)')}</h4>
         <div class="meta">qty ${it.qty} · ${escape(it.condition || '—')} · ${escape(it.brand || '')} · ${escape(it.lpn || it.upc || '')}</div>
+        <div class="meta" style="margin-top:4px;">
+          MSRP ${fmtMoney(it.est_msrp)}${it.est_resale ? ` · sell ${fmtMoney(it.est_resale)}` : ''}
+        </div>
       </div>
-      <div class="price">${fmtMoney(it.est_msrp)}</div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;">
+        <div class="price">${fmtMoney(it.est_resale || it.est_msrp)}</div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-ghost edit-item" data-id="${it.id}" style="padding:4px 10px;font-size:11px;">Edit</button>
+          <button class="btn btn-danger del-item" data-id="${it.id}" style="padding:4px 10px;font-size:11px;background:var(--nc-red,#CC0000);color:#fff;border:none;">Delete</button>
+        </div>
+      </div>
+    </div>
+    <div class="item-edit" data-edit="${it.id}" hidden style="background:#fff8e0;border:1px solid #e6d68f;padding:14px 16px;margin:-1px 0 8px;">
+      <div class="row" style="gap:12px;">
+        <div class="col field" style="min-width:160px;"><label>Title</label><input type="text" data-f="title" value="${escape(it.title || '')}"></div>
+        <div class="col field" style="min-width:120px;"><label>Brand</label><input type="text" data-f="brand" value="${escape(it.brand || '')}"></div>
+        <div class="col field" style="max-width:90px;"><label>Qty</label><input type="number" min="1" data-f="qty" value="${it.qty}"></div>
+        <div class="col field" style="max-width:160px;"><label>Condition</label>
+          <select data-f="condition">
+            ${['new','open_box','damaged','untested','customer_return'].map(c => `<option value="${c}"${(it.condition||'')===c?' selected':''}>${c}</option>`).join('')}
+          </select>
+        </div>
+        <div class="col field" style="max-width:120px;"><label>Sell price</label><input type="number" step="0.01" min="0" data-f="sellPrice" value="${it.est_resale ?? ''}"></div>
+      </div>
+      <div class="field" style="margin-top:8px;"><label>Notes</label><textarea data-f="notes" rows="2">${escape(it.notes || '')}</textarea></div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button class="btn btn-primary save-item" data-id="${it.id}">Save changes</button>
+        <button class="btn btn-ghost cancel-item" data-id="${it.id}">Cancel</button>
+      </div>
     </div>
   `).join('') || '<div class="lookup-empty">No items scanned to this pallet yet.</div>';
+
+  // Wire item-row buttons
+  document.querySelectorAll('.edit-item').forEach(b => b.addEventListener('click', e => {
+    const id = e.currentTarget.dataset.id;
+    document.querySelectorAll('.item-edit').forEach(el => el.hidden = el.dataset.edit !== id || !el.hidden ? true : false);
+    const panel = document.querySelector(`.item-edit[data-edit="${id}"]`);
+    if (panel) panel.hidden = !panel.hidden;
+  }));
+  document.querySelectorAll('.cancel-item').forEach(b => b.addEventListener('click', e => {
+    const id = e.currentTarget.dataset.id;
+    const panel = document.querySelector(`.item-edit[data-edit="${id}"]`);
+    if (panel) panel.hidden = true;
+  }));
+  document.querySelectorAll('.save-item').forEach(b => b.addEventListener('click', async e => {
+    const id = e.currentTarget.dataset.id;
+    const panel = document.querySelector(`.item-edit[data-edit="${id}"]`);
+    const fields = {};
+    panel.querySelectorAll('[data-f]').forEach(el => {
+      const k = el.dataset.f;
+      const v = el.value.trim();
+      if (k === 'qty')         fields[k] = v === '' ? null : Number(v);
+      else if (k === 'sellPrice') fields[k] = v === '' ? null : Number(v);
+      else                       fields[k] = v;
+    });
+    try {
+      await apiClient.patchItem(id, fields);
+      toast('Saved', 'ok');
+      await showDetail(current.manifest_id);
+    } catch (err) { toast(`Save failed: ${err.message}`, 'err', 4000); }
+  }));
+  document.querySelectorAll('.del-item').forEach(b => b.addEventListener('click', async e => {
+    const id = e.currentTarget.dataset.id;
+    const item = currentItems.find(i => i.id === id);
+    const label = item?.title || item?.lpn || item?.upc || 'this item';
+    if (!confirm(`Delete "${label}"? This cannot be undone.`)) return;
+    try {
+      await apiClient.deleteItem(id);
+      toast('Deleted', 'ok');
+      await showDetail(current.manifest_id);
+    } catch (err) { toast(`Delete failed: ${err.message}`, 'err', 4000); }
+  }));
 }
 
 $('#back').addEventListener('click', () => { location.hash = ''; });

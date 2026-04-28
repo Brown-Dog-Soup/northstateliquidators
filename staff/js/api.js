@@ -31,6 +31,9 @@ export const apiClient = {
   pallet:    (id) => api('GET',  `/api/pallets/${id}`),
   patchPallet:(id,b) => api('PATCH', `/api/pallets/${id}`, b),
 
+  patchItem:  (id,b) => api('PATCH',  `/api/items/${id}`, b),
+  deleteItem: (id)   => api('DELETE', `/api/items/${id}`),
+
   // POST a Blob/ArrayBuffer; sets Content-Type from the Blob's type
   uploadPhoto: async (kind, id, blob) => {
     const r = await fetch(`/api/upload-photo?kind=${kind}&id=${id}`, {

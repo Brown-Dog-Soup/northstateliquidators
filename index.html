@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<script>
+  // staff.northstateliquidators.com → instant redirect to /staff/.
+  // Runs before the marketing site renders so visitors don't see a flash.
+  if (location.hostname.startsWith('staff.')) location.replace('/staff/');
+</script>
 <title>North State Liquidators — Raleigh, NC</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

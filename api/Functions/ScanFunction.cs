@@ -32,6 +32,7 @@ public sealed class ScanFunction
         string? condition,
         string? notes,
         string? photoUrl,
+        decimal? sellPrice,
         Guid? manifestId);
 
     public ScanFunction(SqlService sql, ILogger<ScanFunction> log)
@@ -69,7 +70,8 @@ EXEC dbo.sp_RecordScan
   @qty         = @Qty,
   @condition   = @Condition,
   @notes       = @Notes,
-  @photo_url   = @PhotoUrl",
+  @photo_url   = @PhotoUrl,
+  @sell_price  = @SellPrice",
             new
             {
                 ManifestId = body.manifestId,
@@ -77,7 +79,8 @@ EXEC dbo.sp_RecordScan
                 Qty        = body.qty ?? 1,
                 Condition  = body.condition,
                 Notes      = body.notes,
-                PhotoUrl   = body.photoUrl
+                PhotoUrl   = body.photoUrl,
+                SellPrice  = body.sellPrice
             });
 
         if (row == null) return new ObjectResult(new { error = "sp_RecordScan returned no rows" }) { StatusCode = 500 };

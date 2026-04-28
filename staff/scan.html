@@ -45,6 +45,10 @@
           <label for="qty">Qty</label>
           <input type="number" id="qty" value="1" min="1" max="999"/>
         </div>
+        <div class="col field" style="max-width:180px;">
+          <label for="sell-price">Sell price <span id="sell-price-hint" style="font-weight:400;color:#666;font-size:10px;letter-spacing:0;text-transform:none;"></span></label>
+          <input type="number" id="sell-price" step="0.01" min="0" placeholder="0.00" style="font-family:'JetBrains Mono',monospace;"/>
+        </div>
         <div class="col field" style="max-width:240px;">
           <label for="photo">Photo (optional)</label>
           <input type="file" id="photo" accept="image/*" capture="environment" style="font-size:12px;padding:6px;border:1px dashed var(--rule);"/>

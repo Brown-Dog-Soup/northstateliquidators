@@ -75,7 +75,8 @@ CREATE PROCEDURE dbo.sp_RecordScan
     @qty         INT             = 1,
     @condition   VARCHAR(40)     = NULL,
     @notes       NVARCHAR(MAX)   = NULL,
-    @photo_url   NVARCHAR(2000)  = NULL
+    @photo_url   NVARCHAR(2000)  = NULL,
+    @sell_price  DECIMAL(12,2)   = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -115,7 +116,7 @@ BEGIN
     INSERT INTO dbo.line_items
         (id, manifest_id, upc, lpn, asin, qty, condition,
          photo_blob_url, enrich_status, enrich_source,
-         title, brand, category, est_msrp, unit_cost, notes,
+         title, brand, category, est_msrp, est_resale, unit_cost, notes,
          created_at, enriched_at)
     VALUES
         (@id, @manifest_id, @scan_upc, @scan_lpn, @asin, @qty,
@@ -123,7 +124,7 @@ BEGIN
          @photo_url,
          CASE WHEN @lpn IS NOT NULL THEN 'hit' ELSE 'pending' END,
          CASE WHEN @lpn IS NOT NULL THEN 'lpn_catalog' ELSE NULL END,
-         @title, @brand, @category, @msrp, @unit_cost, @notes,
+         @title, @brand, @category, @msrp, @sell_price, @unit_cost, @notes,
          SYSUTCDATETIME(),
          CASE WHEN @lpn IS NOT NULL THEN SYSUTCDATETIME() ELSE NULL END);
 
@@ -134,6 +135,7 @@ BEGIN
         @title              AS title,
         @brand              AS brand,
         @msrp               AS msrp,
+        @sell_price         AS sell_price,
         COALESCE(@condition, @cat_cond) AS condition;
 END;
 GO

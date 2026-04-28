@@ -11,6 +11,17 @@ const palletEl= $('#active-pallet');
 let activePallet = null;
 let lookupResult = null;
 let recentItems  = [];
+let sellPriceTouched = false;  // user has typed in the sell-price field this scan
+
+// Condition → fraction of ref price we suggest as a sell price.
+// Receivers can override by typing in the field directly.
+const SELL_MULT = {
+  new:             0.80,
+  open_box:        0.60,
+  untested:        0.50,
+  customer_return: 0.40,
+  damaged:         0.20
+};
 
 // ---- bootstrap ---------------------------------------------------------
 init();
@@ -97,6 +108,9 @@ function renderLookup(r) {
       </div>`
     : '';
 
+  // "Ref price" is reference data only — never a guaranteed sell price.
+  // For UPCitemdb hits it's the lowest recorded marketplace price; for
+  // lpn_catalog it's the manifest MSRP.
   lookup.innerHTML = `
     <div class="lookup-title">${escape(r.title || '')}</div>
     <div class="lookup-meta">
@@ -105,7 +119,7 @@ function renderLookup(r) {
       <b>LPN:</b> ${escape(r.lpn || '—')}  ·
       <b>UPC:</b> ${escape(r.upc || '—')}
     </div>
-    <div class="lookup-price">${fmtMoney(r.msrp)}</div>
+    <div class="lookup-price"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#555;display:block;font-weight:400;margin-bottom:2px;">Ref price</span>${fmtMoney(r.msrp)}</div>
     <span class="lookup-condition">${escape(r.condition || 'unknown')}</span>
     ${stockImg}
   `;
@@ -115,8 +129,33 @@ function renderLookup(r) {
   const map = { 'used_good': 'open_box', 'new': 'new', 'customer_return': 'customer_return', 'salvage': 'damaged' };
   const sel = $('#condition');
   if (map[cond] && [...sel.options].some(o => o.value === map[cond])) sel.value = map[cond];
+
+  suggestSellPrice();
   confirm.disabled = false;
 }
+
+// Compute and (unless the user has manually edited) fill in a suggested
+// sell price = ref price × condition multiplier.
+function suggestSellPrice() {
+  const sp = $('#sell-price');
+  const hint = $('#sell-price-hint');
+  const ref = lookupResult?.msrp;
+  const cond = $('#condition').value;
+  const mult = SELL_MULT[cond] ?? 0.5;
+
+  if (!ref) {
+    if (hint) hint.textContent = '';
+    return;
+  }
+  const suggested = Math.round(ref * mult * 100) / 100;
+  if (hint) hint.textContent = `(suggested ${(mult * 100).toFixed(0)}% of $${ref.toFixed(2)})`;
+  if (!sellPriceTouched) sp.value = suggested.toFixed(2);
+}
+
+// Recalculate suggestion when the receiver changes condition
+$('#condition').addEventListener('change', suggestSellPrice);
+// Mark the field as user-edited so we stop overwriting it
+$('#sell-price').addEventListener('input', () => { sellPriceTouched = true; });
 
 confirm.addEventListener('click', async () => {
   if (!codeEl.value.trim()) return;
@@ -131,10 +170,13 @@ confirm.addEventListener('click', async () => {
     const useStock = $('#use-stock-photo')?.checked && lookupResult?.image_url && !file;
     const stockUrl = useStock ? lookupResult.image_url : null;
 
+    const sellRaw = $('#sell-price').value.trim();
+    const sellPrice = sellRaw === '' ? null : Number(sellRaw);
     const record = {
       code:       codeEl.value.trim(),
       qty:        Number($('#qty').value) || 1,
       condition:  $('#condition').value,
+      sellPrice:  Number.isFinite(sellPrice) ? sellPrice : null,
       manifestId: activePallet.manifest_id,
       photoUrl:   stockUrl   // sp_RecordScan stores this on line_items.photo_blob_url
     };
@@ -162,6 +204,9 @@ function resetForm() {
   $('#qty').value = '1';
   $('#condition').value = 'untested';
   $('#photo').value = '';
+  $('#sell-price').value = '';
+  $('#sell-price-hint').textContent = '';
+  sellPriceTouched = false;
   renderLookup(null);
   codeEl.focus();
 }

@@ -238,6 +238,16 @@ GitHub Pages is static — no cart or payment processing on-domain. **MVP approa
 | 2026-04-25 | Phone workflow doc for Norm + Rob (`SHOPIFY-PHONE-WORKFLOW.md`) | ✅ |
 | 2026-04-25 | Custom Shopify theme `NSL-LoadingDock` (full Liquid port of marketing site) published | ✅ |
 | 2026-04-25 | Status email drafted for Norm + Rob (in `outbox/`, gitignored) | ✅ |
+| 2026-04-27 | Marketing site migrated to Azure Static Web Apps (rg-nsl-website, eastus2) | ✅ |
+| 2026-04-27 | Inventory backend infra provisioned (rg-nsl-prod): SQL+Storage+KV+Logs+AppInsights | ✅ |
+| 2026-04-27 | Manifest XLSX importer + Amazon B-Stock manifest ingested (2,035 LPN rows) | ✅ |
+| 2026-04-27 | Power Apps "NSL Scan" canvas app built (deprecated by PWA — see 2026-04-28) | ✅ |
+| 2026-04-28 | PWA pivot — staff scan + admin pages on the SWA replace Power Apps | ✅ |
+| 2026-04-28 | Entra app registration "NSL Staff Portal" + SWA auth wiring | ✅ |
+| 2026-04-28 | Pallet admin: list/create/sell-mode toggle, photo upload (SAS-signed) | ✅ |
+| 2026-04-28 | `staff.northstateliquidators.com` custom domain live on SWA, JS auto-redirect | ✅ |
+| 2026-04-28 | "Staff" footer link on marketing site → staff.northstateliquidators.com | ✅ |
+| 2026-04-28 | Site cleanup — drop V1/V2 preview switcher, V1 warehouse direction locked in | ✅ |
 | | Norm + Rob first sign-in + MFA setup | ⏳ |
 | | DKIM signing enabled in Defender admin | ⏳ |
 | | Norm + Rob trial-list 5–10 real products from warehouse | ⏳ |
@@ -294,8 +304,20 @@ GitHub Pages is static — no cart or payment processing on-domain. **MVP approa
 | `Sync-NSLFeatured.ps1` | Pull Featured collection from Shopify, regenerate hunt-grid in `index.html` |
 | `SHOPIFY-PHONE-WORKFLOW.md` | One-page guide for Norm/Rob: list a product from the warehouse floor in 90 seconds |
 | `shopify-cli/shopify.app.toml` | Shopify CLI app config (NSL-Dev app, client_id only, secret in OS keychain) |
-| `shopify-theme/` | Custom Liquid theme `NSL-LoadingDock` — full storefront port of the marketing site (homepage, product, collection, cart, password, search, 404, etc.) |
-| `Push-NSLTheme.ps1` | Wrapper around `shopify theme push`/`publish` for one-line theme deploys after edits |
+| `shopify-theme/` | Custom Liquid theme `NSL-LoadingDock` — full storefront port of the marketing site |
+| `Push-NSLTheme.ps1` | Wrapper around `shopify theme push`/`publish` for one-line theme deploys |
+| `azure/website/` | Bicep + deploy script for the SWA (rg-nsl-website) hosting marketing site + staff PWA |
+| `azure/prod/` | Bicep + deploy script for backend infra (rg-nsl-prod): SQL + Storage + KV + Logs |
+| `db/schema.sql` | Inventory pipeline tables (manifests, line_items, lpn_catalog, manifest_imports, enrichment_log) |
+| `db/admin-portal-additions.sql` | Pallet display_name/photo_url/auto-number, sp_CreateManifest, sp_SetSellMode, v_pallets |
+| `db/power-apps-procs.sql` | sp_LookupCode + sp_RecordScan + v_recent_scans (also used by /api/lookup, /api/scan) |
+| `api/` | .NET 8 isolated worker Functions deployed as SWA managed Functions |
+| `staff/` | Staff PWA — scan, admin, photo upload — gated by SWA Entra auth |
+| `staticwebapp.config.json` | SWA routing + Entra auth wiring at the root of the repo |
+| `staff.northstateliquidators.com` | Custom subdomain pointing to SWA — bare URL redirects to /staff/ |
+| `docs/archive/` | Deprecated guides (Power Apps build guides) + original mockups |
+| `Amazon/` (gitignored) | B-Stock liquidation manifest XLSX files (vendor data) |
+| `outbox/` (gitignored) | Drafted emails to Norm/Rob (may include credentials) |
 
 ## Resuming the Shopify API session
 

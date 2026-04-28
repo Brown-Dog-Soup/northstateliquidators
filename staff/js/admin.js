@@ -35,7 +35,8 @@ async function loadList() {
       <div class="body">
         <h3>${escape(p.display_name || `Pallet #${p.pallet_number}`)}</h3>
         <div class="stats">
-          ${p.item_count || 0} items · ${p.unit_count || 0} units · ${fmtMoney(p.total_est_resale)} est. resale
+          ${p.item_count || 0} items · ${p.unit_count || 0} units<br>
+          MSRP: <b>${fmtMoney(p.total_msrp)}</b>${p.total_est_resale ? ` · resale: ${fmtMoney(p.total_est_resale)}` : ''}
         </div>
         <span class="pill ${p.sell_mode || 'undecided'}">${p.sell_mode || 'undecided'}</span>
       </div>
@@ -88,7 +89,7 @@ async function showDetail(id) {
     `items        ${current.item_count || 0}\n` +
     `units        ${current.unit_count || 0}\n` +
     `MSRP total   ${fmtMoney(current.total_msrp)}\n` +
-    `est. resale  ${fmtMoney(current.total_est_resale)}\n` +
+    `est. resale  ${current.total_est_resale ? fmtMoney(current.total_est_resale) : '— (pending enrichment)'}\n` +
     `cost         ${fmtMoney(current.total_cost)}`;
 
   // mark active sell-mode button

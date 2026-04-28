@@ -139,9 +139,11 @@ async function showDetail(id) {
   // Wire item-row buttons
   document.querySelectorAll('.edit-item').forEach(b => b.addEventListener('click', e => {
     const id = e.currentTarget.dataset.id;
-    document.querySelectorAll('.item-edit').forEach(el => el.hidden = el.dataset.edit !== id || !el.hidden ? true : false);
     const panel = document.querySelector(`.item-edit[data-edit="${id}"]`);
-    if (panel) panel.hidden = !panel.hidden;
+    if (!panel) return;
+    const willOpen = panel.hidden;            // true if currently hidden → opening
+    document.querySelectorAll('.item-edit').forEach(el => { el.hidden = true; });
+    panel.hidden = !willOpen;                 // open if it was closed; otherwise stay closed
   }));
   document.querySelectorAll('.cancel-item').forEach(b => b.addEventListener('click', e => {
     const id = e.currentTarget.dataset.id;

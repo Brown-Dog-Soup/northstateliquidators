@@ -76,7 +76,9 @@ public sealed class UpcLookupService
                 Brand       = string.IsNullOrWhiteSpace(item.Brand) ? null : item.Brand,
                 Description = string.IsNullOrWhiteSpace(item.Description) ? null : item.Description,
                 Category    = string.IsNullOrWhiteSpace(item.Category) ? null : item.Category,
-                Msrp        = item.HighestRecordedPrice ?? item.LowestRecordedPrice,
+                // Prefer lowest recorded price — highest is frequently an outlier
+                // (resellers, "collectible" listings) that wildly overstates retail.
+                Msrp        = item.LowestRecordedPrice ?? item.HighestRecordedPrice,
                 Upc         = item.Upc,
                 Ean         = item.Ean,
                 ImageUrl    = item.Images?.FirstOrDefault()

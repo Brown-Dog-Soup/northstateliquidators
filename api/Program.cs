@@ -13,8 +13,10 @@ builder.Services
     .AddApplicationInsightsTelemetryWorkerService()
     .ConfigureFunctionsApplicationInsights();
 
+builder.Services.AddHttpClient();
 builder.Services.AddSingleton<SqlService>();
 builder.Services.AddSingleton<BlobService>();
 builder.Services.AddSingleton<ManifestParser>();
+builder.Services.AddSingleton<UpcLookupService>();
 
 builder.Build().Run();

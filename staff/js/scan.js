@@ -71,18 +71,37 @@ function renderLookup(r) {
     confirm.disabled = !codeEl.value.trim();
     return;
   }
-  const compareLine = r.msrp ? `<div class="lookup-meta"><b>MSRP:</b> ${fmtMoney(r.msrp)}` : '';
+
+  const stockImg = r.image_url
+    ? `
+      <div style="display:flex;gap:16px;align-items:flex-start;margin-top:12px;padding-top:12px;border-top:1px solid var(--rule);">
+        <img src="${escape(r.image_url)}" alt="stock photo"
+             style="width:120px;height:120px;object-fit:contain;background:#fff;border:1px solid var(--rule);flex-shrink:0;"
+             onerror="this.parentElement.style.display='none'">
+        <div style="flex:1;min-width:0;">
+          <label style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#555;display:block;margin-bottom:6px;">Stock photo from ${r.match_source}</label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-family:Inter;text-transform:none;letter-spacing:0;color:var(--ink);font-size:14px;">
+            <input type="checkbox" id="use-stock-photo" checked style="width:20px;height:20px;cursor:pointer;">
+            Use this photo for the line item
+          </label>
+          <div style="font-size:12px;color:#666;margin-top:6px;">Uncheck if you want to take your own photo (or use the camera input below).</div>
+        </div>
+      </div>`
+    : '';
+
   lookup.innerHTML = `
     <div class="lookup-title">${escape(r.title || '')}</div>
     <div class="lookup-meta">
       <b>Brand:</b> ${escape(r.brand || '—')}  ·
       <b>Match:</b> ${r.match_source}  ·
       <b>LPN:</b> ${escape(r.lpn || '—')}  ·
-      <b>ASIN:</b> ${escape(r.asin || '—')}
+      <b>UPC:</b> ${escape(r.upc || '—')}
     </div>
     <div class="lookup-price">${fmtMoney(r.msrp)}</div>
     <span class="lookup-condition">${escape(r.condition || 'unknown')}</span>
+    ${stockImg}
   `;
+
   // pre-pick condition if catalog provides one
   const cond = (r.condition || '').toLowerCase();
   const map = { 'used_good': 'open_box', 'new': 'new', 'customer_return': 'customer_return', 'salvage': 'damaged' };
@@ -98,16 +117,22 @@ confirm.addEventListener('click', async () => {
   confirm.textContent = 'Saving…';
 
   try {
+    // Decide which photo (if any) to attach.
+    // Priority: receiver's own camera shot > stock image from lookup > none
+    const file = $('#photo').files[0];
+    const useStock = $('#use-stock-photo')?.checked && lookupResult?.image_url && !file;
+    const stockUrl = useStock ? lookupResult.image_url : null;
+
     const record = {
       code:       codeEl.value.trim(),
       qty:        Number($('#qty').value) || 1,
       condition:  $('#condition').value,
-      manifestId: activePallet.manifest_id
+      manifestId: activePallet.manifest_id,
+      photoUrl:   stockUrl   // sp_RecordScan stores this on line_items.photo_blob_url
     };
     const result = await apiClient.scan(record);
 
-    // optional photo upload
-    const file = $('#photo').files[0];
+    // If receiver took their own photo, upload it (overrides any stock URL)
     if (file) {
       try { await apiClient.uploadPhoto('item', result.line_item_id, file); }
       catch (e) { toast(`Photo upload failed: ${e.message}`, 'err', 4000); }

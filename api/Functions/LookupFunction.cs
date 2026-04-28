@@ -72,7 +72,8 @@ public sealed class LookupFunction
                 qty_in_manifest = (int?)null,
                 pallet_id       = (string?)null,
                 lot_id          = (string?)null,
-                order_number    = (string?)null
+                order_number    = (string?)null,
+                image_url       = upc.ImageUrl
             });
         }
 

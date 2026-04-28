@@ -56,6 +56,14 @@ async function doLookup() {
   try {
     const res = await fetch(`/api/lookup/${encodeURIComponent(code)}`, { credentials: 'same-origin' });
     if (res.status === 404) { renderLookup(null); return; }
+    if (res.status === 422) {
+      const body = await res.json().catch(() => ({}));
+      lookupResult = null;
+      lookup.innerHTML = `<div class="lookup-empty" style="color:#b00;">${escape(body.message || 'Invalid barcode — please rescan.')}</div>`;
+      confirm.disabled = true;
+      toast(body.message || 'Invalid barcode — rescan', 'err', 3000);
+      return;
+    }
     if (!res.ok) throw new Error(`lookup ${res.status}`);
     lookupResult = await res.json();
     renderLookup(lookupResult);

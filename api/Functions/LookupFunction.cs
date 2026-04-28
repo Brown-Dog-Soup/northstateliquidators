@@ -77,6 +77,20 @@ public sealed class LookupFunction
             });
         }
 
+        // Distinguish "barcode is structurally invalid" from "valid but unknown".
+        // 12/13-digit numeric codes that fail the GTIN check digit are almost
+        // always a scanner misread — surface that to the UI so the user knows
+        // to rescan instead of treating it as a manual-entry catalog miss.
+        if (System.Text.RegularExpressions.Regex.IsMatch(code, @"^\d{12,13}$")
+            && !UpcLookupService.IsValidGtinCheckDigit(code))
+        {
+            _log.LogInformation("Lookup {Code} -> invalid GTIN check digit", code);
+            return new ObjectResult(new { error = "invalid_upc", message = "Barcode check digit failed — likely a scanner misread. Please rescan." })
+            {
+                StatusCode = 422
+            };
+        }
+
         _log.LogInformation("Lookup {Code} -> miss", code);
         return new NotFoundResult();
     }

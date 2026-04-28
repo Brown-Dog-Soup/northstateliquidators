@@ -48,6 +48,14 @@ public sealed class UpcLookupService
         if (!System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"^\d{12,13}$"))
             return null;
 
+        // Check-digit validation — saves an API call and gives us a clean signal
+        // for "scanner misread / typo" vs "valid UPC, just unknown to the catalog".
+        if (!IsValidGtinCheckDigit(trimmed))
+        {
+            _log.LogInformation("UPCitemdb {Code} -> skipped (invalid GTIN check digit)", trimmed);
+            return null;
+        }
+
         try
         {
             var url = $"https://api.upcitemdb.com/prod/trial/lookup?upc={Uri.EscapeDataString(trimmed)}";
@@ -79,6 +87,24 @@ public sealed class UpcLookupService
             _log.LogWarning(ex, "UPCitemdb lookup failed for {Code}", trimmed);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Validates UPC-A (12) / EAN-13 (13) check digit using the GTIN modulo-10 algorithm.
+    /// Skips the network call when the barcode is structurally malformed (typo, scanner misread).
+    /// </summary>
+    public static bool IsValidGtinCheckDigit(string digits)
+    {
+        if (string.IsNullOrEmpty(digits) || (digits.Length != 12 && digits.Length != 13)) return false;
+        int sum = 0;
+        // Walk right-to-left excluding the check digit; alternate weights 3,1
+        for (int i = digits.Length - 2, w = 3; i >= 0; i--, w = 4 - w)
+        {
+            if (digits[i] < '0' || digits[i] > '9') return false;
+            sum += (digits[i] - '0') * w;
+        }
+        int check = (10 - sum % 10) % 10;
+        return check == digits[^1] - '0';
     }
 
     private static readonly JsonSerializerOptions JsonOpts = new()

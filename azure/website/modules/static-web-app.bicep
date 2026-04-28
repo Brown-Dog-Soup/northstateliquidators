@@ -29,6 +29,9 @@ resource swa 'Microsoft.Web/staticSites@2024-04-01' = {
     name: sku
     tier: sku
   }
+  // System-assigned managed identity is the principal that managed Functions
+  // (api/) use when authenticating to Azure SQL, Storage, and Key Vault.
+  identity: { type: 'SystemAssigned' }
   // Intentionally empty properties — no GitHub repo binding via Bicep so we
   // can deploy from a workflow file in the repo using the SWA's deployment
   // token. Azure auto-selects "manual upload" mode when no repository URL
@@ -43,3 +46,4 @@ resource swa 'Microsoft.Web/staticSites@2024-04-01' = {
 output name string = swa.name
 output resourceId string = swa.id
 output defaultHostname string = swa.properties.defaultHostname
+output principalId string = swa.identity.principalId

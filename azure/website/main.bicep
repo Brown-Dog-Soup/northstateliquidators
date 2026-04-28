@@ -69,3 +69,4 @@ output resourceGroupName string = rg.name
 output staticSiteName string = website.outputs.name
 output defaultHostname string = website.outputs.defaultHostname
 output staticSiteResourceId string = website.outputs.resourceId
+output staticSitePrincipalId string = website.outputs.principalId

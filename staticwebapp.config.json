@@ -1,0 +1,31 @@
+{
+  "routes": [
+    { "route": "/staff/*", "allowedRoles": ["authenticated"] },
+    { "route": "/api/*",   "allowedRoles": ["authenticated"] },
+    { "route": "/login",   "rewrite": "/.auth/login/aad?post_login_redirect_uri=/staff/" },
+    { "route": "/logout",  "redirect": "/.auth/logout?post_logout_redirect_uri=/" }
+  ],
+  "responseOverrides": {
+    "401": {
+      "redirect": "/.auth/login/aad?post_login_redirect_uri=/staff/",
+      "statusCode": 302
+    }
+  },
+  "auth": {
+    "identityProviders": {
+      "azureActiveDirectory": {
+        "registration": {
+          "openIdIssuer": "https://login.microsoftonline.com/d9b645c3-3587-4cd4-be9b-1a8d405c92ad/v2.0",
+          "clientIdSettingName": "AZURE_CLIENT_ID"
+        },
+        "userDetailsClaim": "preferred_username"
+      }
+    }
+  },
+  "globalHeaders": {
+    "Cache-Control": "no-store"
+  },
+  "mimeTypes": {
+    ".webmanifest": "application/manifest+json"
+  }
+}

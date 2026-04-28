@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#002868">
+  <title>NSL Receiving</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/staff.css">
+</head>
+<body>
+  <div class="bar">
+    <h1>NSL Receiving · <span id="active-pallet" style="color:#fff;font-size:18px;font-family:'JetBrains Mono',monospace;letter-spacing:0;">loading…</span></h1>
+    <div class="meta" id="me"></div>
+  </div>
+
+  <div class="wrap">
+    <form id="scanform" autocomplete="off" onsubmit="return false">
+      <div class="field">
+        <label for="code">Scan an LPN, UPC, or ASIN</label>
+        <input type="text" id="code" class="scan-input" placeholder="Scan or type a code…" autofocus />
+      </div>
+
+      <div class="card" id="lookup">
+        <div class="lookup-empty">Scan a code to see product info.</div>
+      </div>
+
+      <div class="row" style="margin-top:16px;">
+        <div class="col field">
+          <label for="condition">Condition</label>
+          <select id="condition">
+            <option value="new">new</option>
+            <option value="open_box">open_box</option>
+            <option value="damaged">damaged</option>
+            <option value="untested" selected>untested</option>
+            <option value="customer_return">customer_return</option>
+          </select>
+        </div>
+        <div class="col field" style="max-width:140px;">
+          <label for="qty">Qty</label>
+          <input type="number" id="qty" value="1" min="1" max="999"/>
+        </div>
+        <div class="col field" style="max-width:240px;">
+          <label for="photo">Photo (optional)</label>
+          <input type="file" id="photo" accept="image/*" capture="environment" style="font-size:12px;padding:6px;border:1px dashed var(--rule);"/>
+        </div>
+      </div>
+
+      <button id="confirm" class="btn btn-primary" disabled style="width:100%;margin-top:8px;font-size:24px;padding:20px;">Confirm Scan</button>
+    </form>
+
+    <h3 style="margin-top:32px;font-family:Anton;letter-spacing:0.04em;text-transform:uppercase;">Recent</h3>
+    <div id="recent" class="items-list"></div>
+
+    <p style="margin-top:24px;font-size:13px;color:#666;">
+      <a href="index.html">← back to staff tools</a>  ·  <a href="admin.html">switch active pallet ↗</a>
+    </p>
+  </div>
+
+  <script type="module" src="js/scan.js"></script>
+</body>
+</html>

@@ -14,6 +14,7 @@ builder.Services
     .ConfigureFunctionsApplicationInsights();
 
 builder.Services.AddSingleton<SqlService>();
+builder.Services.AddSingleton<BlobService>();
 builder.Services.AddSingleton<ManifestParser>();
 
 builder.Build().Run();

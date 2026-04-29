@@ -33,7 +33,14 @@ public sealed class ScanFunction
         string? notes,
         string? photoUrl,
         decimal? sellPrice,
-        Guid? manifestId);
+        Guid? manifestId,
+        // Optional fields carried from /api/lookup so non-catalog matches
+        // (UPCitemdb fallback) still persist a usable title/brand on the line item.
+        string? title,
+        string? brand,
+        string? category,
+        decimal? msrp,
+        string? matchSource);
 
     public ScanFunction(SqlService sql, ILogger<ScanFunction> log)
     {
@@ -65,22 +72,32 @@ public sealed class ScanFunction
         await using var conn = await _sql.OpenAsync(ct);
         var row = await conn.QueryFirstOrDefaultAsync(@"
 EXEC dbo.sp_RecordScan
-  @manifest_id = @ManifestId,
-  @code        = @Code,
-  @qty         = @Qty,
-  @condition   = @Condition,
-  @notes       = @Notes,
-  @photo_url   = @PhotoUrl,
-  @sell_price  = @SellPrice",
+  @manifest_id      = @ManifestId,
+  @code             = @Code,
+  @qty              = @Qty,
+  @condition        = @Condition,
+  @notes            = @Notes,
+  @photo_url        = @PhotoUrl,
+  @sell_price       = @SellPrice,
+  @arg_title        = @Title,
+  @arg_brand        = @Brand,
+  @arg_category     = @Category,
+  @arg_msrp         = @Msrp,
+  @arg_match_source = @MatchSource",
             new
             {
-                ManifestId = body.manifestId,
-                Code       = body.code,
-                Qty        = body.qty ?? 1,
-                Condition  = body.condition,
-                Notes      = body.notes,
-                PhotoUrl   = body.photoUrl,
-                SellPrice  = body.sellPrice
+                ManifestId  = body.manifestId,
+                Code        = body.code,
+                Qty         = body.qty ?? 1,
+                Condition   = body.condition,
+                Notes       = body.notes,
+                PhotoUrl    = body.photoUrl,
+                SellPrice   = body.sellPrice,
+                Title       = body.title,
+                Brand       = body.brand,
+                Category    = body.category,
+                Msrp        = body.msrp,
+                MatchSource = body.matchSource
             });
 
         if (row == null) return new ObjectResult(new { error = "sp_RecordScan returned no rows" }) { StatusCode = 500 };

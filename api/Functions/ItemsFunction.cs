@@ -85,4 +85,34 @@ FROM dbo.line_items WHERE id = @id", new { id });
         _log.LogInformation("DeleteItem {Id}: removed", id);
         return new OkObjectResult(new { id, deleted = true });
     }
+
+    public sealed record BulkDeleteRequest(Guid[] ids);
+
+    /// <summary>
+    /// Bulk-remove a set of line_items in one round trip. The admin pallet
+    /// detail uses this for "Delete selected" after the receiver checks several
+    /// rows. Returns the number actually deleted (caller already confirmed).
+    /// </summary>
+    [Function("BulkDeleteItems")]
+    public async Task<IActionResult> BulkDelete(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "items/bulk-delete")] HttpRequest req,
+        CancellationToken ct)
+    {
+        BulkDeleteRequest? body;
+        try
+        {
+            body = await JsonSerializer.DeserializeAsync<BulkDeleteRequest>(
+                req.Body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct);
+        }
+        catch (JsonException ex) { return new BadRequestObjectResult(new { error = "Invalid JSON", detail = ex.Message }); }
+
+        if (body?.ids == null || body.ids.Length == 0)
+            return new BadRequestObjectResult(new { error = "ids array is required and must be non-empty" });
+
+        await using var conn = await _sql.OpenAsync(ct);
+        var rows = await conn.ExecuteAsync(
+            "DELETE FROM dbo.line_items WHERE id IN @Ids", new { Ids = body.ids });
+        _log.LogInformation("BulkDeleteItems: removed {N} of {Req} requested", rows, body.ids.Length);
+        return new OkObjectResult(new { deleted = rows, requested = body.ids.Length });
+    }
 }

@@ -30,7 +30,10 @@ public sealed class PalletsFunction
     private readonly ILogger<PalletsFunction> _log;
 
     public sealed record CreatePalletRequest(string? displayName, string? source, string? palletReference, string? notes);
-    public sealed record UpdatePalletRequest(string? displayName, string? sellMode, string? photoUrl, string? notes);
+    public sealed record UpdatePalletRequest(
+        string? displayName, string? sellMode, string? photoUrl, string? notes,
+        string? category,    // pallet-level top bucket: Apparel, Electronics, ...
+        bool?   archived);   // true = archive, false = restore, null = no change
 
     public PalletsFunction(SqlService sql, BlobService blob, IConfiguration config, ILogger<PalletsFunction> log)
     {
@@ -73,9 +76,17 @@ public sealed class PalletsFunction
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "pallets")] HttpRequest req,
         CancellationToken ct)
     {
+        // ?includeArchived=true surfaces archived pallets; default hides them so
+        // the admin gallery only shows active work.
+        var includeArchived = string.Equals(
+            req.Query["includeArchived"].ToString(), "true", StringComparison.OrdinalIgnoreCase);
+
+        var sql = includeArchived
+            ? "SELECT * FROM dbo.v_pallets ORDER BY received_date DESC, pallet_number DESC"
+            : "SELECT * FROM dbo.v_pallets WHERE archived_at IS NULL ORDER BY received_date DESC, pallet_number DESC";
+
         await using var conn = await _sql.OpenAsync(ct);
-        var rows = (await conn.QueryAsync(
-            "SELECT * FROM dbo.v_pallets ORDER BY received_date DESC, pallet_number DESC")).ToList();
+        var rows = (await conn.QueryAsync(sql)).ToList();
         SignRowPhotos(rows);
         return new OkObjectResult(rows);
     }
@@ -156,6 +167,12 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
         if (body?.displayName != null) { sets.Add("display_name = @dn"); p.Add("dn", body.displayName); }
         if (body?.photoUrl    != null) { sets.Add("photo_url = @pu");    p.Add("pu", body.photoUrl); }
         if (body?.notes       != null) { sets.Add("notes = @nt");        p.Add("nt", body.notes); }
+        if (body?.category    != null) { sets.Add("category = @cat");    p.Add("cat", body.category); }
+        if (body?.archived.HasValue == true)
+        {
+            sets.Add("archived_at = @ar");
+            p.Add("ar", body.archived.Value ? (DateTime?)DateTime.UtcNow : null);
+        }
 
         if (sets.Count > 0)
         {
@@ -168,6 +185,41 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
             "SELECT * FROM dbo.v_pallets WHERE manifest_id = @id", new { id });
         if (updated != null) SignRowPhotos((object)updated);
         return new OkObjectResult(updated);
+    }
+
+    /// <summary>
+    /// Hard-delete a pallet and all its line items. Use sparingly; archive
+    /// (PATCH archived=true) is the safer default and is what the admin UI
+    /// uses by default. This endpoint exists for the rare "scanned the wrong
+    /// thing entirely, never want to see it again" cleanup.
+    /// </summary>
+    [Function("DeletePallet")]
+    public async Task<IActionResult> Delete(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "pallets/{id}")] HttpRequest req,
+        Guid id,
+        CancellationToken ct)
+    {
+        await using var conn = await _sql.OpenAsync(ct);
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            var itemRows = await conn.ExecuteAsync(
+                "DELETE FROM dbo.line_items WHERE manifest_id = @id",
+                new { id }, transaction: tx);
+            var palletRows = await conn.ExecuteAsync(
+                "DELETE FROM dbo.manifests WHERE id = @id",
+                new { id }, transaction: tx);
+            tx.Commit();
+
+            if (palletRows == 0) return new NotFoundResult();
+            _log.LogInformation("DeletePallet {Id}: removed pallet + {N} item(s)", id, itemRows);
+            return new OkObjectResult(new { id, deleted = true, items_deleted = itemRows });
+        }
+        catch
+        {
+            tx.Rollback();
+            throw;
+        }
     }
 
     [Function("ListPalletItems")]

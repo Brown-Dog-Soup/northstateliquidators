@@ -37,7 +37,8 @@ BEGIN
         c.qty_in_manifest,
         c.pallet_id,
         c.lot_id,
-        c.order_number
+        c.order_number,
+        c.product_image_url AS image_url
     FROM dbo.lpn_catalog c
     WHERE c.lpn = @c
     UNION ALL
@@ -45,7 +46,8 @@ BEGIN
         'upc'           AS match_source,
         c.lpn, c.asin, c.upc, c.title, c.brand, c.category, c.subcategory,
         c.msrp, c.unit_cost, c.condition, c.qty_in_manifest, c.pallet_id,
-        c.lot_id, c.order_number
+        c.lot_id, c.order_number,
+        c.product_image_url AS image_url
     FROM dbo.lpn_catalog c
     WHERE c.upc = @c AND NOT EXISTS (SELECT 1 FROM dbo.lpn_catalog WHERE lpn = @c)
     UNION ALL
@@ -53,7 +55,8 @@ BEGIN
         'asin'          AS match_source,
         c.lpn, c.asin, c.upc, c.title, c.brand, c.category, c.subcategory,
         c.msrp, c.unit_cost, c.condition, c.qty_in_manifest, c.pallet_id,
-        c.lot_id, c.order_number
+        c.lot_id, c.order_number,
+        c.product_image_url AS image_url
     FROM dbo.lpn_catalog c
     WHERE c.asin = @c AND NOT EXISTS (SELECT 1 FROM dbo.lpn_catalog WHERE lpn = @c OR upc = @c);
 END;
@@ -70,13 +73,21 @@ GO
 IF OBJECT_ID('dbo.sp_RecordScan', 'P') IS NOT NULL DROP PROCEDURE dbo.sp_RecordScan;
 GO
 CREATE PROCEDURE dbo.sp_RecordScan
-    @manifest_id UNIQUEIDENTIFIER = NULL,
-    @code        NVARCHAR(50),
-    @qty         INT             = 1,
-    @condition   VARCHAR(40)     = NULL,
-    @notes       NVARCHAR(MAX)   = NULL,
-    @photo_url   NVARCHAR(2000)  = NULL,
-    @sell_price  DECIMAL(12,2)   = NULL
+    @manifest_id      UNIQUEIDENTIFIER = NULL,
+    @code             NVARCHAR(50),
+    @qty              INT             = 1,
+    @condition        VARCHAR(40)     = NULL,
+    @notes            NVARCHAR(MAX)   = NULL,
+    @photo_url        NVARCHAR(2000)  = NULL,
+    @sell_price       DECIMAL(12,2)   = NULL,
+    -- Optional fields carried from /api/lookup so a UPCitemdb hit (or other
+    -- non-lpn_catalog source) still persists title/brand/category instead of
+    -- dropping a bare UPC into the Recent list with no description.
+    @arg_title        NVARCHAR(500)   = NULL,
+    @arg_brand        NVARCHAR(200)   = NULL,
+    @arg_category     NVARCHAR(200)   = NULL,
+    @arg_msrp         DECIMAL(12,2)   = NULL,
+    @arg_match_source VARCHAR(40)     = NULL  -- e.g. 'upcitemdb' (matches enrich_source vocabulary)
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -107,6 +118,28 @@ BEGIN
     FROM dbo.lpn_catalog c
     WHERE c.lpn = @code OR c.upc = @code OR c.asin = @code;
 
+    -- Catalog wins; @arg_* fills in only when catalog has nothing.
+    DECLARE
+        @final_title    NVARCHAR(500) = COALESCE(@title,    @arg_title),
+        @final_brand    NVARCHAR(200) = COALESCE(@brand,    @arg_brand),
+        @final_category NVARCHAR(200) = COALESCE(@category, @arg_category),
+        @final_msrp     DECIMAL(12,2) = COALESCE(@msrp,     @arg_msrp);
+
+    -- enrichment status / source: lpn_catalog hit > UPC fallback > pending
+    DECLARE
+        @enrich_status VARCHAR(20) =
+            CASE
+                WHEN @lpn IS NOT NULL                              THEN 'hit'
+                WHEN @final_title IS NOT NULL                      THEN 'hit'
+                ELSE 'pending'
+            END,
+        @enrich_source VARCHAR(40) =
+            CASE
+                WHEN @lpn IS NOT NULL                              THEN 'lpn_catalog'
+                WHEN @final_title IS NOT NULL                      THEN @arg_match_source
+                ELSE NULL
+            END;
+
     -- Resolve final code-shape: if it looks like an LPN keep it as such,
     -- otherwise treat as a UPC.
     DECLARE @id UNIQUEIDENTIFIER = NEWID();
@@ -122,19 +155,20 @@ BEGIN
         (@id, @manifest_id, @scan_upc, @scan_lpn, @asin, @qty,
          COALESCE(@condition, @cat_cond),
          @photo_url,
-         CASE WHEN @lpn IS NOT NULL THEN 'hit' ELSE 'pending' END,
-         CASE WHEN @lpn IS NOT NULL THEN 'lpn_catalog' ELSE NULL END,
-         @title, @brand, @category, @msrp, @sell_price, @unit_cost, @notes,
+         @enrich_status,
+         @enrich_source,
+         @final_title, @final_brand, @final_category, @final_msrp,
+         @sell_price, @unit_cost, @notes,
          SYSUTCDATETIME(),
-         CASE WHEN @lpn IS NOT NULL THEN SYSUTCDATETIME() ELSE NULL END);
+         CASE WHEN @enrich_status = 'hit' THEN SYSUTCDATETIME() ELSE NULL END);
 
     SELECT
         @id                 AS line_item_id,
         @manifest_id        AS manifest_id,
-        CASE WHEN @lpn IS NOT NULL THEN 'hit' ELSE 'pending' END AS enrich_status,
-        @title              AS title,
-        @brand              AS brand,
-        @msrp               AS msrp,
+        @enrich_status      AS enrich_status,
+        @final_title        AS title,
+        @final_brand        AS brand,
+        @final_msrp         AS msrp,
         @sell_price         AS sell_price,
         COALESCE(@condition, @cat_cond) AS condition;
 END;

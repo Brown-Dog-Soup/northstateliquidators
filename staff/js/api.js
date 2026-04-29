@@ -21,18 +21,36 @@ export async function api(method, path, body = null, opts = {}) {
   return data;
 }
 
+// Pallet-level top-bucket categories. Editable at /staff/admin pallet detail.
+// Stored in manifests.category. Receiver-applied bucket independent of the
+// per-item category column on line_items (which carries manifest taxonomy).
+export const NSL_CATEGORIES = [
+  'Apparel',
+  'Electronics',
+  'Appliances',
+  'Furniture',
+  'Home Goods',
+  'Holiday',
+  'Mixed Goods'
+];
+
 export const apiClient = {
   health:           () => api('GET',  '/api/health'),
   lookup:    (code) => api('GET',  `/api/lookup/${encodeURIComponent(code)}`),
   scan:    (record) => api('POST', '/api/scan', record),
 
-  pallets:          () => api('GET',  '/api/pallets'),
+  // pallets({ includeArchived: true }) surfaces archived pallets too.
+  pallets:    (opts = {}) => api('GET',  `/api/pallets${opts.includeArchived ? '?includeArchived=true' : ''}`),
   createPallet:  (b) => api('POST', '/api/pallets', b),
   pallet:    (id) => api('GET',  `/api/pallets/${id}`),
   patchPallet:(id,b) => api('PATCH', `/api/pallets/${id}`, b),
+  deletePallet:(id) => api('DELETE', `/api/pallets/${id}`),
+  archivePallet: (id, archived = true) => api('PATCH', `/api/pallets/${id}`, { archived }),
+  setPalletCategory: (id, category) => api('PATCH', `/api/pallets/${id}`, { category }),
 
   patchItem:  (id,b) => api('PATCH',  `/api/items/${id}`, b),
   deleteItem: (id)   => api('DELETE', `/api/items/${id}`),
+  bulkDeleteItems: (ids) => api('POST', '/api/items/bulk-delete', { ids }),
 
   // POST a Blob/ArrayBuffer; sets Content-Type from the Blob's type
   uploadPhoto: async (kind, id, blob) => {

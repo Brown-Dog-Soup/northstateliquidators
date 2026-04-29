@@ -29,6 +29,9 @@
           <input type="text" id="new-name" placeholder="e.g., Tuesday Truck Apparel Pallet"/>
         </div>
         <button id="new-pallet" class="btn btn-primary">+ New Pallet</button>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#444;margin-left:12px;cursor:pointer;">
+          <input type="checkbox" id="show-archived"> Show archived
+        </label>
       </div>
       <div class="gallery" id="pallets"></div>
     </section>
@@ -61,6 +64,10 @@
               <input type="text" id="dn"/>
             </div>
             <div class="field">
+              <label for="cat">Category</label>
+              <select id="cat"></select>
+            </div>
+            <div class="field">
               <label for="notes">Notes</label>
               <textarea id="notes" rows="3"></textarea>
             </div>
@@ -72,10 +79,26 @@
             <pre id="stats" style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#444;margin:0;white-space:pre-wrap;"></pre>
             <button id="set-active" class="btn btn-yellow" style="width:100%;margin-top:8px;">Make this the active pallet for receiving</button>
           </div>
+
+          <div class="card" style="margin-top:16px;">
+            <h3 style="margin:0 0 8px;font-family:Anton;letter-spacing:0.02em;text-transform:uppercase;color:#b00;">Danger zone</h3>
+            <button id="archive-pallet" class="btn btn-secondary" style="width:100%;">Archive pallet</button>
+            <p style="margin:8px 0;font-size:12px;color:#666;">Archived pallets are hidden by default but can be restored anytime.</p>
+            <button id="delete-pallet" class="btn btn-danger" style="width:100%;background:#b00;color:#fff;border:none;">Delete pallet permanently</button>
+            <p style="margin:8px 0 0;font-size:12px;color:#666;">Deletes the pallet <em>and</em> all its scanned items. Cannot be undone.</p>
+          </div>
         </div>
 
         <div class="col">
-          <h3 style="font-family:Anton;letter-spacing:0.02em;text-transform:uppercase;">Items <span id="items-count" style="font-size:14px;color:#666;font-family:'JetBrains Mono',monospace;"></span></h3>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+            <h3 style="font-family:Anton;letter-spacing:0.02em;text-transform:uppercase;margin:0;">Items <span id="items-count" style="font-size:14px;color:#666;font-family:'JetBrains Mono',monospace;"></span></h3>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <label style="font-size:12px;color:#666;cursor:pointer;display:flex;align-items:center;gap:4px;">
+                <input type="checkbox" id="select-all-items"> Select all
+              </label>
+              <button id="bulk-delete" class="btn btn-danger" disabled style="padding:6px 14px;font-size:12px;background:#b00;color:#fff;border:none;opacity:0.5;">Delete selected (<span id="bulk-count">0</span>)</button>
+            </div>
+          </div>
           <div class="items-list" id="items"></div>
         </div>
       </div>

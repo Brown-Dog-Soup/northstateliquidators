@@ -3,7 +3,7 @@ import { apiClient, toast, fmtMoney } from './api.js';
 const $ = sel => document.querySelector(sel);
 const codeEl  = $('#code');
 const lookup  = $('#lookup');
-const confirm = $('#confirm');
+const confirmBtn = $('#confirm');   // not `confirm` — that would shadow window.confirm()
 const recent  = $('#recent');
 const meEl    = $('#me');
 const palletEl= $('#active-pallet');
@@ -57,7 +57,7 @@ codeEl.addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     e.preventDefault();
     clearTimeout(lookupTimer);
-    doLookup().then(() => confirm.focus());
+    doLookup().then(() => confirmBtn.focus());
   }
 });
 
@@ -71,7 +71,7 @@ async function doLookup() {
       const body = await res.json().catch(() => ({}));
       lookupResult = null;
       lookup.innerHTML = `<div class="lookup-empty" style="color:#b00;">${escape(body.message || 'Invalid barcode — please rescan.')}</div>`;
-      confirm.disabled = true;
+      confirmBtn.disabled = true;
       toast(body.message || 'Invalid barcode — rescan', 'err', 3000);
       return;
     }
@@ -87,7 +87,7 @@ function renderLookup(r) {
   if (!r) {
     lookupResult = null;
     lookup.innerHTML = `<div class="lookup-empty">${codeEl.value.trim() ? `No catalog match for ${escape(codeEl.value)} — will be flagged for manual entry.` : 'Scan a code to see product info.'}</div>`;
-    confirm.disabled = !codeEl.value.trim();
+    confirmBtn.disabled = !codeEl.value.trim();
     return;
   }
 
@@ -124,14 +124,37 @@ function renderLookup(r) {
     ${stockImg}
   `;
 
-  // pre-pick condition if catalog provides one
-  const cond = (r.condition || '').toLowerCase();
-  const map = { 'used_good': 'open_box', 'new': 'new', 'customer_return': 'customer_return', 'salvage': 'damaged' };
+  // pre-pick condition if catalog provides one. Map normalizes the manifest's
+  // vocabulary (USED_GOOD, NEW, etc.) onto the receiver-visible dropdown values.
+  // The condition-hint span makes it visible when the catalog drove the choice
+  // — otherwise receivers can't tell whether the field was auto-set or just
+  // sitting at the default 'untested'.
+  const condHint = $('#condition-hint');
+  const cond = (r.condition || '').toLowerCase().trim();
+  const map = {
+    'used_good':       'open_box',
+    'used':            'open_box',
+    'new':             'new',
+    'open_box':        'open_box',
+    'damaged':         'damaged',
+    'salvage':         'damaged',
+    'customer_return': 'customer_return',
+    'untested':        'untested'
+  };
   const sel = $('#condition');
-  if (map[cond] && [...sel.options].some(o => o.value === map[cond])) sel.value = map[cond];
+  if (map[cond] && [...sel.options].some(o => o.value === map[cond])) {
+    sel.value = map[cond];
+    if (condHint) condHint.textContent = `(from manifest: ${r.condition})`;
+  } else if (cond) {
+    // Catalog had a value we don't have a dropdown option for — surface it raw
+    // so the receiver knows what the manifest said and can pick the closest match.
+    if (condHint) condHint.textContent = `(manifest says: ${r.condition} — pick closest)`;
+  } else {
+    if (condHint) condHint.textContent = '';
+  }
 
   suggestSellPrice();
-  confirm.disabled = false;
+  confirmBtn.disabled = false;
 }
 
 // Compute and (unless the user has manually edited) fill in a suggested
@@ -157,11 +180,11 @@ $('#condition').addEventListener('change', suggestSellPrice);
 // Mark the field as user-edited so we stop overwriting it
 $('#sell-price').addEventListener('input', () => { sellPriceTouched = true; });
 
-confirm.addEventListener('click', async () => {
+confirmBtn.addEventListener('click', async () => {
   if (!codeEl.value.trim()) return;
   if (!activePallet) { toast('No active pallet — create one in Admin first.', 'err', 3000); return; }
-  confirm.disabled = true;
-  confirm.textContent = 'Saving…';
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = 'Saving…';
 
   try {
     // Decide which photo (if any) to attach.
@@ -172,13 +195,22 @@ confirm.addEventListener('click', async () => {
 
     const sellRaw = $('#sell-price').value.trim();
     const sellPrice = sellRaw === '' ? null : Number(sellRaw);
+    const lr = lookupResult;
     const record = {
       code:       codeEl.value.trim(),
       qty:        Number($('#qty').value) || 1,
       condition:  $('#condition').value,
       sellPrice:  Number.isFinite(sellPrice) ? sellPrice : null,
       manifestId: activePallet.manifest_id,
-      photoUrl:   stockUrl   // sp_RecordScan stores this on line_items.photo_blob_url
+      photoUrl:   stockUrl,   // sp_RecordScan stores this on line_items.photo_blob_url
+      // Carry the lookup result through so non-catalog hits (UPCitemdb) still
+      // persist title/brand/category. sp_RecordScan prefers lpn_catalog values
+      // when present, falls back to these.
+      title:       lr?.title ?? null,
+      brand:       lr?.brand ?? null,
+      category:    lr?.category ?? null,
+      msrp:        lr?.msrp ?? null,
+      matchSource: lr?.match_source ?? null
     };
     const result = await apiClient.scan(record);
 
@@ -193,10 +225,19 @@ confirm.addEventListener('click', async () => {
     await loadRecent();
   } catch (err) {
     toast(`Save failed: ${err.message}`, 'err', 4000);
-    confirm.disabled = false;
+    confirmBtn.disabled = false;
   } finally {
-    confirm.textContent = 'Confirm Scan';
+    confirmBtn.textContent = 'Confirm Scan';
   }
+});
+
+// Decline = discard the in-flight scan without recording it. No DB write,
+// no enrichment_log entry — receivers use this when the lookup pulled the
+// wrong product or the item is unfit. Just resets the form.
+$('#decline')?.addEventListener('click', () => {
+  if (!codeEl.value.trim() && !lookupResult) return;   // nothing to decline
+  resetForm();
+  toast('Scan declined — discarded', 'ok', 1200);
 });
 
 function resetForm() {
@@ -206,6 +247,7 @@ function resetForm() {
   $('#photo').value = '';
   $('#sell-price').value = '';
   $('#sell-price-hint').textContent = '';
+  const ch = $('#condition-hint'); if (ch) ch.textContent = '';
   sellPriceTouched = false;
   renderLookup(null);
   codeEl.focus();

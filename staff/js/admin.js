@@ -1,4 +1,4 @@
-import { apiClient, toast, fmtMoney } from './api.js';
+import { apiClient, toast, fmtMoney, NSL_CATEGORIES } from './api.js';
 
 const $ = sel => document.querySelector(sel);
 const meEl = $('#me');
@@ -8,6 +8,8 @@ const titleSuffix = $('#title-suffix');
 let pallets = [];
 let current = null;
 let currentItems = [];
+let showArchived = false;
+let selectedItemIds = new Set();   // bulk-delete selection state for the open pallet
 
 init();
 async function init() {
@@ -28,20 +30,23 @@ function route() {
 
 // ---- list view ---------------------------------------------------------
 async function loadList() {
-  pallets = await apiClient.pallets();
-  galleryEl.innerHTML = pallets.map(p => `
-    <a class="gallery-card" href="#/pallet/${p.manifest_id}">
+  pallets = await apiClient.pallets({ includeArchived: showArchived });
+  galleryEl.innerHTML = pallets.map(p => {
+    const archived = !!p.archived_at;
+    return `
+    <a class="gallery-card${archived ? ' archived' : ''}" href="#/pallet/${p.manifest_id}" style="${archived ? 'opacity:0.55;' : ''}">
       <div class="thumb"${p.photo_url ? ` style="background-image:url('${escape(p.photo_url)}')"` : ''}></div>
       <div class="body">
-        <h3>${escape(p.display_name || `Pallet #${p.pallet_number}`)}</h3>
+        <h3>${escape(p.display_name || `Pallet #${p.pallet_number}`)}${archived ? ' <span style="font-size:10px;color:#999;font-weight:400;letter-spacing:0.1em;text-transform:uppercase;">· archived</span>' : ''}</h3>
         <div class="stats">
           ${p.item_count || 0} items · ${p.unit_count || 0} units<br>
           MSRP: <b>${fmtMoney(p.total_msrp)}</b>${p.total_est_resale ? ` · resale: ${fmtMoney(p.total_est_resale)}` : ''}
+          ${p.category ? `<br><span style="color:#0a5;">${escape(p.category)}</span>` : ''}
         </div>
         <span class="pill ${p.sell_mode || 'undecided'}">${p.sell_mode || 'undecided'}</span>
       </div>
     </a>
-  `).join('') || '<p style="color:#666;">No pallets yet — create one above.</p>';
+  `;}).join('') || '<p style="color:#666;">No pallets yet — create one above.</p>';
 }
 
 function showList() {
@@ -61,10 +66,20 @@ $('#new-pallet').addEventListener('click', async () => {
   } catch (e) { toast(`Create failed: ${e.message}`, 'err', 4000); }
 });
 
+// Populate category dropdown once at module load. Includes a blank "—" entry
+// so an unset pallet doesn't get accidentally tagged on first save.
+(function populateCategoryDropdown() {
+  const sel = $('#cat'); if (!sel) return;
+  sel.innerHTML = `<option value="">—</option>` +
+    NSL_CATEGORIES.map(c => `<option value="${c}">${c}</option>`).join('');
+})();
+
 // ---- detail view -------------------------------------------------------
 async function showDetail(id) {
   $('#view-list').hidden = true;
   $('#view-detail').hidden = false;
+  selectedItemIds.clear();
+  updateBulkDeleteUI();
 
   try {
     const detail = await apiClient.pallet(id);
@@ -75,8 +90,13 @@ async function showDetail(id) {
   titleSuffix.textContent = current.display_name;
   $('#dn').value = current.display_name || '';
   $('#notes').value = current.notes || '';
+  $('#cat').value = current.category || '';
   $('#cur-mode').textContent = (current.sell_mode || 'undecided').toUpperCase();
   $('#items-count').textContent = `(${currentItems.length} item${currentItems.length === 1 ? '' : 's'})`;
+
+  // Archive button label flips between Archive / Restore
+  const archBtn = $('#archive-pallet');
+  if (archBtn) archBtn.textContent = current.archived_at ? 'Restore pallet' : 'Archive pallet';
 
   const photo = current.photo_url;
   $('#pallet-photo').style.backgroundImage = photo ? `url('${photo}')` : '';
@@ -97,9 +117,11 @@ async function showDetail(id) {
     b.classList.toggle('active', b.dataset.mode === current.sell_mode)
   );
 
-  // items list — each row is collapsible; click "Edit" to expand inline editor
+  // items list — each row is collapsible; click "Edit" to expand inline editor.
+  // Per-row checkbox feeds bulk-delete state; clicking the row body opens edit.
   $('#items').innerHTML = currentItems.map(it => `
     <div class="item-row" data-id="${it.id}">
+      <input type="checkbox" class="item-select" data-id="${it.id}" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;align-self:center;margin-right:4px;">
       <div class="thumb"${it.photo_blob_url ? ` style="background-image:url('${escape(it.photo_blob_url)}')"` : ''}></div>
       <div class="body">
         <h4>${escape(it.title || it.lpn || it.upc || '(no title)')}</h4>
@@ -178,6 +200,31 @@ async function showDetail(id) {
       await showDetail(current.manifest_id);
     } catch (err) { toast(`Delete failed: ${err.message}`, 'err', 4000); }
   }));
+
+  // Per-row checkboxes feed bulk-delete state
+  document.querySelectorAll('.item-select').forEach(cb => cb.addEventListener('change', e => {
+    const id = e.currentTarget.dataset.id;
+    if (e.currentTarget.checked) selectedItemIds.add(id);
+    else                          selectedItemIds.delete(id);
+    updateBulkDeleteUI();
+  }));
+}
+
+function updateBulkDeleteUI() {
+  const btn = $('#bulk-delete');
+  const cnt = $('#bulk-count');
+  if (!btn || !cnt) return;
+  const n = selectedItemIds.size;
+  cnt.textContent = String(n);
+  btn.disabled = n === 0;
+  btn.style.opacity = n === 0 ? 0.5 : 1;
+  // Sync the "Select all" checkbox tri-state
+  const selAll = $('#select-all-items');
+  if (selAll) {
+    if (n === 0)                                 { selAll.checked = false; selAll.indeterminate = false; }
+    else if (n === currentItems.length && n > 0) { selAll.checked = true;  selAll.indeterminate = false; }
+    else                                         { selAll.checked = false; selAll.indeterminate = true; }
+  }
 }
 
 $('#back').addEventListener('click', () => { location.hash = ''; });
@@ -198,11 +245,68 @@ $('#save-meta').addEventListener('click', async () => {
   try {
     await apiClient.patchPallet(current.manifest_id, {
       displayName: $('#dn').value.trim(),
-      notes: $('#notes').value
+      notes:       $('#notes').value,
+      category:    $('#cat').value   // empty string → server stores '' (treat as unset visually)
     });
     toast('Saved', 'ok');
     await showDetail(current.manifest_id);
   } catch (e) { toast(`Save failed: ${e.message}`, 'err', 4000); }
+});
+
+// Show-archived toggle on the list view
+$('#show-archived')?.addEventListener('change', e => {
+  showArchived = e.currentTarget.checked;
+  loadList();
+});
+
+// Archive / Restore button on the detail view
+$('#archive-pallet')?.addEventListener('click', async () => {
+  if (!current) return;
+  const archiving = !current.archived_at;
+  const verb = archiving ? 'Archive' : 'Restore';
+  if (!confirm(`${verb} "${current.display_name}"?`)) return;
+  try {
+    await apiClient.archivePallet(current.manifest_id, archiving);
+    toast(`${archiving ? 'Archived' : 'Restored'}`, 'ok');
+    if (archiving) location.hash = '';   // bounce back to list when archiving
+    else           await showDetail(current.manifest_id);
+  } catch (e) { toast(`${verb} failed: ${e.message}`, 'err', 4000); }
+});
+
+// Hard delete pallet (rare; archive is the safer default).
+$('#delete-pallet')?.addEventListener('click', async () => {
+  if (!current) return;
+  const n = currentItems.length;
+  const msg = `PERMANENTLY DELETE "${current.display_name}" and all ${n} item${n === 1 ? '' : 's'} on it?\n\nThis cannot be undone. Type the pallet name to confirm.`;
+  const typed = prompt(msg);
+  if (typed == null) return;
+  if (typed !== current.display_name) { toast('Name did not match — delete cancelled.', 'err', 3000); return; }
+  try {
+    await apiClient.deletePallet(current.manifest_id);
+    toast('Pallet deleted', 'ok');
+    location.hash = '';
+  } catch (e) { toast(`Delete failed: ${e.message}`, 'err', 4000); }
+});
+
+// Bulk delete items
+$('#select-all-items')?.addEventListener('change', e => {
+  const on = e.currentTarget.checked;
+  selectedItemIds.clear();
+  if (on) currentItems.forEach(it => selectedItemIds.add(it.id));
+  document.querySelectorAll('.item-select').forEach(cb => { cb.checked = on; });
+  updateBulkDeleteUI();
+});
+
+$('#bulk-delete')?.addEventListener('click', async () => {
+  const ids = [...selectedItemIds];
+  if (ids.length === 0) return;
+  if (!confirm(`Delete ${ids.length} selected item${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+  try {
+    const r = await apiClient.bulkDeleteItems(ids);
+    toast(`Deleted ${r.deleted} item${r.deleted === 1 ? '' : 's'}`, 'ok');
+    selectedItemIds.clear();
+    if (current) await showDetail(current.manifest_id);
+  } catch (e) { toast(`Bulk delete failed: ${e.message}`, 'err', 4000); }
 });
 
 $('#photo-input').addEventListener('change', () => {

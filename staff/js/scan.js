@@ -30,22 +30,64 @@ async function init() {
   const me = await apiClient.me();
   meEl.innerHTML = me ? `${me.userDetails} · <a href="/logout">sign out</a>` : `<a href="/login">sign in</a>`;
 
-  // pick active pallet (most-recent OR localStorage choice)
-  const storedId = localStorage.getItem('nsl.active.pallet');
-  const list = await apiClient.pallets();
-  activePallet = list.find(p => p.manifest_id === storedId) || list[0];
-  palletEl.textContent = activePallet
-    ? `${activePallet.display_name} · ${activePallet.item_count} items so far`
-    : 'no pallets — open admin and create one';
-
+  await loadPalletPicker();
   await loadRecent();
   codeEl.focus();
+}
+
+// Populate the active-pallet dropdown above the scan field. Filters to "draft"
+// pallets — non-archived and still in the receiving phase. Restores the last
+// selection from localStorage so a refresh doesn't lose context. Confirm Scan
+// stays disabled until a pallet is picked AND a code is in the box.
+async function loadPalletPicker() {
+  const picker = $('#pallet-picker');
+  const list = await apiClient.pallets();
+  const draft = list.filter(p => !p.archived_at && (p.status === 'receiving' || p.status === 'enriching' || p.status === 'ready'));
+
+  const storedId = localStorage.getItem('nsl.active.pallet');
+  picker.innerHTML = '<option value="">— pick a pallet to scan to —</option>' +
+    draft.map(p => `<option value="${p.manifest_id}"${p.manifest_id === storedId ? ' selected' : ''}>${escape(p.display_name || `Pallet #${p.pallet_number}`)} (${p.item_count || 0})</option>`).join('');
+
+  activePallet = draft.find(p => p.manifest_id === storedId) || null;
+  updatePalletDisplay();
+
+  picker.addEventListener('change', async () => {
+    const id = picker.value;
+    activePallet = draft.find(p => p.manifest_id === id) || null;
+    if (activePallet) localStorage.setItem('nsl.active.pallet', activePallet.manifest_id);
+    else              localStorage.removeItem('nsl.active.pallet');
+    updatePalletDisplay();
+    await loadRecent();
+  });
+}
+
+function updatePalletDisplay() {
+  if (activePallet) {
+    palletEl.textContent = `${activePallet.display_name} · ${activePallet.item_count || 0} items`;
+  } else {
+    palletEl.textContent = 'no pallet selected';
+  }
+  // Re-evaluate Confirm-button state since pallet is required.
+  syncConfirmEnabled();
+}
+
+// Single source of truth for whether Confirm Scan should be enabled.
+// Required: an active pallet AND something in the code box. The lookup
+// itself can flip the button via lookupResult; this function honors that
+// when a pallet is selected.
+function syncConfirmEnabled() {
+  if (!activePallet) { confirmBtn.disabled = true; return; }
+  if (!codeEl.value.trim()) { confirmBtn.disabled = true; return; }
+  // Otherwise let the lookup state drive — renderLookup() flips it on
+  // a successful match. If lookup hasn't run yet, leave whatever the
+  // lookup logic decided.
 }
 
 // ---- scan flow ---------------------------------------------------------
 let lookupTimer;
 codeEl.addEventListener('input', () => {
   clearTimeout(lookupTimer);
+  syncConfirmEnabled();   // typing without a pallet picked still keeps Confirm off
   if (codeEl.value.trim().length < 6) {
     renderLookup(null);
     return;
@@ -87,7 +129,7 @@ function renderLookup(r) {
   if (!r) {
     lookupResult = null;
     lookup.innerHTML = `<div class="lookup-empty">${codeEl.value.trim() ? `No catalog match for ${escape(codeEl.value)} — will be flagged for manual entry.` : 'Scan a code to see product info.'}</div>`;
-    confirmBtn.disabled = !codeEl.value.trim();
+    confirmBtn.disabled = !codeEl.value.trim() || !activePallet;
     return;
   }
 
@@ -154,7 +196,7 @@ function renderLookup(r) {
   }
 
   suggestSellPrice();
-  confirmBtn.disabled = false;
+  confirmBtn.disabled = !activePallet;
 }
 
 // Compute and (unless the user has manually edited) fill in a suggested
@@ -206,11 +248,12 @@ confirmBtn.addEventListener('click', async () => {
       // Carry the lookup result through so non-catalog hits (UPCitemdb) still
       // persist title/brand/category. sp_RecordScan prefers lpn_catalog values
       // when present, falls back to these.
-      title:       lr?.title ?? null,
-      brand:       lr?.brand ?? null,
-      category:    lr?.category ?? null,
-      msrp:        lr?.msrp ?? null,
-      matchSource: lr?.match_source ?? null
+      title:          lr?.title ?? null,
+      brand:          lr?.brand ?? null,
+      category:       lr?.category ?? null,
+      msrp:           lr?.msrp ?? null,
+      matchSource:    lr?.match_source ?? null,
+      wholesalePrice: lr?.wholesale_price ?? null   // PRICE column on Recent list
     };
     const result = await apiClient.scan(record);
 
@@ -257,8 +300,27 @@ async function loadRecent() {
   if (!activePallet) return;
   try {
     const detail = await apiClient.pallet(activePallet.manifest_id);
-    recentItems = (detail.items || []).slice(0, 8);
+    const allItems = detail.items || [];
+    recentItems = allItems.slice(0, 8);
     palletEl.textContent = `${detail.pallet.display_name} · ${detail.pallet.item_count} items`;
+
+    // Pallet-wide totals across ALL items on this manifest, not just the 8
+    // recent ones — Rob asked for the running totals at the top of the page.
+    const totals = allItems.reduce((acc, it) => {
+      const q = Number(it.qty) || 1;
+      acc.msrp  += Number(it.est_msrp        || 0) * q;
+      acc.cost  += Number(it.unit_cost       || 0) * q;
+      acc.price += Number(it.wholesale_price || 0) * q;
+      return acc;
+    }, { msrp: 0, cost: 0, price: 0 });
+    const totalsEl = $('#pallet-totals');
+    if (totalsEl) {
+      totalsEl.innerHTML = `
+        <span><b style="color:#888;letter-spacing:0.1em;text-transform:uppercase;font-size:10px;">MSRP </b>${fmtMoney(totals.msrp)}</span>
+        <span><b style="color:#888;letter-spacing:0.1em;text-transform:uppercase;font-size:10px;">COST </b>${fmtMoney(totals.cost)}</span>
+        <span><b style="color:#0a5;letter-spacing:0.1em;text-transform:uppercase;font-size:10px;">PRICE </b>${fmtMoney(totals.price)}</span>`;
+    }
+
     recent.innerHTML = recentItems.map(it => `
       <div class="item-row" data-id="${it.id}">
         <div class="thumb"${it.photo_blob_url ? ` style="background-image:url('${escape(it.photo_blob_url)}')"` : ''}></div>
@@ -266,9 +328,11 @@ async function loadRecent() {
           <h4>${escape(it.title || it.lpn || it.upc || '(no title)')}</h4>
           <div class="meta">qty ${it.qty} · ${escape(it.condition || '—')} · ${escape(it.brand || '')} · ${escape((it.lpn || it.upc || '').slice(0, 16))}</div>
         </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
-          <div class="price">${fmtMoney(it.est_resale || it.est_msrp)}</div>
-          <button class="undo-scan" data-id="${it.id}" title="Remove this scan" style="background:none;border:1px solid #d4ada6;color:#b00;padding:2px 8px;font-size:12px;cursor:pointer;font-family:'JetBrains Mono',monospace;">✕ undo</button>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;font-family:'JetBrains Mono',monospace;font-size:12px;min-width:120px;">
+          <div><span style="color:#888;letter-spacing:0.1em;text-transform:uppercase;font-size:10px;">MSRP </span>${fmtMoney(it.est_msrp)}</div>
+          <div><span style="color:#888;letter-spacing:0.1em;text-transform:uppercase;font-size:10px;">COST </span>${fmtMoney(it.unit_cost)}</div>
+          <div><span style="color:#0a5;letter-spacing:0.1em;text-transform:uppercase;font-size:10px;font-weight:700;">PRICE </span><b>${fmtMoney(it.wholesale_price)}</b></div>
+          <button class="undo-scan" data-id="${it.id}" title="Remove this scan" style="background:none;border:1px solid #d4ada6;color:#b00;padding:2px 8px;font-size:11px;cursor:pointer;margin-top:2px;">✕ undo</button>
         </div>
       </div>
     `).join('') || '<div class="lookup-empty">No items yet on this pallet.</div>';

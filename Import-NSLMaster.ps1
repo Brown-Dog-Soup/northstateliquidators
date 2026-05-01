@@ -35,7 +35,7 @@ if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue)) {
 
 # --- Read ----------------------------------------------------------------
 $tmp = "$env:TEMP\nsl-master-$([guid]::NewGuid().Guid).xlsx"
-Copy-Item $File $tmp -Force
+Copy-Item $File $tmp -Force -WhatIf:$false
 try {
     Write-Host "Reading $File ..."
     $rows = @(Import-Excel -Path $tmp -WorksheetName 'Manifest') +
@@ -91,7 +91,7 @@ CREATE TABLE #lpn_staging (
     asin varchar(20) NULL, upc varchar(20) NULL, ean varchar(20) NULL,
     title nvarchar(500) NULL, description nvarchar(max) NULL,
     brand nvarchar(200) NULL, category nvarchar(200) NULL, subcategory nvarchar(200) NULL,
-    msrp decimal(12,2) NULL, unit_cost decimal(12,4) NULL,
+    msrp decimal(12,2) NULL, unit_cost decimal(12,4) NULL, wholesale_price decimal(12,2) NULL,
     condition varchar(40) NULL, qty_in_manifest int NULL,
     seller_category nvarchar(200) NULL, product_class nvarchar(200) NULL,
     order_number nvarchar(100) NULL, pallet_id nvarchar(200) NULL, lot_id nvarchar(200) NULL,
@@ -103,7 +103,7 @@ CREATE TABLE #lpn_staging (
 $batchSize = 900
 for ($offset = 0; $offset -lt $dedup.Count; $offset += $batchSize) {
     $batch = $dedup[$offset..[Math]::Min($offset + $batchSize - 1, $dedup.Count - 1)]
-    [void]$sb.AppendLine("INSERT INTO #lpn_staging (lpn,asin,upc,ean,title,description,brand,category,subcategory,msrp,unit_cost,condition,qty_in_manifest,seller_category,product_class,order_number,pallet_id,lot_id,source_manifest,source_pallet_ref) VALUES")
+    [void]$sb.AppendLine("INSERT INTO #lpn_staging (lpn,asin,upc,ean,title,description,brand,category,subcategory,msrp,unit_cost,wholesale_price,condition,qty_in_manifest,seller_category,product_class,order_number,pallet_id,lot_id,source_manifest,source_pallet_ref) VALUES")
     $valueLines = foreach ($r in $batch) {
         $vals = @(
             (Q $r.'Item #'.Trim()),                            # lpn
@@ -117,6 +117,7 @@ for ($offset = 0; $offset -lt $dedup.Count; $offset += $batchSize) {
             'NULL',                                             # subcategory
             (Num $r.'Unit Retail'),                             # msrp
             (Num $r.'Unit Cost'),                               # unit_cost
+            (Num $r.'Wholesale Price'),                         # wholesale_price (PRICE column on receiving page)
             (Q $r.Condition),                                   # condition
             (Int $r.Qty),                                       # qty_in_manifest
             (Q $r.'Seller Category'),                           # seller_category
@@ -137,21 +138,34 @@ DECLARE @actions TABLE (action varchar(10));
 MERGE dbo.lpn_catalog AS t
 USING #lpn_staging AS s ON t.lpn = s.lpn
 WHEN MATCHED THEN UPDATE SET
-    asin = s.asin, upc = s.upc, ean = s.ean, title = s.title,
-    description = s.description, brand = s.brand, category = s.category,
-    subcategory = s.subcategory, msrp = s.msrp, unit_cost = s.unit_cost,
-    condition = s.condition, qty_in_manifest = s.qty_in_manifest,
-    seller_category = s.seller_category, product_class = s.product_class,
-    order_number = s.order_number, pallet_id = s.pallet_id, lot_id = s.lot_id,
-    source_manifest = s.source_manifest, source_pallet_ref = s.source_pallet_ref,
+    asin = COALESCE(s.asin, t.asin),
+    upc = COALESCE(s.upc, t.upc),
+    ean = COALESCE(s.ean, t.ean),
+    title = COALESCE(s.title, t.title),
+    description = COALESCE(s.description, t.description),
+    brand = COALESCE(s.brand, t.brand),
+    category = COALESCE(s.category, t.category),
+    subcategory = COALESCE(s.subcategory, t.subcategory),
+    msrp = COALESCE(s.msrp, t.msrp),
+    unit_cost = COALESCE(s.unit_cost, t.unit_cost),
+    wholesale_price = COALESCE(s.wholesale_price, t.wholesale_price),
+    condition = COALESCE(s.condition, t.condition),
+    qty_in_manifest = COALESCE(s.qty_in_manifest, t.qty_in_manifest),
+    seller_category = COALESCE(s.seller_category, t.seller_category),
+    product_class = COALESCE(s.product_class, t.product_class),
+    order_number = COALESCE(s.order_number, t.order_number),
+    pallet_id = COALESCE(s.pallet_id, t.pallet_id),
+    lot_id = COALESCE(s.lot_id, t.lot_id),
+    source_manifest = s.source_manifest,
+    source_pallet_ref = COALESCE(s.source_pallet_ref, t.source_pallet_ref),
     last_seen_at = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN INSERT
     (lpn, asin, upc, ean, title, description, brand, category, subcategory,
-     msrp, unit_cost, condition, qty_in_manifest, seller_category, product_class,
+     msrp, unit_cost, wholesale_price, condition, qty_in_manifest, seller_category, product_class,
      order_number, pallet_id, lot_id, source_manifest, source_pallet_ref)
 VALUES
     (s.lpn, s.asin, s.upc, s.ean, s.title, s.description, s.brand, s.category, s.subcategory,
-     s.msrp, s.unit_cost, s.condition, s.qty_in_manifest, s.seller_category, s.product_class,
+     s.msrp, s.unit_cost, s.wholesale_price, s.condition, s.qty_in_manifest, s.seller_category, s.product_class,
      s.order_number, s.pallet_id, s.lot_id, s.source_manifest, s.source_pallet_ref)
 OUTPUT `$action INTO @actions;
 

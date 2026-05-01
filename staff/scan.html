@@ -23,6 +23,13 @@
   <div class="wrap">
     <form id="scanform" autocomplete="off" onsubmit="return false">
       <div class="field">
+        <label for="pallet-picker">Active pallet <span style="font-weight:400;color:#666;font-size:10px;letter-spacing:0;text-transform:none;">— only draft pallets show here</span></label>
+        <select id="pallet-picker" class="scan-input" style="cursor:pointer;">
+          <option value="">— pick a pallet to scan to —</option>
+        </select>
+      </div>
+
+      <div class="field">
         <label for="code">Scan an LPN, UPC, or ASIN</label>
         <input type="text" id="code" class="scan-input" placeholder="Scan or type a code…" autofocus />
       </div>
@@ -63,7 +70,10 @@
       <p style="margin:6px 0 0;font-size:12px;color:#666;">Decline discards the scan without recording it — use when the lookup pulled the wrong product or the item isn't fit for stock.</p>
     </form>
 
-    <h3 style="margin-top:32px;font-family:Anton;letter-spacing:0.04em;text-transform:uppercase;">Recent</h3>
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-top:32px;gap:16px;flex-wrap:wrap;">
+      <h3 style="margin:0;font-family:Anton;letter-spacing:0.04em;text-transform:uppercase;">Recent</h3>
+      <div id="pallet-totals" style="display:flex;gap:18px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#444;"></div>
+    </div>
     <div id="recent" class="items-list"></div>
 
     <p style="margin-top:24px;font-size:13px;color:#666;">

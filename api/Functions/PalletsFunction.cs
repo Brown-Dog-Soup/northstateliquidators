@@ -134,8 +134,8 @@ EXEC dbo.sp_CreateManifest
 
         var items = (await conn.QueryAsync(@"
 SELECT id, lpn, upc, asin, qty, condition, title, brand, category,
-       est_msrp, est_resale, unit_cost, photo_blob_url, enrich_status,
-       enrich_source, notes, created_at
+       est_msrp, est_resale, unit_cost, wholesale_price,
+       photo_blob_url, enrich_status, enrich_source, notes, created_at
 FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id })).ToList();
         SignRowPhotos(items);
 
@@ -231,8 +231,8 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
         await using var conn = await _sql.OpenAsync(ct);
         var items = (await conn.QueryAsync(@"
 SELECT id, lpn, upc, asin, qty, condition, title, brand, category,
-       est_msrp, est_resale, unit_cost, photo_blob_url, enrich_status,
-       enrich_source, notes, created_at
+       est_msrp, est_resale, unit_cost, wholesale_price,
+       photo_blob_url, enrich_status, enrich_source, notes, created_at
 FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id })).ToList();
         SignRowPhotos(items);
         return new OkObjectResult(items);

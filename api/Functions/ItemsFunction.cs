@@ -67,7 +67,8 @@ public sealed class ItemsFunction
 
         var updated = await conn.QueryFirstOrDefaultAsync(@"
 SELECT id, manifest_id, lpn, upc, asin, qty, condition, title, brand, category,
-       est_msrp, est_resale, unit_cost, photo_blob_url, enrich_status, notes, created_at
+       est_msrp, est_resale, unit_cost, wholesale_price,
+       photo_blob_url, enrich_status, notes, created_at
 FROM dbo.line_items WHERE id = @id", new { id });
         _log.LogInformation("PatchItem {Id}: {N} fields updated", id, sets.Count);
         return new OkObjectResult(updated);

@@ -150,9 +150,27 @@ function renderLookup(r) {
       </div>`
     : '';
 
-  // "Ref price" is reference data only — never a guaranteed sell price.
-  // For UPCitemdb hits it's the lowest recorded marketplace price; for
-  // lpn_catalog it's the manifest MSRP.
+  // The lookup card shows MSRP / COST / PRICE side by side so the receiver
+  // can see all three values from the manifest before hitting Confirm. COST
+  // and PRICE only appear when the catalog has them — UPCitemdb fallback
+  // hits don't carry cost or wholesale, so those columns stay blank for
+  // off-spreadsheet UPCs (genuine limitation of the public source).
+  const priceBlock = `
+    <div style="display:flex;gap:24px;align-items:flex-end;flex-wrap:wrap;">
+      <div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#888;display:block;font-weight:400;margin-bottom:2px;">MSRP</span>
+        <span style="font-size:22px;font-weight:700;color:#222;">${fmtMoney(r.msrp)}</span>
+      </div>
+      <div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#888;display:block;font-weight:400;margin-bottom:2px;">Cost</span>
+        <span style="font-size:22px;font-weight:700;color:#222;">${r.unit_cost != null ? fmtMoney(r.unit_cost) : '—'}</span>
+      </div>
+      <div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#0a5;display:block;font-weight:700;margin-bottom:2px;">Price</span>
+        <span style="font-size:22px;font-weight:700;color:#0a5;">${r.wholesale_price != null ? fmtMoney(r.wholesale_price) : '—'}</span>
+      </div>
+    </div>`;
+
   lookup.innerHTML = `
     <div class="lookup-title">${escape(r.title || '')}</div>
     <div class="lookup-meta">
@@ -161,7 +179,7 @@ function renderLookup(r) {
       <b>LPN:</b> ${escape(r.lpn || '—')}  ·
       <b>UPC:</b> ${escape(r.upc || '—')}
     </div>
-    <div class="lookup-price"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#555;display:block;font-weight:400;margin-bottom:2px;">Ref price</span>${fmtMoney(r.msrp)}</div>
+    ${priceBlock}
     <span class="lookup-condition">${escape(r.condition || 'unknown')}</span>
     ${stockImg}
   `;

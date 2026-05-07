@@ -26,16 +26,35 @@
   <div class="wrap">
     <!-- Pallets list view -->
     <section id="view-list">
-      <div class="row" style="align-items:flex-end;margin-bottom:16px;">
-        <div class="col field">
+      <div class="row" style="align-items:flex-end;margin-bottom:16px;flex-wrap:wrap;gap:12px;">
+        <div class="col field" style="min-width:240px;flex:1;">
           <label for="new-name">New pallet name (optional — auto-numbered if blank)</label>
           <input type="text" id="new-name" placeholder="e.g., Tuesday Truck Apparel Pallet"/>
         </div>
         <button id="new-pallet" class="btn btn-primary">+ New Pallet</button>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#444;margin-left:12px;cursor:pointer;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#444;cursor:pointer;">
           <input type="checkbox" id="show-archived"> Show archived
         </label>
       </div>
+
+      <!-- Ghost backstock generator: auto-creates fake-sold past pallets from real
+           catalog items so the public storefront looks established. -->
+      <details style="margin:0 0 16px;border:1px dashed #aaa;padding:10px 14px;background:#fafafa;border-radius:4px;">
+        <summary style="cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:0.05em;color:#444;">▾ Ghost backstock generator</summary>
+        <p style="margin:8px 0;font-size:13px;color:#666;">Creates fake "sold pallets history" from real catalog items, with past sold dates spread across the last 6 months. They render as SOLD on the public site to show NSL has been moving inventory. Does not affect real inventory totals.</p>
+        <div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap;">
+          <div class="col field" style="max-width:120px;">
+            <label for="ghost-pallets">Pallets</label>
+            <input type="number" id="ghost-pallets" value="5" min="1" max="50">
+          </div>
+          <div class="col field" style="max-width:140px;">
+            <label for="ghost-items">Items each</label>
+            <input type="number" id="ghost-items" value="12" min="1" max="50">
+          </div>
+          <button id="ghost-generate" class="btn btn-secondary">Generate</button>
+        </div>
+      </details>
+
       <div class="gallery" id="pallets"></div>
     </section>
 

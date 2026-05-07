@@ -65,6 +65,8 @@ export const apiClient = {
   },
   inventorySummary: () => api('GET', '/api/inventory/summary'),
   setPalletGhost: (id, isGhost) => api('PATCH', `/api/pallets/${id}`, { isGhost }),
+  generateGhostBackstock: (palletCount = 5, itemsPerPallet = 12) =>
+    api('POST', '/api/pallets/generate-ghost-backstock', { palletCount, itemsPerPallet }),
 
   // POST a Blob/ArrayBuffer; sets Content-Type from the Blob's type
   uploadPhoto: async (kind, id, blob) => {

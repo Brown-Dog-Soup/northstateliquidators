@@ -193,6 +193,39 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
         return new OkObjectResult(updated);
     }
 
+    public sealed record GenerateGhostRequest(int? palletCount, int? itemsPerPallet);
+
+    /// <summary>
+    /// POST /api/pallets/generate-ghost-backstock
+    /// Calls sp_GenerateGhostBackstock to fabricate N ghost pallets with past
+    /// sold dates, drawn from real lpn_catalog items. Renders on the public
+    /// site as "Recently Sold" social proof. Doesn't affect real inventory.
+    /// </summary>
+    [Function("GenerateGhostBackstock")]
+    public async Task<IActionResult> GenerateGhost(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "pallets/generate-ghost-backstock")] HttpRequest req,
+        CancellationToken ct)
+    {
+        GenerateGhostRequest? body = null;
+        try
+        {
+            body = await JsonSerializer.DeserializeAsync<GenerateGhostRequest>(
+                req.Body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct);
+        }
+        catch (JsonException) { /* body optional — defaults applied below */ }
+
+        var palletCount = Math.Clamp(body?.palletCount ?? 5, 1, 50);
+        var itemsPerPallet = Math.Clamp(body?.itemsPerPallet ?? 12, 1, 50);
+
+        await using var conn = await _sql.OpenAsync(ct);
+        var rows = (await conn.QueryAsync(
+            "EXEC dbo.sp_GenerateGhostBackstock @pallet_count = @P, @items_per_pallet = @I",
+            new { P = palletCount, I = itemsPerPallet })).ToList();
+
+        _log.LogInformation("GenerateGhostBackstock: created {N} ghost pallets ({I} items each)", rows.Count, itemsPerPallet);
+        return new OkObjectResult(new { generated = rows.Count, palletCount, itemsPerPallet, pallets = rows });
+    }
+
     /// <summary>
     /// Hard-delete a pallet and all its line items. Use sparingly; archive
     /// (PATCH archived=true) is the safer default and is what the admin UI

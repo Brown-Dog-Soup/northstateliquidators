@@ -266,6 +266,22 @@ $('#show-archived')?.addEventListener('change', e => {
   loadList();
 });
 
+// Ghost backstock generator: creates fake "sold history" pallets in bulk.
+$('#ghost-generate')?.addEventListener('click', async () => {
+  const palletCount     = Math.max(1, Math.min(50, Number($('#ghost-pallets').value) || 5));
+  const itemsPerPallet  = Math.max(1, Math.min(50, Number($('#ghost-items').value)   || 12));
+  if (!confirm(`Generate ${palletCount} ghost pallet${palletCount === 1 ? '' : 's'} with ${itemsPerPallet} items each? They'll show on the public site as recently-sold history; real inventory unaffected.`)) return;
+  const btn = $('#ghost-generate');
+  btn.disabled = true;
+  btn.textContent = 'Generating…';
+  try {
+    const r = await apiClient.generateGhostBackstock(palletCount, itemsPerPallet);
+    toast(`Generated ${r.generated} ghost pallet${r.generated === 1 ? '' : 's'}`, 'ok', 3000);
+    await loadList();          // ghost pallets aren't archived, they show in the default gallery view
+  } catch (e) { toast(`Generate failed: ${e.message}`, 'err', 4000); }
+  finally { btn.disabled = false; btn.textContent = 'Generate'; }
+});
+
 // Archive / Restore button on the detail view
 $('#archive-pallet')?.addEventListener('click', async () => {
   if (!current) return;

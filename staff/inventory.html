@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#002868">
+  <title>NSL Inventory</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/staff.css">
+  <link rel="icon" type="image/jpeg" href="/north_state_liquidators_logo.jpeg">
+</head>
+<body>
+  <div class="bar">
+    <div class="title-block">
+      <a href="index.html" class="back" title="Staff Tools">←</a>
+      <h1>NSL · Inventory<span class="sub" id="title-suffix"></span></h1>
+    </div>
+    <div class="meta">
+      <a href="https://northstateliquidators.com" target="_blank" rel="noopener" style="margin-right:14px;font-size:12px;color:#444;">Public site ↗</a>
+      <span id="me"></span>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="row" style="gap:12px;flex-wrap:wrap;margin-bottom:16px;" id="summary-cards"></div>
+
+    <div class="row" style="gap:12px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap;">
+      <div class="col field" style="min-width:200px;">
+        <label for="search">Search title / brand / UPC / LPN</label>
+        <input type="text" id="search" placeholder="e.g., Wondershop"/>
+      </div>
+      <div class="col field" style="max-width:200px;">
+        <label for="filter-status">Status</label>
+        <select id="filter-status">
+          <option value="">All</option>
+          <option value="available">Available</option>
+          <option value="on_pallet">On a pallet</option>
+          <option value="individual">Individual</option>
+          <option value="ghost">Ghost</option>
+          <option value="archived">Archived</option>
+          <option value="sold">Sold</option>
+        </select>
+      </div>
+      <div class="col field" style="max-width:240px;">
+        <label for="filter-lot">Lot</label>
+        <select id="filter-lot"><option value="">All lots</option></select>
+      </div>
+      <button id="reset-filters" class="btn btn-ghost" style="padding:8px 14px;">Clear</button>
+    </div>
+
+    <div id="results-meta" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#666;margin-bottom:8px;"></div>
+    <div class="items-list" id="results"></div>
+  </div>
+
+  <script type="module" src="js/inventory.js"></script>
+</body>
+</html>

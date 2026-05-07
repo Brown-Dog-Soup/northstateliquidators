@@ -52,6 +52,20 @@ export const apiClient = {
   deleteItem: (id)   => api('DELETE', `/api/items/${id}`),
   bulkDeleteItems: (ids) => api('POST', '/api/items/bulk-delete', { ids }),
 
+  // Inventory page — every catalog row + assignment status. Pass {status, lot, q}
+  // to filter (q is a substring search across title/brand/upc/lpn).
+  inventory: (opts = {}) => {
+    const params = new URLSearchParams();
+    if (opts.status) params.set('status', opts.status);
+    if (opts.lot)    params.set('lot',    opts.lot);
+    if (opts.q)      params.set('q',      opts.q);
+    if (opts.limit)  params.set('limit',  String(opts.limit));
+    const qs = params.toString();
+    return api('GET', `/api/inventory${qs ? '?' + qs : ''}`);
+  },
+  inventorySummary: () => api('GET', '/api/inventory/summary'),
+  setPalletGhost: (id, isGhost) => api('PATCH', `/api/pallets/${id}`, { isGhost }),
+
   // POST a Blob/ArrayBuffer; sets Content-Type from the Blob's type
   uploadPhoto: async (kind, id, blob) => {
     const r = await fetch(`/api/upload-photo?kind=${kind}&id=${id}`, {

@@ -42,7 +42,7 @@ async function init() {
 async function loadPalletPicker() {
   const picker = $('#pallet-picker');
   const list = await apiClient.pallets();
-  const draft = list.filter(p => !p.archived_at && (p.status === 'receiving' || p.status === 'enriching' || p.status === 'ready'));
+  const draft = list.filter(p => !p.archived_at && !p.is_ghost && (p.status === 'receiving' || p.status === 'enriching' || p.status === 'ready'));
 
   const storedId = localStorage.getItem('nsl.active.pallet');
   picker.innerHTML = '<option value="">— pick a pallet to scan to —</option>' +

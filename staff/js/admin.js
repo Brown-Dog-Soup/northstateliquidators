@@ -33,11 +33,15 @@ async function loadList() {
   pallets = await apiClient.pallets({ includeArchived: showArchived });
   galleryEl.innerHTML = pallets.map(p => {
     const archived = !!p.archived_at;
+    const ghost = !!p.is_ghost;
+    const tags = [];
+    if (archived) tags.push('archived');
+    if (ghost)    tags.push('ghost');
     return `
-    <a class="gallery-card${archived ? ' archived' : ''}" href="#/pallet/${p.manifest_id}" style="${archived ? 'opacity:0.55;' : ''}">
+    <a class="gallery-card${archived ? ' archived' : ''}${ghost ? ' ghost' : ''}" href="#/pallet/${p.manifest_id}" style="${archived ? 'opacity:0.55;' : ''}${ghost ? 'border:1px dashed #aaa;' : ''}">
       <div class="thumb"${p.photo_url ? ` style="background-image:url('${escape(p.photo_url)}')"` : ''}></div>
       <div class="body">
-        <h3>${escape(p.display_name || `Pallet #${p.pallet_number}`)}${archived ? ' <span style="font-size:10px;color:#999;font-weight:400;letter-spacing:0.1em;text-transform:uppercase;">· archived</span>' : ''}</h3>
+        <h3>${escape(p.display_name || `Pallet #${p.pallet_number}`)}${tags.length ? ` <span style="font-size:10px;color:#999;font-weight:400;letter-spacing:0.1em;text-transform:uppercase;">· ${tags.join(' · ')}</span>` : ''}</h3>
         <div class="stats">
           ${p.item_count || 0} items · ${p.unit_count || 0} units<br>
           MSRP: <b>${fmtMoney(p.total_msrp)}</b>${p.total_est_resale ? ` · resale: ${fmtMoney(p.total_est_resale)}` : ''}
@@ -91,6 +95,8 @@ async function showDetail(id) {
   $('#dn').value = current.display_name || '';
   $('#notes').value = current.notes || '';
   $('#cat').value = current.category || '';
+  const ghostBox = $('#is-ghost');
+  if (ghostBox) ghostBox.checked = !!current.is_ghost;
   $('#cur-mode').textContent = (current.sell_mode || 'undecided').toUpperCase();
   $('#items-count').textContent = `(${currentItems.length} item${currentItems.length === 1 ? '' : 's'})`;
 
@@ -246,7 +252,8 @@ $('#save-meta').addEventListener('click', async () => {
     await apiClient.patchPallet(current.manifest_id, {
       displayName: $('#dn').value.trim(),
       notes:       $('#notes').value,
-      category:    $('#cat').value   // empty string → server stores '' (treat as unset visually)
+      category:    $('#cat').value,        // empty string → server stores '' (treat as unset visually)
+      isGhost:     $('#is-ghost')?.checked === true
     });
     toast('Saved', 'ok');
     await showDetail(current.manifest_id);

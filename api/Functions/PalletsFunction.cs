@@ -33,7 +33,8 @@ public sealed class PalletsFunction
     public sealed record UpdatePalletRequest(
         string? displayName, string? sellMode, string? photoUrl, string? notes,
         string? category,    // pallet-level top bucket: Apparel, Electronics, ...
-        bool?   archived);   // true = archive, false = restore, null = no change
+        bool?   archived,    // true = archive, false = restore, null = no change
+        bool?   isGhost);    // true = mark as ghost backstock, false = real, null = no change
 
     public PalletsFunction(SqlService sql, BlobService blob, IConfiguration config, ILogger<PalletsFunction> log)
     {
@@ -172,6 +173,11 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
         {
             sets.Add("archived_at = @ar");
             p.Add("ar", body.archived.Value ? (DateTime?)DateTime.UtcNow : null);
+        }
+        if (body?.isGhost.HasValue == true)
+        {
+            sets.Add("is_ghost = @gh");
+            p.Add("gh", body.isGhost.Value ? 1 : 0);
         }
 
         if (sets.Count > 0)

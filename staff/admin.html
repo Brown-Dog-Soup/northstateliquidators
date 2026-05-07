@@ -17,7 +17,10 @@
       <a href="index.html" class="back" title="Staff Tools">←</a>
       <h1>NSL · Admin<span class="sub" id="title-suffix"></span></h1>
     </div>
-    <div class="meta" id="me"></div>
+    <div class="meta">
+      <a href="https://northstateliquidators.com" target="_blank" rel="noopener" style="margin-right:14px;font-size:12px;color:#444;">Public site ↗</a>
+      <span id="me"></span>
+    </div>
   </div>
 
   <div class="wrap">
@@ -71,6 +74,10 @@
               <label for="notes">Notes</label>
               <textarea id="notes" rows="3"></textarea>
             </div>
+            <label style="display:flex;align-items:center;gap:8px;margin:12px 0;cursor:pointer;font-size:13px;color:#555;">
+              <input type="checkbox" id="is-ghost" style="width:18px;height:18px;cursor:pointer;">
+              <span><b>Ghost pallet</b> — backstock, not real inventory. Renders as SOLD on the public site, doesn't count toward available totals.</span>
+            </label>
             <button id="save-meta" class="btn btn-secondary" style="width:100%;">Save</button>
           </div>
 

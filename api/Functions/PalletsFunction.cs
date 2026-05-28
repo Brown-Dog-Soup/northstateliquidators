@@ -134,7 +134,7 @@ EXEC dbo.sp_CreateManifest
         SignRowPhotos((object)pallet);
 
         var items = (await conn.QueryAsync(@"
-SELECT id, lpn, upc, asin, qty, condition, title, brand, category,
+SELECT id, lpn, upc, asin, qty, condition, title, description, brand, category,
        est_msrp, est_resale, unit_cost, wholesale_price,
        photo_blob_url, enrich_status, enrich_source, notes, created_at
 FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id })).ToList();
@@ -227,6 +227,75 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
     }
 
     /// <summary>
+    /// POST /api/pallets/{id}/duplicate
+    /// Clone a pallet: create a new manifest (name + " (copy)") and copy every
+    /// line item onto it. The copy is a fresh real pallet — it starts un-sold
+    /// (sold_at cleared) and non-ghost regardless of the source, so duplicating
+    /// a ghost or sold pallet still yields a normal working pallet. Returns the
+    /// new pallet id so the UI can navigate straight to it.
+    /// </summary>
+    [Function("DuplicatePallet")]
+    public async Task<IActionResult> Duplicate(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "pallets/{id}/duplicate")] HttpRequest req,
+        Guid id,
+        CancellationToken ct)
+    {
+        await using var conn = await _sql.OpenAsync(ct);
+
+        var src = await conn.QueryFirstOrDefaultAsync(
+            "SELECT display_name, source, notes, category FROM dbo.manifests WHERE id = @id", new { id });
+        if (src == null) return new NotFoundResult();
+
+        var newName = (((string?)src.display_name) ?? "Pallet") + " (copy)";
+
+        var created = await conn.QueryFirstOrDefaultAsync(@"
+EXEC dbo.sp_CreateManifest
+  @display_name = @DisplayName,
+  @source       = @Source,
+  @notes        = @Notes",
+            new { DisplayName = newName, Source = (string?)src.source, Notes = (string?)src.notes });
+
+        if (created == null)
+            return new ObjectResult(new { error = "sp_CreateManifest returned no rows" }) { StatusCode = 500 };
+
+        Guid newId = (Guid)created.id;
+
+        // sp_CreateManifest doesn't take category — copy it over explicitly.
+        if (src.category != null)
+            await conn.ExecuteAsync(
+                "UPDATE dbo.manifests SET category = @cat WHERE id = @nid",
+                new { cat = (string)src.category, nid = newId });
+
+        // Copy line items. New ids + manifest_id + created_at; sold_at is left
+        // off (NEWID()-only insert), so the copy is unsold even if the source
+        // was a ghost/sold pallet.
+        var copied = await conn.ExecuteAsync(@"
+INSERT INTO dbo.line_items
+    (id, manifest_id, upc, lpn, asin, qty, condition,
+     photo_blob_url, enrich_status, enrich_source,
+     title, description, brand, category,
+     est_msrp, est_resale, unit_cost, wholesale_price, notes,
+     created_at, enriched_at)
+SELECT
+     NEWID(), @nid, upc, lpn, asin, qty, condition,
+     photo_blob_url, enrich_status, enrich_source,
+     title, description, brand, category,
+     est_msrp, est_resale, unit_cost, wholesale_price, notes,
+     SYSUTCDATETIME(), enriched_at
+FROM dbo.line_items WHERE manifest_id = @sid",
+            new { nid = newId, sid = id });
+
+        _log.LogInformation("DuplicatePallet {Src} -> {New}: copied {N} item(s)", id, newId, copied);
+        return new OkObjectResult(new
+        {
+            id            = newId,
+            pallet_number = created.pallet_number,
+            display_name  = created.display_name,
+            items_copied  = copied
+        });
+    }
+
+    /// <summary>
     /// Hard-delete a pallet and all its line items. Use sparingly; archive
     /// (PATCH archived=true) is the safer default and is what the admin UI
     /// uses by default. This endpoint exists for the rare "scanned the wrong
@@ -269,7 +338,7 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
     {
         await using var conn = await _sql.OpenAsync(ct);
         var items = (await conn.QueryAsync(@"
-SELECT id, lpn, upc, asin, qty, condition, title, brand, category,
+SELECT id, lpn, upc, asin, qty, condition, title, description, brand, category,
        est_msrp, est_resale, unit_cost, wholesale_price,
        photo_blob_url, enrich_status, enrich_source, notes, created_at
 FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id })).ToList();

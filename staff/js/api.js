@@ -44,6 +44,7 @@ export const apiClient = {
   createPallet:  (b) => api('POST', '/api/pallets', b),
   pallet:    (id) => api('GET',  `/api/pallets/${id}`),
   patchPallet:(id,b) => api('PATCH', `/api/pallets/${id}`, b),
+  duplicatePallet:(id) => api('POST', `/api/pallets/${id}/duplicate`),
   deletePallet:(id) => api('DELETE', `/api/pallets/${id}`),
   archivePallet: (id, archived = true) => api('PATCH', `/api/pallets/${id}`, { archived }),
   setPalletCategory: (id, category) => api('PATCH', `/api/pallets/${id}`, { category }),

@@ -41,7 +41,8 @@ public sealed class ScanFunction
         string? category,
         decimal? msrp,
         string? matchSource,
-        decimal? wholesalePrice);   // PRICE column on receiving page (manifest's Wholesale Price)
+        decimal? wholesalePrice,    // PRICE column on receiving page (manifest's Wholesale Price)
+        string? description);       // product description (catalog or UPCitemdb)
 
     public ScanFunction(SqlService sql, ILogger<ScanFunction> log)
     {
@@ -85,7 +86,8 @@ EXEC dbo.sp_RecordScan
   @arg_category        = @Category,
   @arg_msrp            = @Msrp,
   @arg_match_source    = @MatchSource,
-  @arg_wholesale_price = @WholesalePrice",
+  @arg_wholesale_price = @WholesalePrice,
+  @arg_description     = @Description",
             new
             {
                 ManifestId     = body.manifestId,
@@ -100,7 +102,8 @@ EXEC dbo.sp_RecordScan
                 Category       = body.category,
                 Msrp           = body.msrp,
                 MatchSource    = body.matchSource,
-                WholesalePrice = body.wholesalePrice
+                WholesalePrice = body.wholesalePrice,
+                Description    = body.description
             });
 
         if (row == null) return new ObjectResult(new { error = "sp_RecordScan returned no rows" }) { StatusCode = 500 };

@@ -156,6 +156,7 @@ async function showDetail(id) {
         </div>
         <div class="col field" style="max-width:120px;"><label>Sell price</label><input type="number" step="0.01" min="0" data-f="sellPrice" value="${it.est_resale ?? ''}"></div>
       </div>
+      <div class="field" style="margin-top:8px;"><label>Description</label><textarea data-f="description" rows="3">${escape(it.description || '')}</textarea></div>
       <div class="field" style="margin-top:8px;"><label>Notes</label><textarea data-f="notes" rows="2">${escape(it.notes || '')}</textarea></div>
       <div style="display:flex;gap:8px;margin-top:8px;">
         <button class="btn btn-primary save-item" data-id="${it.id}">Save changes</button>
@@ -354,6 +355,23 @@ $('#set-active').addEventListener('click', () => {
   if (!current) return;
   localStorage.setItem('nsl.active.pallet', current.manifest_id);
   toast(`Active pallet: ${current.display_name}`, 'ok');
+});
+
+// Duplicate the current pallet (copies all items onto a fresh pallet).
+$('#duplicate-pallet')?.addEventListener('click', async () => {
+  if (!current) return;
+  const n = currentItems.length;
+  if (!confirm(`Duplicate "${current.display_name}" with all ${n} item${n === 1 ? '' : 's'} onto a new pallet?`)) return;
+  const btn = $('#duplicate-pallet');
+  btn.disabled = true;
+  btn.textContent = 'Duplicating…';
+  try {
+    const r = await apiClient.duplicatePallet(current.manifest_id);
+    toast(`Created ${r.display_name} (${r.items_copied} items)`, 'ok', 2500);
+    await loadList();
+    location.hash = `#/pallet/${r.id}`;   // jump to the new copy
+  } catch (e) { toast(`Duplicate failed: ${e.message}`, 'err', 4000); }
+  finally { btn.disabled = false; btn.textContent = 'Duplicate this pallet'; }
 });
 
 function escape(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }

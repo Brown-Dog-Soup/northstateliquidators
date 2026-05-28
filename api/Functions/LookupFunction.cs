@@ -63,6 +63,7 @@ public sealed class LookupFunction
                 asin            = (string?)null,
                 upc             = upc.Upc ?? code,
                 title           = upc.Title,
+                description     = upc.Description,
                 brand           = upc.Brand,
                 category        = upc.Category,
                 subcategory     = (string?)null,

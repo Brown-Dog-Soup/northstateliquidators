@@ -179,6 +179,7 @@ function renderLookup(r) {
       <b>LPN:</b> ${escape(r.lpn || '—')}  ·
       <b>UPC:</b> ${escape(r.upc || '—')}
     </div>
+    ${r.description ? `<div class="lookup-desc" style="margin:8px 0 12px;font-size:13px;color:#555;line-height:1.45;max-height:96px;overflow:auto;">${escape(r.description)}</div>` : ''}
     ${priceBlock}
     <span class="lookup-condition">${escape(r.condition || 'unknown')}</span>
     ${stockImg}
@@ -271,7 +272,8 @@ confirmBtn.addEventListener('click', async () => {
       category:       lr?.category ?? null,
       msrp:           lr?.msrp ?? null,
       matchSource:    lr?.match_source ?? null,
-      wholesalePrice: lr?.wholesale_price ?? null   // PRICE column on Recent list
+      wholesalePrice: lr?.wholesale_price ?? null,  // PRICE column on Recent list
+      description:    lr?.description ?? null         // carried so a UPCitemdb hit keeps its description
     };
     const result = await apiClient.scan(record);
 
@@ -350,10 +352,63 @@ async function loadRecent() {
           <div><span style="color:#888;letter-spacing:0.1em;text-transform:uppercase;font-size:10px;">MSRP </span>${fmtMoney(it.est_msrp)}</div>
           <div><span style="color:#888;letter-spacing:0.1em;text-transform:uppercase;font-size:10px;">COST </span>${fmtMoney(it.unit_cost)}</div>
           <div><span style="color:#0a5;letter-spacing:0.1em;text-transform:uppercase;font-size:10px;font-weight:700;">PRICE </span><b>${fmtMoney(it.wholesale_price)}</b></div>
-          <button class="undo-scan" data-id="${it.id}" title="Remove this scan" style="background:none;border:1px solid #d4ada6;color:#b00;padding:2px 8px;font-size:11px;cursor:pointer;margin-top:2px;">✕ undo</button>
+          <div style="display:flex;gap:6px;margin-top:2px;">
+            <button class="edit-scan" data-id="${it.id}" title="Edit this item" style="background:none;border:1px solid #ccc;color:#444;padding:2px 8px;font-size:11px;cursor:pointer;">edit</button>
+            <button class="undo-scan" data-id="${it.id}" title="Remove this scan" style="background:none;border:1px solid #d4ada6;color:#b00;padding:2px 8px;font-size:11px;cursor:pointer;">✕ undo</button>
+          </div>
+        </div>
+      </div>
+      <div class="item-edit" data-edit="${it.id}" hidden style="background:#fff8e0;border:1px solid #e6d68f;padding:14px 16px;margin:-1px 0 8px;">
+        <div class="row" style="gap:12px;">
+          <div class="col field" style="min-width:160px;"><label>Title</label><input type="text" data-f="title" value="${escape(it.title || '')}"></div>
+          <div class="col field" style="min-width:120px;"><label>Brand</label><input type="text" data-f="brand" value="${escape(it.brand || '')}"></div>
+          <div class="col field" style="max-width:90px;"><label>Qty</label><input type="number" min="1" data-f="qty" value="${it.qty}"></div>
+          <div class="col field" style="max-width:160px;"><label>Condition</label>
+            <select data-f="condition">
+              ${['new','open_box','damaged','untested','customer_return'].map(c => `<option value="${c}"${(it.condition||'')===c?' selected':''}>${c}</option>`).join('')}
+            </select>
+          </div>
+          <div class="col field" style="max-width:120px;"><label>Sell price</label><input type="number" step="0.01" min="0" data-f="sellPrice" value="${it.est_resale ?? ''}"></div>
+        </div>
+        <div class="field" style="margin-top:8px;"><label>Description</label><textarea data-f="description" rows="3">${escape(it.description || '')}</textarea></div>
+        <div class="field" style="margin-top:8px;"><label>Notes</label><textarea data-f="notes" rows="2">${escape(it.notes || '')}</textarea></div>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button class="btn btn-primary save-scan" data-id="${it.id}">Save changes</button>
+          <button class="btn btn-ghost cancel-scan" data-id="${it.id}">Cancel</button>
         </div>
       </div>
     `).join('') || '<div class="lookup-empty">No items yet on this pallet.</div>';
+
+    // Edit toggles the inline editor for that row (closing any other open one).
+    document.querySelectorAll('.edit-scan').forEach(b => b.addEventListener('click', e => {
+      const id = e.currentTarget.dataset.id;
+      const panel = document.querySelector(`.item-edit[data-edit="${id}"]`);
+      if (!panel) return;
+      const willOpen = panel.hidden;
+      document.querySelectorAll('.item-edit').forEach(el => { el.hidden = true; });
+      panel.hidden = !willOpen;
+    }));
+    document.querySelectorAll('.cancel-scan').forEach(b => b.addEventListener('click', e => {
+      const panel = document.querySelector(`.item-edit[data-edit="${e.currentTarget.dataset.id}"]`);
+      if (panel) panel.hidden = true;
+    }));
+    document.querySelectorAll('.save-scan').forEach(b => b.addEventListener('click', async e => {
+      const id = e.currentTarget.dataset.id;
+      const panel = document.querySelector(`.item-edit[data-edit="${id}"]`);
+      const fields = {};
+      panel.querySelectorAll('[data-f]').forEach(el => {
+        const k = el.dataset.f;
+        const v = el.value.trim();
+        if (k === 'qty')            fields[k] = v === '' ? null : Number(v);
+        else if (k === 'sellPrice') fields[k] = v === '' ? null : Number(v);
+        else                        fields[k] = v;
+      });
+      try {
+        await apiClient.patchItem(id, fields);
+        toast('Saved', 'ok');
+        await loadRecent();
+      } catch (err) { toast(`Save failed: ${err.message}`, 'err', 4000); }
+    }));
 
     document.querySelectorAll('.undo-scan').forEach(b => b.addEventListener('click', async e => {
       const id = e.currentTarget.dataset.id;

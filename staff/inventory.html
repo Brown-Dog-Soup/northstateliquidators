@@ -50,8 +50,22 @@
       <button id="reset-filters" class="btn btn-ghost" style="padding:8px 14px;">Clear</button>
     </div>
 
-    <div id="results-meta" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#666;margin-bottom:8px;"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
+      <div id="results-meta" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#666;"></div>
+      <label style="font-size:12px;color:#666;cursor:pointer;display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="select-all"> Select all shown
+      </label>
+    </div>
     <div class="items-list" id="results"></div>
+  </div>
+
+  <!-- #9 sticky action bar: build a box from the checked items (for barcode-less
+       goods you can't scan, e.g. Bella Canvas shirts). -->
+  <div id="build-bar" hidden style="position:sticky;bottom:0;z-index:50;background:var(--nc-navy);color:#fff;padding:12px 24px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;box-shadow:0 -4px 16px rgba(0,0,0,0.2);">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:14px;"><b id="build-count" style="color:var(--warehouse-yellow);font-size:18px;">0</b> selected</span>
+    <input type="text" id="build-name" placeholder="New box name (optional)" style="flex:1;min-width:200px;font-size:15px;padding:10px 12px;border:2px solid #fff;color:#fff;background:transparent;">
+    <button id="build-pallet" class="btn btn-yellow">Create box from selected →</button>
+    <button id="build-clear" class="btn btn-ghost" style="border-color:#fff;color:#fff;">Clear</button>
   </div>
 
   <script type="module" src="js/inventory.js"></script>

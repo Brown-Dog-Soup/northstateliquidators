@@ -4,6 +4,8 @@ const $ = sel => document.querySelector(sel);
 const meEl = $('#me');
 
 let debounceTimer = null;
+let lastRows = [];                  // rows currently shown (for select-all)
+const selectedLpns = new Set();     // #9 build-a-box selection (keyed by lpn)
 
 init();
 async function init() {
@@ -75,8 +77,10 @@ async function loadResults() {
   $('#results-meta').textContent = 'Loading…';
   try {
     const rows = await apiClient.inventory(opts);
+    lastRows = rows;
     $('#results-meta').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}${rows.length === 500 ? ' (showing first 500 — refine filters to see more)' : ''}`;
     $('#results').innerHTML = rows.map(renderRow).join('') || '<div class="lookup-empty">No items match.</div>';
+    wireRowChecks();
   } catch (e) {
     $('#results-meta').textContent = '';
     toast(`Inventory load failed: ${e.message}`, 'err', 4000);
@@ -88,8 +92,10 @@ function renderRow(it) {
   const palletLink = it.assigned_pallet_id
     ? `<a href="admin.html#/pallet/${it.assigned_pallet_id}" style="color:#002868;text-decoration:underline;">${escape(it.assigned_pallet_name || `Pallet #${it.assigned_pallet_number}`)}</a>`
     : '';
+  const checked = selectedLpns.has(it.lpn) ? ' checked' : '';
   return `
     <div class="item-row">
+      <input type="checkbox" class="inv-select" data-lpn="${escape(it.lpn)}"${checked} style="width:20px;height:20px;cursor:pointer;flex-shrink:0;align-self:center;">
       <div class="body">
         <h4>${escape(it.title || it.lpn || it.upc || '(no title)')}</h4>
         <div class="meta">
@@ -122,5 +128,55 @@ function renderBadge(status, isGhost) {
   const m = map[status] || map.unknown;
   return `<span style="background:${m.bg};color:${m.color};padding:1px 6px;border-radius:2px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;font-weight:700;">${m.txt}</span>`;
 }
+
+// ---- #9 build a box from checked items ---------------------------------
+function wireRowChecks() {
+  document.querySelectorAll('.inv-select').forEach(cb => cb.addEventListener('change', e => {
+    const lpn = e.currentTarget.dataset.lpn;
+    if (e.currentTarget.checked) selectedLpns.add(lpn);
+    else                         selectedLpns.delete(lpn);
+    updateBuildBar();
+  }));
+  // reflect any prior selection state on the freshly-rendered "select all" box
+  const selAll = $('#select-all');
+  if (selAll) { selAll.checked = false; selAll.indeterminate = false; }
+}
+
+function updateBuildBar() {
+  const bar = $('#build-bar');
+  const cnt = $('#build-count');
+  if (!bar || !cnt) return;
+  cnt.textContent = String(selectedLpns.size);
+  bar.hidden = selectedLpns.size === 0;
+}
+
+$('#select-all')?.addEventListener('change', e => {
+  const on = e.currentTarget.checked;
+  lastRows.forEach(r => { if (on) selectedLpns.add(r.lpn); else selectedLpns.delete(r.lpn); });
+  document.querySelectorAll('.inv-select').forEach(cb => { cb.checked = on; });
+  updateBuildBar();
+});
+
+$('#build-clear')?.addEventListener('click', () => {
+  selectedLpns.clear();
+  document.querySelectorAll('.inv-select').forEach(cb => { cb.checked = false; });
+  const selAll = $('#select-all'); if (selAll) selAll.checked = false;
+  updateBuildBar();
+});
+
+$('#build-pallet')?.addEventListener('click', async () => {
+  const lpns = [...selectedLpns];
+  if (lpns.length === 0) return;
+  const name = $('#build-name').value.trim() || null;
+  const btn = $('#build-pallet');
+  btn.disabled = true;
+  try {
+    const r = await apiClient.createPalletFromItems(lpns, name);
+    toast(`Created ${r.display_name} (${r.items_added} items)`, 'ok', 2500);
+    selectedLpns.clear();
+    // jump straight to the new box in the admin app
+    location.href = `admin.html#/pallet/${r.id}`;
+  } catch (e) { toast(`Create failed: ${e.message}`, 'err', 4000); btn.disabled = false; }
+});
 
 function escape(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }

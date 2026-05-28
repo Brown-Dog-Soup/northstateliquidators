@@ -42,7 +42,9 @@ async function init() {
 async function loadPalletPicker() {
   const picker = $('#pallet-picker');
   const list = await apiClient.pallets();
-  const draft = list.filter(p => !p.archived_at && !p.is_ghost && (p.status === 'receiving' || p.status === 'enriching' || p.status === 'ready'));
+  // Scan to boxes you're still building or have live: draft (default) or live.
+  // Ghost/sold/archived boxes are not scannable targets.
+  const draft = list.filter(p => !p.archived_at && (p.publish_state === 'draft' || p.publish_state === 'live' || (!p.publish_state && !p.is_ghost)));
 
   const storedId = localStorage.getItem('nsl.active.pallet');
   picker.innerHTML = '<option value="">— pick a pallet to scan to —</option>' +

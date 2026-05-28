@@ -177,6 +177,115 @@ FROM @actions;";
     }
 
     /// <summary>
+    /// A single inventory row coming from a CSV upload (#8). Lighter than the
+    /// Amazon-manifest LpnCatalogEntry: carries the receiver-facing fields plus
+    /// wholesale_price (PRICE). product_image_url is intentionally not touched on
+    /// update so prior image enrichment survives a re-import.
+    /// </summary>
+    public sealed record CsvCatalogRow(
+        string Lpn, string? Upc, string? Asin, string? Title, string? Description,
+        string? Brand, string? Category, string? Condition, int? Qty,
+        decimal? Msrp, decimal? UnitCost, decimal? WholesalePrice, string SourceManifest);
+
+    /// <summary>
+    /// Upsert CSV inventory rows into dbo.lpn_catalog (MERGE on lpn). Returns
+    /// (inserted, updated). Mirrors the manifest upsert but includes
+    /// wholesale_price and leaves product_image_url alone.
+    /// </summary>
+    public async Task<(int Inserted, int Updated)> UpsertCatalogCsvAsync(
+        IEnumerable<CsvCatalogRow> rows, CancellationToken ct = default)
+    {
+        var list = rows.ToList();
+        if (list.Count == 0) return (0, 0);
+
+        await using var conn = await OpenAsync(ct);
+
+        const string createStaging = @"
+IF OBJECT_ID('tempdb..#csv_staging') IS NOT NULL DROP TABLE #csv_staging;
+CREATE TABLE #csv_staging (
+    lpn varchar(40) NOT NULL, upc varchar(20) NULL, asin varchar(20) NULL,
+    title nvarchar(500) NULL, description nvarchar(max) NULL,
+    brand nvarchar(200) NULL, category nvarchar(200) NULL, condition varchar(40) NULL,
+    qty_in_manifest int NULL, msrp decimal(12,2) NULL, unit_cost decimal(12,4) NULL,
+    wholesale_price decimal(12,2) NULL, source_manifest nvarchar(500) NOT NULL
+);";
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = createStaging;
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        var dt = new System.Data.DataTable();
+        dt.Columns.Add("lpn", typeof(string));
+        dt.Columns.Add("upc", typeof(string));
+        dt.Columns.Add("asin", typeof(string));
+        dt.Columns.Add("title", typeof(string));
+        dt.Columns.Add("description", typeof(string));
+        dt.Columns.Add("brand", typeof(string));
+        dt.Columns.Add("category", typeof(string));
+        dt.Columns.Add("condition", typeof(string));
+        dt.Columns.Add("qty_in_manifest", typeof(int));
+        dt.Columns.Add("msrp", typeof(decimal));
+        dt.Columns.Add("unit_cost", typeof(decimal));
+        dt.Columns.Add("wholesale_price", typeof(decimal));
+        dt.Columns.Add("source_manifest", typeof(string));
+
+        foreach (var r in list)
+            dt.Rows.Add(
+                r.Lpn, (object?)r.Upc ?? DBNull.Value, (object?)r.Asin ?? DBNull.Value,
+                (object?)r.Title ?? DBNull.Value, (object?)r.Description ?? DBNull.Value,
+                (object?)r.Brand ?? DBNull.Value, (object?)r.Category ?? DBNull.Value,
+                (object?)r.Condition ?? DBNull.Value, (object?)r.Qty ?? DBNull.Value,
+                (object?)r.Msrp ?? DBNull.Value, (object?)r.UnitCost ?? DBNull.Value,
+                (object?)r.WholesalePrice ?? DBNull.Value, r.SourceManifest);
+
+        using (var bulk = new SqlBulkCopy(conn) { DestinationTableName = "#csv_staging", BulkCopyTimeout = 60 })
+        {
+            foreach (System.Data.DataColumn c in dt.Columns)
+                bulk.ColumnMappings.Add(c.ColumnName, c.ColumnName);
+            await bulk.WriteToServerAsync(dt, ct);
+        }
+
+        const string merge = @"
+DECLARE @actions TABLE (action varchar(10));
+MERGE dbo.lpn_catalog AS t
+USING #csv_staging AS s ON t.lpn = s.lpn
+WHEN MATCHED THEN UPDATE SET
+    upc = s.upc, asin = s.asin, title = s.title, description = s.description,
+    brand = s.brand, category = s.category, condition = s.condition,
+    qty_in_manifest = s.qty_in_manifest, msrp = s.msrp, unit_cost = s.unit_cost,
+    wholesale_price = s.wholesale_price, source_manifest = s.source_manifest,
+    last_seen_at = SYSUTCDATETIME()
+WHEN NOT MATCHED THEN INSERT
+    (lpn, upc, asin, title, description, brand, category, condition,
+     qty_in_manifest, msrp, unit_cost, wholesale_price, source_manifest)
+VALUES
+    (s.lpn, s.upc, s.asin, s.title, s.description, s.brand, s.category, s.condition,
+     s.qty_in_manifest, s.msrp, s.unit_cost, s.wholesale_price, s.source_manifest)
+OUTPUT $action INTO @actions;
+SELECT
+    SUM(CASE WHEN action = 'INSERT' THEN 1 ELSE 0 END) AS inserted,
+    SUM(CASE WHEN action = 'UPDATE' THEN 1 ELSE 0 END) AS updated
+FROM @actions;";
+
+        int inserted = 0, updated = 0;
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = merge;
+            cmd.CommandTimeout = 120;
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            if (await rdr.ReadAsync(ct))
+            {
+                inserted = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
+                updated  = rdr.IsDBNull(1) ? 0 : rdr.GetInt32(1);
+            }
+        }
+
+        _log.LogInformation("CSV catalog upsert: {Ins} inserted, {Upd} updated", inserted, updated);
+        return (inserted, updated);
+    }
+
+    /// <summary>
     /// Insert a manifest_imports audit row.
     /// </summary>
     public async Task<Guid> InsertManifestImportAsync(

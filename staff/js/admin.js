@@ -33,21 +33,29 @@ async function loadList() {
   pallets = await apiClient.pallets({ includeArchived: showArchived });
   galleryEl.innerHTML = pallets.map(p => {
     const archived = !!p.archived_at;
-    const ghost = !!p.is_ghost;
-    const tags = [];
-    if (archived) tags.push('archived');
-    if (ghost)    tags.push('ghost');
+    const state = p.publish_state || 'draft';
+    const ghost = state === 'ghost';
+    const hasList = p.list_price != null && p.list_price > 0;
+    const hasSale = p.sale_price != null && p.sale_price > 0 && hasList && p.sale_price < p.list_price;
+    const priceLine = hasSale
+      ? `<span class="price-was">${fmtMoney(p.list_price)}</span><span class="price-now">${fmtMoney(p.sale_price)}</span>`
+      : hasList ? `<b>${fmtMoney(p.list_price)}</b>` : '';
     return `
     <a class="gallery-card${archived ? ' archived' : ''}${ghost ? ' ghost' : ''}" href="#/pallet/${p.manifest_id}" style="${archived ? 'opacity:0.55;' : ''}${ghost ? 'border:1px dashed #aaa;' : ''}">
       <div class="thumb"${p.photo_url ? ` style="background-image:url('${escape(p.photo_url)}')"` : ''}></div>
       <div class="body">
-        <h3>${escape(p.display_name || `Pallet #${p.pallet_number}`)}${tags.length ? ` <span style="font-size:10px;color:#999;font-weight:400;letter-spacing:0.1em;text-transform:uppercase;">· ${tags.join(' · ')}</span>` : ''}</h3>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px;">
+          <span class="box-no">BOX #${p.pallet_number ?? '—'}</span>
+          ${archived ? '<span style="font-size:10px;color:#999;letter-spacing:0.1em;text-transform:uppercase;">archived</span>' : ''}
+        </div>
+        <h3>${escape(p.display_name || `Pallet #${p.pallet_number}`)}</h3>
         <div class="stats">
           ${p.item_count || 0} items · ${p.unit_count || 0} units<br>
-          MSRP: <b>${fmtMoney(p.total_msrp)}</b>${p.total_est_resale ? ` · resale: ${fmtMoney(p.total_est_resale)}` : ''}
+          MSRP: <b>${fmtMoney(p.total_msrp)}</b>${priceLine ? ` · ask: ${priceLine}` : ''}
           ${p.category ? `<br><span style="color:#0a5;">${escape(p.category)}</span>` : ''}
         </div>
-        <span class="pill ${p.sell_mode || 'undecided'}">${p.sell_mode || 'undecided'}</span>
+        <span class="pill ${state}">${state}</span>
+        <span class="pill ${p.sell_mode || 'undecided'}" style="margin-left:6px;">${p.sell_mode || 'undecided'}</span>
       </div>
     </a>
   `;}).join('') || '<p style="color:#666;">No pallets yet — create one above.</p>';
@@ -95,9 +103,21 @@ async function showDetail(id) {
   $('#dn').value = current.display_name || '';
   $('#notes').value = current.notes || '';
   $('#cat').value = current.category || '';
-  const ghostBox = $('#is-ghost');
-  if (ghostBox) ghostBox.checked = !!current.is_ghost;
   $('#cur-mode').textContent = (current.sell_mode || 'undecided').toUpperCase();
+
+  // BOX # (#2) — the number to write on the physical box.
+  const boxNo = $('#box-no');
+  if (boxNo) boxNo.textContent = `BOX #${current.pallet_number ?? '—'}`;
+
+  // Pricing (#3)
+  $('#list-price').value = current.list_price ?? '';
+  $('#sale-price').value = current.sale_price ?? '';
+  updateAskPreview();
+
+  // Listing status (#6) — mark the active publish-state button.
+  document.querySelectorAll('.publish-toggle button').forEach(b =>
+    b.classList.toggle('active', b.dataset.ps === (current.publish_state || 'draft'))
+  );
   $('#items-count').textContent = `(${currentItems.length} item${currentItems.length === 1 ? '' : 's'})`;
 
   // Archive button label flips between Archive / Restore
@@ -253,12 +273,81 @@ $('#save-meta').addEventListener('click', async () => {
     await apiClient.patchPallet(current.manifest_id, {
       displayName: $('#dn').value.trim(),
       notes:       $('#notes').value,
-      category:    $('#cat').value,        // empty string → server stores '' (treat as unset visually)
-      isGhost:     $('#is-ghost')?.checked === true
+      category:    $('#cat').value         // empty string → server stores '' (treat as unset visually)
     });
     toast('Saved', 'ok');
     await showDetail(current.manifest_id);
   } catch (e) { toast(`Save failed: ${e.message}`, 'err', 4000); }
+});
+
+// Listing status (#6): Live / Draft / Ghost / Sold.
+document.querySelectorAll('.publish-toggle button').forEach(b => {
+  b.addEventListener('click', async () => {
+    if (!current) return;
+    const ps = b.dataset.ps;
+    // Sold removes items from stock; Ghost shows as sold without touching it.
+    if (ps === 'sold' && !confirm('Mark this box SOLD? Its items are removed from available inventory (use this when sold via another channel).')) return;
+    try {
+      await apiClient.setPublishState(current.manifest_id, ps);
+      toast(`Listing: ${ps.toUpperCase()}`, 'ok');
+      await showDetail(current.manifest_id);
+    } catch (e) { toast(`Update failed: ${e.message}`, 'err', 4000); }
+  });
+});
+
+// Pricing (#3): live ask preview + save.
+function updateAskPreview() {
+  const list = parseFloat($('#list-price').value);
+  const sale = parseFloat($('#sale-price').value);
+  const el = $('#ask-preview');
+  if (!el) return;
+  const hasList = Number.isFinite(list) && list > 0;
+  const hasSale = Number.isFinite(sale) && sale > 0;
+  if (hasSale && hasList && sale < list) {
+    el.innerHTML = `<span class="price-was">${fmtMoney(list)}</span><span class="price-now">${fmtMoney(sale)}</span>`;
+  } else if (hasList) {
+    el.innerHTML = `<b>${fmtMoney(list)}</b>`;
+  } else {
+    el.innerHTML = `<b>auto</b> (wholesale total${current?.total_wholesale ? ' ≈ ' + fmtMoney(current.total_wholesale) : ''})`;
+  }
+}
+$('#list-price')?.addEventListener('input', updateAskPreview);
+$('#sale-price')?.addEventListener('input', updateAskPreview);
+
+$('#save-pricing')?.addEventListener('click', async () => {
+  if (!current) return;
+  const list = parseFloat($('#list-price').value);
+  const sale = parseFloat($('#sale-price').value);
+  try {
+    await apiClient.setPalletPrices(
+      current.manifest_id,
+      Number.isFinite(list) && list > 0 ? list : null,
+      Number.isFinite(sale) && sale > 0 ? sale : null
+    );
+    toast('Pricing saved', 'ok');
+    await showDetail(current.manifest_id);
+  } catch (e) { toast(`Save failed: ${e.message}`, 'err', 4000); }
+});
+
+// Add an ad-hoc item with no barcode (#9 companion).
+$('#add-item')?.addEventListener('click', async () => {
+  if (!current) return;
+  const title = $('#ai-title').value.trim();
+  if (!title) { toast('Title is required', 'err', 2500); return; }
+  const price = parseFloat($('#ai-price').value);
+  try {
+    await apiClient.addPalletItem(current.manifest_id, {
+      title,
+      brand:     $('#ai-brand').value.trim() || null,
+      qty:       Number($('#ai-qty').value) || 1,
+      condition: $('#ai-cond').value,
+      sellPrice: Number.isFinite(price) && price > 0 ? price : null
+    });
+    toast('Item added', 'ok');
+    ['ai-title','ai-brand','ai-price'].forEach(id => { $('#' + id).value = ''; });
+    $('#ai-qty').value = '1';
+    await showDetail(current.manifest_id);
+  } catch (e) { toast(`Add failed: ${e.message}`, 'err', 4000); }
 });
 
 // Show-archived toggle on the list view

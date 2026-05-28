@@ -32,9 +32,12 @@ public sealed class PalletsFunction
     public sealed record CreatePalletRequest(string? displayName, string? source, string? palletReference, string? notes);
     public sealed record UpdatePalletRequest(
         string? displayName, string? sellMode, string? photoUrl, string? notes,
-        string? category,    // pallet-level top bucket: Apparel, Electronics, ...
-        bool?   archived,    // true = archive, false = restore, null = no change
-        bool?   isGhost);    // true = mark as ghost backstock, false = real, null = no change
+        string? category,      // pallet-level top bucket: Apparel, Electronics, ...
+        bool?   archived,      // true = archive, false = restore, null = no change
+        bool?   isGhost,       // legacy: true = ghost backstock, false = real, null = no change
+        string? publishState,  // draft | live | ghost | sold  (#6 — routes through sp_SetPublishState)
+        decimal? listPrice,    // #3 published ask override; send the key with null to clear
+        decimal? salePrice);   // #3 sale price (strike-through on the site); send key with null to clear
 
     public PalletsFunction(SqlService sql, BlobService blob, IConfiguration config, ILogger<PalletsFunction> log)
     {
@@ -149,10 +152,27 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
         Guid id,
         CancellationToken ct)
     {
+        // Read the raw body once so we can both deserialize the typed shape and
+        // tell present-vs-absent for the price keys (needed so callers that send
+        // only {archived} don't accidentally clear list_price/sale_price).
+        string raw;
+        using (var sr = new StreamReader(req.Body)) raw = await sr.ReadToEndAsync(ct);
         UpdatePalletRequest? body;
-        try { body = await JsonSerializer.DeserializeAsync<UpdatePalletRequest>(req.Body,
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct); }
+        JsonDocument? doc = null;
+        try
+        {
+            body = string.IsNullOrWhiteSpace(raw)
+                ? null
+                : JsonSerializer.Deserialize<UpdatePalletRequest>(raw,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (!string.IsNullOrWhiteSpace(raw)) doc = JsonDocument.Parse(raw);
+        }
         catch (JsonException ex) { return new BadRequestObjectResult(new { error = "Invalid JSON", detail = ex.Message }); }
+
+        bool HasKey(string name) =>
+            doc != null && doc.RootElement.ValueKind == JsonValueKind.Object &&
+            doc.RootElement.EnumerateObject().Any(prop =>
+                string.Equals(prop.Name, name, StringComparison.OrdinalIgnoreCase));
 
         await using var conn = await _sql.OpenAsync(ct);
 
@@ -160,6 +180,18 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
         {
             await conn.ExecuteAsync("EXEC dbo.sp_SetSellMode @manifest_id = @id, @sell_mode = @mode",
                 new { id, mode = body.sellMode });
+        }
+
+        // #6 Publish state is the source of truth and keeps is_ghost / sold_at /
+        // line_items in sync, so route it (and the legacy isGhost toggle) through
+        // sp_SetPublishState rather than a bare UPDATE.
+        string? targetState = body?.publishState;
+        if (targetState == null && body?.isGhost.HasValue == true)
+            targetState = body.isGhost.Value ? "ghost" : "draft";
+        if (!string.IsNullOrWhiteSpace(targetState))
+        {
+            await conn.ExecuteAsync("EXEC dbo.sp_SetPublishState @manifest_id = @id, @publish_state = @ps",
+                new { id, ps = targetState });
         }
 
         var sets = new List<string>();
@@ -174,11 +206,19 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
             sets.Add("archived_at = @ar");
             p.Add("ar", body.archived.Value ? (DateTime?)DateTime.UtcNow : null);
         }
-        if (body?.isGhost.HasValue == true)
+        // #3 Prices: only touch a column when its key is actually present in the
+        // body. A null/<=0 value clears it (no sale / no override).
+        if (HasKey("listPrice"))
         {
-            sets.Add("is_ghost = @gh");
-            p.Add("gh", body.isGhost.Value ? 1 : 0);
+            sets.Add("list_price = @lp");
+            p.Add("lp", body?.listPrice is > 0 ? body?.listPrice : (decimal?)null);
         }
+        if (HasKey("salePrice"))
+        {
+            sets.Add("sale_price = @sp2");
+            p.Add("sp2", body?.salePrice is > 0 ? body?.salePrice : (decimal?)null);
+        }
+        doc?.Dispose();
 
         if (sets.Count > 0)
         {
@@ -344,5 +384,110 @@ SELECT id, lpn, upc, asin, qty, condition, title, description, brand, category,
 FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id })).ToList();
         SignRowPhotos(items);
         return new OkObjectResult(items);
+    }
+
+    /// <summary>
+    /// GET /api/public/pallets — anonymous read of what the marketing site may
+    /// show. Live pallets first (for sale), then recently-sold (ghost + sold)
+    /// as social proof. Photo URLs are SAS-signed like everywhere else.
+    /// </summary>
+    [Function("PublicPallets")]
+    public async Task<IActionResult> PublicPallets(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "public/pallets")] HttpRequest req,
+        CancellationToken ct)
+    {
+        await using var conn = await _sql.OpenAsync(ct);
+        var rows = (await conn.QueryAsync(@"
+SELECT manifest_id, pallet_number, display_name, category, publish_state,
+       received_date, sold_at, photo_url, item_count, unit_count, total_msrp,
+       list_price, sale_price, is_sold, is_on_sale, ask_price
+FROM dbo.v_public_pallets
+ORDER BY CASE WHEN publish_state = 'live' THEN 0 ELSE 1 END,
+         COALESCE(sold_at, received_date) DESC")).ToList();
+        SignRowPhotos(rows);
+        return new OkObjectResult(rows);
+    }
+
+    public sealed record CreateFromItemsRequest(string? displayName, string[]? lpns);
+
+    /// <summary>
+    /// POST /api/pallets/from-items — build a new pallet from catalog rows the
+    /// user checked off on the Inventory page (#9). Useful for barcode-less
+    /// goods (e.g. Bella Canvas shirts) that come in via CSV import rather than
+    /// a physical scan. Returns the new pallet id so the UI can jump to it.
+    /// </summary>
+    [Function("CreatePalletFromItems")]
+    public async Task<IActionResult> CreateFromItems(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "pallets/from-items")] HttpRequest req,
+        CancellationToken ct)
+    {
+        CreateFromItemsRequest? body;
+        try { body = await JsonSerializer.DeserializeAsync<CreateFromItemsRequest>(req.Body,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct); }
+        catch (JsonException ex) { return new BadRequestObjectResult(new { error = "Invalid JSON", detail = ex.Message }); }
+
+        if (body?.lpns == null || body.lpns.Length == 0)
+            return new BadRequestObjectResult(new { error = "lpns array is required and must be non-empty" });
+
+        var lpnsJson = JsonSerializer.Serialize(body.lpns);
+        await using var conn = await _sql.OpenAsync(ct);
+        var row = await conn.QueryFirstOrDefaultAsync(
+            "EXEC dbo.sp_CreatePalletFromCatalog @display_name = @Name, @lpns_json = @Lpns",
+            new { Name = body.displayName, Lpns = lpnsJson });
+
+        if (row == null) return new ObjectResult(new { error = "sp_CreatePalletFromCatalog returned no rows" }) { StatusCode = 500 };
+        _log.LogInformation("CreatePalletFromItems: pallet {Id} with {N} item(s)", (object?)row.id, (object?)row.items_added);
+        return new OkObjectResult(row);
+    }
+
+    public sealed record AddItemRequest(
+        string? title, string? brand, string? category, int? qty,
+        string? condition, decimal? sellPrice, decimal? msrp,
+        decimal? wholesalePrice, string? description, string? notes);
+
+    /// <summary>
+    /// POST /api/pallets/{id}/items — add an ad-hoc line item to a pallet with
+    /// no barcode (#9 companion). For goods that never had a UPC/LPN — the
+    /// receiver types a title/qty/price and it lands on the pallet directly.
+    /// </summary>
+    [Function("AddPalletItem")]
+    public async Task<IActionResult> AddItem(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "pallets/{id}/items")] HttpRequest req,
+        Guid id,
+        CancellationToken ct)
+    {
+        AddItemRequest? body;
+        try { body = await JsonSerializer.DeserializeAsync<AddItemRequest>(req.Body,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct); }
+        catch (JsonException ex) { return new BadRequestObjectResult(new { error = "Invalid JSON", detail = ex.Message }); }
+
+        if (string.IsNullOrWhiteSpace(body?.title))
+            return new BadRequestObjectResult(new { error = "title is required for a barcode-less item" });
+
+        await using var conn = await _sql.OpenAsync(ct);
+        var exists = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(1) FROM dbo.manifests WHERE id = @id", new { id });
+        if (exists == 0) return new NotFoundResult();
+
+        var newId = Guid.NewGuid();
+        await conn.ExecuteAsync(@"
+INSERT INTO dbo.line_items
+    (id, manifest_id, qty, condition, enrich_status, enrich_source,
+     title, description, brand, category, est_msrp, est_resale, wholesale_price, notes,
+     created_at, enriched_at)
+VALUES
+    (@id, @mid, @qty, @cond, 'hit', 'manual',
+     @title, @desc, @brand, @cat, @msrp, @sell, @whole, @notes,
+     SYSUTCDATETIME(), SYSUTCDATETIME())",
+            new
+            {
+                id = newId, mid = id, qty = body.qty ?? 1,
+                cond = string.IsNullOrWhiteSpace(body.condition) ? "untested" : body.condition,
+                title = body.title, desc = body.description, brand = body.brand, cat = body.category,
+                msrp = body.msrp, sell = body.sellPrice, whole = body.wholesalePrice, notes = body.notes
+            });
+
+        _log.LogInformation("AddPalletItem {Item} -> pallet {Pallet}", newId, id);
+        return new OkObjectResult(new { id = newId, manifest_id = id, title = body.title });
     }
 }

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#002868">
+  <title>NSL Import CSV</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/staff.css">
+  <link rel="icon" type="image/jpeg" href="/north_state_liquidators_logo.jpeg">
+</head>
+<body>
+  <div class="bar">
+    <div class="title-block">
+      <a href="index.html" class="back" title="Staff Tools">←</a>
+      <h1>NSL · Import CSV</h1>
+    </div>
+    <div class="meta"><span id="me"></span></div>
+  </div>
+
+  <div class="wrap">
+    <div class="card" style="max-width:760px;">
+      <h2 style="font-family:Anton;letter-spacing:0.02em;text-transform:uppercase;margin:0 0 8px;">Add / adjust inventory from a spreadsheet</h2>
+      <p style="color:#555;margin:0 0 16px;">
+        Pick a <b>.csv</b> file. Each row becomes an inventory item. A row with an
+        <b>lpn</b>/<b>sku</b> updates that item; a row with no key is added as new
+        stock (handy for goods with no barcode, like Bella Canvas shirts).
+      </p>
+
+      <div style="background:#FFFBEC;border:1px solid var(--warehouse-yellow);padding:12px 16px;margin-bottom:16px;font-size:13px;">
+        <b style="font-family:'JetBrains Mono',monospace;letter-spacing:0.05em;">RECOGNISED COLUMNS</b>
+        <p style="margin:6px 0 0;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.7;color:#444;">
+          lpn / sku · upc · asin · title · description · brand · category ·
+          condition · qty · msrp · cost · price
+        </p>
+        <p style="margin:8px 0 0;color:#666;">Column order doesn't matter; extra columns are ignored. Only <b>title</b> (or a key) is required.</p>
+        <a href="#" id="download-template" style="display:inline-block;margin-top:10px;color:var(--nc-navy);font-weight:700;">↓ Download a template CSV</a>
+      </div>
+
+      <div class="field">
+        <label for="csv-file">CSV file</label>
+        <input type="file" id="csv-file" accept=".csv,text/csv"/>
+      </div>
+      <button id="import-btn" class="btn btn-primary" disabled>Import</button>
+
+      <div id="result" style="margin-top:20px;"></div>
+    </div>
+  </div>
+
+  <script type="module" src="js/import.js"></script>
+</body>
+</html>

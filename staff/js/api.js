@@ -49,6 +49,18 @@ export const apiClient = {
   archivePallet: (id, archived = true) => api('PATCH', `/api/pallets/${id}`, { archived }),
   setPalletCategory: (id, category) => api('PATCH', `/api/pallets/${id}`, { category }),
 
+  // #6 publish state: draft | live | ghost | sold
+  setPublishState: (id, publishState) => api('PATCH', `/api/pallets/${id}`, { publishState }),
+  // #3 prices: send the keys so the server knows to set/clear them
+  setPalletPrices: (id, listPrice, salePrice) =>
+    api('PATCH', `/api/pallets/${id}`, { listPrice, salePrice }),
+  // #9 build a pallet from checked inventory rows; add an ad-hoc no-barcode item
+  createPalletFromItems: (lpns, displayName = null) =>
+    api('POST', '/api/pallets/from-items', { lpns, displayName }),
+  addPalletItem: (id, item) => api('POST', `/api/pallets/${id}/items`, item),
+  // public-site read of live + recently-sold pallets
+  publicPallets: () => api('GET', '/api/public/pallets'),
+
   patchItem:  (id,b) => api('PATCH',  `/api/items/${id}`, b),
   deleteItem: (id)   => api('DELETE', `/api/items/${id}`),
   bulkDeleteItems: (ids) => api('POST', '/api/items/bulk-delete', { ids }),
@@ -79,6 +91,20 @@ export const apiClient = {
     });
     if (!r.ok) throw new Error(`upload failed: ${r.status}`);
     return r.json();
+  },
+
+  // #8 CSV import — POST the raw CSV text; filename rides in a header.
+  importCsv: async (filename, text) => {
+    const r = await fetch('/api/import-csv', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'text/csv', 'x-filename': filename || 'csv-upload.csv' },
+      body: text
+    });
+    const body = await r.text();
+    let data; try { data = body ? JSON.parse(body) : null; } catch { data = body; }
+    if (!r.ok) throw Object.assign(new Error(`import failed: ${r.status}`), { data });
+    return data;
   },
 
   // SWA built-in user info

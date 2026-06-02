@@ -99,7 +99,7 @@ function renderRow(it) {
       <div class="body">
         <h4>${escape(it.title || it.lpn || it.upc || '(no title)')}</h4>
         <div class="meta">
-          ${escape(it.brand || '')}${it.brand ? ' · ' : ''}${escape(it.lpn || '')}${it.upc ? ' · UPC ' + escape(it.upc) : ''}${(it.order_number || it.source_pallet_id || it.lot_id) ? ' · Lot ' + escape(it.order_number || it.source_pallet_id || it.lot_id) : ''}
+          <b>qty ${it.scanned_qty ?? it.qty_in_manifest ?? 1}</b> · ${escape(it.brand || '')}${it.brand ? ' · ' : ''}${escape(it.lpn || '')}${it.upc ? ' · UPC ' + escape(it.upc) : ''}${(it.order_number || it.source_pallet_id || it.lot_id) ? ' · Lot ' + escape(it.order_number || it.source_pallet_id || it.lot_id) : ''}
         </div>
         <div class="meta" style="margin-top:4px;">
           ${statusBadge}

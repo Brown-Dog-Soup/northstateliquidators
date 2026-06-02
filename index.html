@@ -280,6 +280,15 @@
   .mf-table .cond.shelf { background: #E8EEF8; color: var(--nc-navy); }
   .mf-foot { padding: 14px 24px; border-top: 1px solid #EDE4D0; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--paper); flex-wrap: wrap; }
   .mf-foot .note { font-size: 13px; color: #555; }
+  /* Recently sold (social proof) */
+  .sold-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+  .sold-card { border: 1px solid var(--rule); background: #fff; }
+  .sold-photo { position: relative; aspect-ratio: 4 / 3; background: #EFE9D8 center/cover no-repeat; display: flex; align-items: center; justify-content: center; }
+  .sold-stamp { font-family: 'Anton', sans-serif; font-size: 26px; letter-spacing: 0.06em; color: var(--nc-red); border: 4px solid var(--nc-red); padding: 2px 14px; transform: rotate(-12deg); background: rgba(255,255,255,0.72); }
+  .sold-meta { padding: 12px 14px 16px; }
+  .sold-meta h3 { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+  .sold-sub { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #777; }
+  @media (max-width: 720px) { .sold-grid { grid-template-columns: repeat(2, 1fr); } }
   .ledger .thumb {
     width: 56px; height: 56px; background: #F0EAD6 repeating-linear-gradient(45deg, #E5DDC4 0, #E5DDC4 2px, #F0EAD6 2px, #F0EAD6 10px);
     border: 1px solid var(--rule);
@@ -544,6 +553,18 @@
   </div>
 </section>
 
+<!-- RECENTLY SOLD — social proof (ghost + sold pallets). Hidden until populated by JS. -->
+<section class="block" id="sold-section" hidden style="background: transparent;">
+  <div class="hdr-row">
+    <div>
+      <div class="eyebrow">Moving fast</div>
+      <h2>Recently sold.</h2>
+      <p class="subhead">Pallets already claimed by resellers. New loads land every week — when something's on the dock, don't wait.</p>
+    </div>
+  </div>
+  <div class="sold-grid" id="sold-grid"></div>
+</section>
+
 <!-- RETAIL HUNT -->
 <section class="block" id="hunt" style="background: transparent;">
   <div class="hdr-row">
@@ -691,39 +712,62 @@
   try {
     const r = await fetch('/api/public/pallets', { credentials: 'omit' });
     if (!r.ok) return;
-    const all = await r.json();
-    const live = (all || []).filter(p => p.publish_state === 'live');
-    if (live.length === 0) return;   // keep the static demo rows
+    const all = await r.json() || [];
 
-    const tbody = document.getElementById('pallet-rows');
-    tbody.innerHTML = live.map(p => {
-      const onSale = p.is_on_sale && p.list_price != null;
-      const ask = onSale
-        ? `<span class="msrp">${money(p.list_price)}</span> <span style="display:block;">${money(p.sale_price)}</span>`
-        : money(p.ask_price);
-      const thumb = p.photo_url
-        ? `<span class="thumb" style="background-image:url('${esc(p.photo_url)}');background-size:cover;background-position:center;"></span>`
-        : `<span class="thumb"></span>`;
-      return `
-        <tr>
-          <td>${thumb}<span class="lot">BOX #${esc(p.pallet_number)}</span></td>
-          <td class="cat">${esc(p.category || p.display_name || 'Mixed Goods')}</td>
-          <td>${p.unit_count || 0}</td>
-          <td class="msrp">${money(p.total_msrp)}</td>
-          <td class="ask">${ask}</td>
-          <td><span class="cond shelf">${esc(p.category || 'Mixed')}</span></td>
-          <td><a class="view" href="#" data-id="${esc(p.manifest_id)}" data-name="${esc(p.display_name || ('Box #' + p.pallet_number))}">View Manifest →</a></td>
-        </tr>`;
-    }).join('');
+    // ── ON THE DOCK — live pallets for sale ──
+    const live = all.filter(p => p.publish_state === 'live');
+    if (live.length > 0) {
+      const tbody = document.getElementById('pallet-rows');
+      tbody.innerHTML = live.map(p => {
+        const onSale = p.is_on_sale && p.list_price != null;
+        const ask = onSale
+          ? `<span class="msrp">${money(p.list_price)}</span> <span style="display:block;">${money(p.sale_price)}</span>`
+          : money(p.ask_price);
+        const thumb = p.photo_url
+          ? `<span class="thumb" style="background-image:url('${esc(p.photo_url)}');background-size:cover;background-position:center;"></span>`
+          : `<span class="thumb"></span>`;
+        return `
+          <tr>
+            <td>${thumb}<span class="lot">BOX #${esc(p.pallet_number)}</span></td>
+            <td class="cat">${esc(p.category || p.display_name || 'Mixed Goods')}</td>
+            <td>${p.unit_count || 0}</td>
+            <td class="msrp">${money(p.total_msrp)}</td>
+            <td class="ask">${ask}</td>
+            <td><span class="cond shelf">${esc(p.category || 'Mixed')}</span></td>
+            <td><a class="view" href="#" data-id="${esc(p.manifest_id)}" data-name="${esc(p.display_name || ('Box #' + p.pallet_number))}">View Manifest →</a></td>
+          </tr>`;
+      }).join('');
 
-    tbody.querySelectorAll('a.view[data-id]').forEach(a => a.addEventListener('click', e => {
-      e.preventDefault();
-      window.showManifest(a.getAttribute('data-id'), a.getAttribute('data-name'));
-    }));
+      tbody.querySelectorAll('a.view[data-id]').forEach(a => a.addEventListener('click', e => {
+        e.preventDefault();
+        window.showManifest(a.getAttribute('data-id'), a.getAttribute('data-name'));
+      }));
 
-    const countLine = document.getElementById('pallet-count-line');
-    if (countLine) countLine.textContent =
-      `Showing ${live.length} live pallet${live.length === 1 ? '' : 's'}`;
+      const countLine = document.getElementById('pallet-count-line');
+      if (countLine) countLine.textContent =
+        `Showing ${live.length} live pallet${live.length === 1 ? '' : 's'}`;
+    }
+
+    // ── RECENTLY SOLD — ghost (social proof) + real sold pallets, shown as SOLD ──
+    const sold = all.filter(p => p.publish_state === 'ghost' || p.publish_state === 'sold');
+    const soldSection = document.getElementById('sold-section');
+    const soldGrid = document.getElementById('sold-grid');
+    if (sold.length > 0 && soldGrid) {
+      soldGrid.innerHTML = sold.slice(0, 8).map(p => {
+        const photo = p.photo_url
+          ? `style="background-image:url('${esc(p.photo_url)}');background-size:cover;background-position:center;"`
+          : '';
+        return `
+          <div class="sold-card">
+            <div class="sold-photo" ${photo}><span class="sold-stamp">SOLD</span></div>
+            <div class="sold-meta">
+              <h3>${esc(p.display_name || ('Box #' + p.pallet_number))}</h3>
+              <div class="sold-sub">${p.unit_count || 0} items · ${money(p.total_msrp)} retail</div>
+            </div>
+          </div>`;
+      }).join('');
+      if (soldSection) soldSection.hidden = false;
+    }
   } catch (e) { /* offline / API down — leave the static demo rows in place */ }
 })();
 </script>

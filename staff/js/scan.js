@@ -48,7 +48,7 @@ async function loadPalletPicker() {
 
   const storedId = localStorage.getItem('nsl.active.pallet');
   picker.innerHTML = '<option value="">— pick a pallet to scan to —</option>' +
-    draft.map(p => `<option value="${p.manifest_id}"${p.manifest_id === storedId ? ' selected' : ''}>${escape(p.display_name || `Pallet #${p.pallet_number}`)} (${p.item_count || 0})</option>`).join('');
+    draft.map(p => `<option value="${p.manifest_id}"${p.manifest_id === storedId ? ' selected' : ''}>${escape(p.display_name || `Pallet #${p.pallet_number}`)} (${p.unit_count || 0})</option>`).join('');
 
   activePallet = draft.find(p => p.manifest_id === storedId) || null;
   updatePalletDisplay();
@@ -65,7 +65,7 @@ async function loadPalletPicker() {
 
 function updatePalletDisplay() {
   if (activePallet) {
-    palletEl.textContent = `${activePallet.display_name} · ${activePallet.item_count || 0} items`;
+    palletEl.textContent = `${activePallet.display_name} · ${activePallet.unit_count || 0} items`;
   } else {
     palletEl.textContent = 'no pallet selected';
   }
@@ -332,7 +332,7 @@ async function loadRecent() {
     const detail = await apiClient.pallet(activePallet.manifest_id);
     const allItems = detail.items || [];
     recentItems = allItems.slice(0, 8);
-    palletEl.textContent = `${detail.pallet.display_name} · ${detail.pallet.item_count} items`;
+    palletEl.textContent = `${detail.pallet.display_name} · ${detail.pallet.unit_count || 0} items`;
 
     // Pallet-wide totals across ALL items on this manifest, not just the 8
     // recent ones — Rob asked for the running totals at the top of the page.

@@ -50,7 +50,7 @@ async function loadList() {
         </div>
         <h3>${escape(p.display_name || `Pallet #${p.pallet_number}`)}</h3>
         <div class="stats">
-          ${p.item_count || 0} items · ${p.unit_count || 0} units<br>
+          ${p.unit_count || 0} items<br>
           MSRP: <b>${fmtMoney(p.total_msrp)}</b>${priceLine ? ` · ask: ${priceLine}` : ''}
           ${p.category ? `<br><span style="color:#0a5;">${escape(p.category)}</span>` : ''}
         </div>
@@ -118,7 +118,8 @@ async function showDetail(id) {
   document.querySelectorAll('.publish-toggle button').forEach(b =>
     b.classList.toggle('active', b.dataset.ps === (current.publish_state || 'draft'))
   );
-  $('#items-count').textContent = `(${currentItems.length} item${currentItems.length === 1 ? '' : 's'})`;
+  const totalUnits = currentItems.reduce((a, it) => a + (Number(it.qty) || 1), 0);
+  $('#items-count').textContent = `(${totalUnits} item${totalUnits === 1 ? '' : 's'})`;
 
   // Archive button label flips between Archive / Restore
   const archBtn = $('#archive-pallet');
@@ -132,8 +133,7 @@ async function showDetail(id) {
     `received     ${current.received_date ? new Date(current.received_date).toLocaleString() : '—'}\n` +
     `status       ${current.status}\n` +
     `sell mode    ${current.sell_mode}\n` +
-    `items        ${current.item_count || 0}\n` +
-    `units        ${current.unit_count || 0}\n` +
+    `items        ${current.unit_count || 0}\n` +
     `MSRP total   ${fmtMoney(current.total_msrp)}\n` +
     `est. resale  ${current.total_est_resale ? fmtMoney(current.total_est_resale) : '— (pending enrichment)'}\n` +
     `cost         ${fmtMoney(current.total_cost)}`;

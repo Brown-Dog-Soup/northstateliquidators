@@ -779,7 +779,7 @@
       const p = data.pallet || {};
       const items = data.items || [];
       const units = p.unit_count || items.length;
-      subEl.textContent = `${units} unit${units === 1 ? '' : 's'} · Est. retail ${money(p.total_msrp)} · Ask ${money(p.ask_price)}`;
+      subEl.textContent = `${units} item${units === 1 ? '' : 's'} · Est. retail ${money(p.total_msrp)} · Ask ${money(p.ask_price)}`;
       if (items.length === 0) {
         bodyEl.innerHTML = '<p class="mf-empty">No itemized manifest available for this lot yet — give us a call for details.</p>';
         return;

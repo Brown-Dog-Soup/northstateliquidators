@@ -61,7 +61,7 @@ async function loadSummary() {
     // Lot dropdown
     const lotSel = $('#filter-lot');
     lotSel.innerHTML = '<option value="">All lots</option>' +
-      (s.lots || []).map(l => `<option value="${escape(l.lot)}">${escape(l.lot)} (${l.n})</option>`).join('');
+      (s.lots || []).map(l => `<option value="${escape(l.lot)}">${l.lot_type ? escape(l.lot_type) + ': ' : ''}${escape(l.lot)} (${l.n})</option>`).join('');
   } catch (e) {
     toast(`Summary load failed: ${e.message}`, 'err', 4000);
   }
@@ -99,7 +99,7 @@ function renderRow(it) {
       <div class="body">
         <h4>${escape(it.title || it.lpn || it.upc || '(no title)')}</h4>
         <div class="meta">
-          ${escape(it.brand || '')}${it.brand ? ' · ' : ''}${escape(it.lpn || '')}${it.upc ? ' · UPC ' + escape(it.upc) : ''}${it.source_pallet_ref ? ' · Lot ' + escape(it.source_pallet_ref) : ''}
+          ${escape(it.brand || '')}${it.brand ? ' · ' : ''}${escape(it.lpn || '')}${it.upc ? ' · UPC ' + escape(it.upc) : ''}${(it.order_number || it.source_pallet_id || it.lot_id) ? ' · Lot ' + escape(it.order_number || it.source_pallet_id || it.lot_id) : ''}
         </div>
         <div class="meta" style="margin-top:4px;">
           ${statusBadge}

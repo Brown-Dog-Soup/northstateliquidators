@@ -257,6 +257,29 @@
   .ledger .cond.shelf { background: #E8EEF8; color: var(--nc-navy); }
   .ledger .view { color: var(--nc-red); font-weight: 700; text-decoration: none; font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; }
   .ledger .view:hover { text-decoration: underline; }
+  /* Manifest modal */
+  .mf-overlay { position: fixed; inset: 0; background: rgba(14,17,22,0.6); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 1000; }
+  .mf-overlay[hidden] { display: none; }
+  .mf-box { background: #fff; width: 100%; max-width: 720px; max-height: 85vh; display: flex; flex-direction: column; border-radius: 4px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); overflow: hidden; position: relative; }
+  .mf-close { position: absolute; top: 8px; right: 14px; background: none; border: none; font-size: 30px; line-height: 1; color: #999; cursor: pointer; }
+  .mf-close:hover { color: var(--nc-red); }
+  .mf-head { padding: 22px 24px 14px; border-bottom: 3px solid var(--warehouse-yellow); }
+  .mf-head h3 { font-family: 'Anton', sans-serif; font-size: 24px; margin: 0 40px 4px 0; color: var(--nc-navy); text-transform: uppercase; }
+  .mf-sub { margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #777; }
+  .mf-body { padding: 6px 24px 14px; overflow-y: auto; }
+  .mf-loading, .mf-empty { color: #777; font-size: 14px; padding: 24px 0; text-align: center; }
+  .mf-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .mf-table th { text-align: left; font-family: 'JetBrains Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #999; padding: 10px 8px; border-bottom: 1px solid #EDE4D0; }
+  .mf-table td { padding: 10px 8px; border-top: 1px solid #F0EAD9; vertical-align: middle; }
+  .mf-thumb { display: inline-block; width: 34px; height: 34px; border-radius: 3px; background: #EFE9D8 center/cover no-repeat; vertical-align: middle; margin-right: 10px; }
+  .mf-item { display: inline-block; vertical-align: middle; }
+  .mf-item small { display: block; color: #888; font-size: 12px; }
+  .mf-table .cond { display: inline-block; padding: 3px 8px; font-size: 11px; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.05em; text-transform: uppercase; background: #EFE9D8; border-radius: 2px; }
+  .mf-table .cond.new { background: #E6F4EA; color: #1B7E3A; }
+  .mf-table .cond.returns { background: #FDF0E0; color: #8A4A0B; }
+  .mf-table .cond.shelf { background: #E8EEF8; color: var(--nc-navy); }
+  .mf-foot { padding: 14px 24px; border-top: 1px solid #EDE4D0; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--paper); flex-wrap: wrap; }
+  .mf-foot .note { font-size: 13px; color: #555; }
   .ledger .thumb {
     width: 56px; height: 56px; background: #F0EAD6 repeating-linear-gradient(45deg, #E5DDC4 0, #E5DDC4 2px, #F0EAD6 2px, #F0EAD6 10px);
     border: 1px solid var(--rule);
@@ -689,14 +712,95 @@
           <td class="msrp">${money(p.total_msrp)}</td>
           <td class="ask">${ask}</td>
           <td><span class="cond shelf">${esc(p.category || 'Mixed')}</span></td>
-          <td><a class="view" href="tel:+19195260112">Call →</a></td>
+          <td><a class="view" href="#" data-id="${esc(p.manifest_id)}" data-name="${esc(p.display_name || ('Box #' + p.pallet_number))}">View Manifest →</a></td>
         </tr>`;
     }).join('');
+
+    tbody.querySelectorAll('a.view[data-id]').forEach(a => a.addEventListener('click', e => {
+      e.preventDefault();
+      window.showManifest(a.getAttribute('data-id'), a.getAttribute('data-name'));
+    }));
 
     const countLine = document.getElementById('pallet-count-line');
     if (countLine) countLine.textContent =
       `Showing ${live.length} live pallet${live.length === 1 ? '' : 's'}`;
   } catch (e) { /* offline / API down — leave the static demo rows in place */ }
+})();
+</script>
+
+<!-- Manifest modal: clicking "View Manifest" on a live pallet fetches its
+     customer-safe item list from /api/public/pallets/{id}/items (no cost or
+     wholesale exposed) and shows it here. -->
+<div id="manifest-modal" class="mf-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="mf-title">
+  <div class="mf-box">
+    <button class="mf-close" type="button" aria-label="Close">&times;</button>
+    <div class="mf-head">
+      <h3 id="mf-title">Manifest</h3>
+      <p class="mf-sub" id="mf-sub"></p>
+    </div>
+    <div class="mf-body" id="mf-body"></div>
+    <div class="mf-foot">
+      <span class="note">Raleigh pickup or Southeast freight. Call to claim this lot.</span>
+      <a class="btn btn-primary" href="tel:+19195260112">Call (919) 526-0112</a>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  const overlay = document.getElementById('manifest-modal');
+  const titleEl = document.getElementById('mf-title');
+  const subEl   = document.getElementById('mf-sub');
+  const bodyEl  = document.getElementById('mf-body');
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const money = n => (n === null || n === undefined || n === '') ? '—'
+      : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const condClass = c => {
+    const k = String(c || '').toLowerCase();
+    if (k.includes('new')) return 'new';
+    if (k.includes('return')) return 'returns';
+    if (k.includes('shelf') || k.includes('open')) return 'shelf';
+    return '';
+  };
+  function close() { overlay.hidden = true; document.body.style.overflow = ''; }
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  overlay.querySelector('.mf-close').addEventListener('click', close);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !overlay.hidden) close(); });
+
+  window.showManifest = async function (id, name) {
+    titleEl.textContent = name || 'Manifest';
+    subEl.textContent = '';
+    bodyEl.innerHTML = '<p class="mf-loading">Loading manifest…</p>';
+    overlay.hidden = false;
+    document.body.style.overflow = 'hidden';
+    try {
+      const r = await fetch(`/api/public/pallets/${encodeURIComponent(id)}/items`, { credentials: 'omit' });
+      if (!r.ok) throw new Error('http ' + r.status);
+      const data = await r.json();
+      const p = data.pallet || {};
+      const items = data.items || [];
+      const units = p.unit_count || items.length;
+      subEl.textContent = `${units} unit${units === 1 ? '' : 's'} · Est. retail ${money(p.total_msrp)} · Ask ${money(p.ask_price)}`;
+      if (items.length === 0) {
+        bodyEl.innerHTML = '<p class="mf-empty">No itemized manifest available for this lot yet — give us a call for details.</p>';
+        return;
+      }
+      bodyEl.innerHTML = `
+        <table class="mf-table">
+          <thead><tr><th>Item</th><th>Condition</th><th>Qty</th><th>Est. Retail</th></tr></thead>
+          <tbody>
+            ${items.map(it => `
+              <tr>
+                <td>${it.photo_blob_url ? `<span class="mf-thumb" style="background-image:url('${esc(it.photo_blob_url)}')"></span>` : ''}<span class="mf-item"><strong>${esc(it.title || 'Item')}</strong>${it.brand ? `<small>${esc(it.brand)}</small>` : ''}</span></td>
+                <td><span class="cond ${condClass(it.condition)}">${esc(it.condition || '—')}</span></td>
+                <td>${it.qty || 1}</td>
+                <td>${money(it.est_msrp)}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    } catch (e) {
+      bodyEl.innerHTML = '<p class="mf-empty">Couldn\'t load the manifest right now — please call (919) 526-0112.</p>';
+    }
+  };
 })();
 </script>
 

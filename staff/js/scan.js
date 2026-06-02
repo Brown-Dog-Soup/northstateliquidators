@@ -171,6 +171,11 @@ function renderLookup(r) {
         <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#0a5;display:block;font-weight:700;margin-bottom:2px;">Price</span>
         <span style="font-size:22px;font-weight:700;color:#0a5;">${r.wholesale_price != null ? fmtMoney(r.wholesale_price) : '—'}</span>
       </div>
+      ${r.market_price != null ? `
+      <div style="padding-left:24px;border-left:1px solid var(--rule);">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#a06400;display:block;font-weight:700;margin-bottom:2px;">Market</span>
+        <span style="font-size:22px;font-weight:700;color:#a06400;">${fmtMoney(r.market_price)}</span>
+      </div>` : ''}
     </div>`;
 
   lookup.innerHTML = `
@@ -225,7 +230,8 @@ function renderLookup(r) {
 function suggestSellPrice() {
   const sp = $('#sell-price');
   const hint = $('#sell-price-hint');
-  const ref = lookupResult?.msrp;
+  // Prefer the real market resale price as the basis; fall back to manifest MSRP.
+  const ref = lookupResult?.market_price ?? lookupResult?.msrp;
   const cond = $('#condition').value;
   const mult = SELL_MULT[cond] ?? 0.5;
 
@@ -272,7 +278,9 @@ confirmBtn.addEventListener('click', async () => {
       title:          lr?.title ?? null,
       brand:          lr?.brand ?? null,
       category:       lr?.category ?? null,
-      msrp:           lr?.msrp ?? null,
+      // Persist a reference price even for off-catalog UPCs: manifest MSRP if we
+      // have it, otherwise the market price from the lookup provider.
+      msrp:           lr?.msrp ?? lr?.market_price ?? null,
       matchSource:    lr?.match_source ?? null,
       wholesalePrice: lr?.wholesale_price ?? null,  // PRICE column on Recent list
       description:    lr?.description ?? null         // carried so a UPCitemdb hit keeps its description

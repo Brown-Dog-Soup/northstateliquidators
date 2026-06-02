@@ -32,6 +32,7 @@ public sealed class UpcLookupService
         public decimal? Msrp { get; init; }
         public string? Upc { get; init; }
         public string? Ean { get; init; }
+        public string? Asin { get; init; }
         public string? ImageUrl { get; init; }
         public string Source { get; init; } = "upcitemdb";
     }
@@ -84,6 +85,7 @@ public sealed class UpcLookupService
                                 : item.HighestRecordedPrice,
                 Upc         = item.Upc,
                 Ean         = item.Ean,
+                Asin        = string.IsNullOrWhiteSpace(item.Asin) ? null : item.Asin,
                 ImageUrl    = item.Images?.FirstOrDefault()
             };
         }
@@ -128,6 +130,7 @@ public sealed class UpcLookupService
     {
         [JsonPropertyName("upc")]                   public string? Upc { get; set; }
         [JsonPropertyName("ean")]                   public string? Ean { get; set; }
+        [JsonPropertyName("asin")]                  public string? Asin { get; set; }
         [JsonPropertyName("title")]                 public string? Title { get; set; }
         [JsonPropertyName("brand")]                 public string? Brand { get; set; }
         [JsonPropertyName("description")]           public string? Description { get; set; }

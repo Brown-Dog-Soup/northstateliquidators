@@ -408,6 +408,45 @@ ORDER BY CASE WHEN publish_state = 'live' THEN 0 ELSE 1 END,
         return new OkObjectResult(rows);
     }
 
+    /// <summary>
+    /// GET /api/public/pallets/{id}/items — anonymous read of a publicly-visible
+    /// pallet's manifest, for the "View Manifest" modal on the marketing site.
+    ///
+    /// Customer-safe by construction: it selects ONLY title / brand / category /
+    /// condition / qty / est_msrp / photo. unit_cost and wholesale_price (our
+    /// margins) are intentionally NOT selected here — unlike the staff-gated
+    /// GetPallet/ListPalletItems endpoints. The pallet is gated through
+    /// v_public_pallets, so a draft/archived pallet returns 404 and its contents
+    /// can't be enumerated.
+    /// </summary>
+    [Function("PublicPalletItems")]
+    public async Task<IActionResult> PublicPalletItems(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "public/pallets/{id}/items")] HttpRequest req,
+        Guid id,
+        CancellationToken ct)
+    {
+        await using var conn = await _sql.OpenAsync(ct);
+
+        var pallet = await conn.QueryFirstOrDefaultAsync(@"
+SELECT manifest_id, pallet_number, display_name, category, publish_state,
+       item_count, unit_count, total_msrp, ask_price, list_price, sale_price,
+       is_sold, is_on_sale, photo_url
+FROM dbo.v_public_pallets WHERE manifest_id = @id", new { id });
+        if (pallet == null) return new NotFoundResult();   // not public → don't leak it
+        SignRowPhotos((object)pallet);
+
+        // Margin-safe column list — NO unit_cost / wholesale_price.
+        var items = (await conn.QueryAsync(@"
+SELECT title, brand, category, condition, qty, est_msrp, photo_blob_url
+FROM dbo.line_items
+WHERE manifest_id = @id
+ORDER BY CASE WHEN est_msrp IS NULL THEN 1 ELSE 0 END, est_msrp DESC, created_at DESC",
+            new { id })).ToList();
+        SignRowPhotos(items);
+
+        return new OkObjectResult(new { pallet, items });
+    }
+
     public sealed record CreateFromItemsRequest(string? displayName, string[]? lpns);
 
     /// <summary>

@@ -39,42 +39,77 @@ public sealed class LookupFunction
         if (string.IsNullOrWhiteSpace(code))
             return new BadRequestObjectResult(new { error = "code path parameter is required" });
 
-        // 1. Local catalog
-        await using (var conn = await _sql.OpenAsync(ct))
+        await using var conn = await _sql.OpenAsync(ct);
+
+        // 1. Local catalog by the scanned code (lpn / upc / asin).
+        var row = await conn.QueryFirstOrDefaultAsync(
+            "EXEC dbo.sp_LookupCode @code = @c", new { c = code });
+
+        // 2. External provider. Always attempted (not just on a catalog miss) so
+        //    we can show a *market* price alongside the *manifest* price — and so
+        //    a retail UPC that missed the catalog can bridge to the manifest row
+        //    by ASIN/EAN below.
+        var market = await _upc.LookupAsync(code, ct);
+
+        // 3. Bridge. B-Stock catalog rows are keyed on LPN/ASIN and often have a
+        //    blank UPC, so scanning a product's retail UPC misses the catalog even
+        //    when the item is in the manifest. If the provider handed back an
+        //    ASIN / EAN (or the UPC-A↔EAN-13 form), re-check the catalog by those
+        //    to recover the manifest price.
+        bool bridged = false;
+        if (row == null)
         {
-            var row = await conn.QueryFirstOrDefaultAsync(
-                "EXEC dbo.sp_LookupCode @code = @c", new { c = code });
-            if (row != null)
+            // Re-run the granted sp_LookupCode (matches lpn/upc/asin) for each
+            // bridge candidate. Routing through the proc keeps us on the same
+            // permissions the app already has — no direct base-table read.
+            foreach (var cand in new[] { market?.Asin, market?.Ean, NormalizeGtin(code) })
             {
-                _log.LogInformation("Lookup {Code} -> hit (local catalog)", code);
-                return new OkObjectResult(row);
+                if (string.IsNullOrWhiteSpace(cand)) continue;
+                row = await conn.QueryFirstOrDefaultAsync(
+                    "EXEC dbo.sp_LookupCode @code = @c", new { c = cand });
+                if (row != null) { bridged = true; break; }
             }
         }
 
-        // 2. Public UPC fallback
-        var upc = await _upc.LookupAsync(code, ct);
-        if (upc != null)
+        // 4a. Catalog hit (direct or bridged): return the manifest data with the
+        //     market price attached as an extra field (dual-source pricing).
+        if (row != null)
         {
-            _log.LogInformation("Lookup {Code} -> hit ({Source})", code, upc.Source);
+            var dict = (IDictionary<string, object>)row;
+            dict["market_price"] = market?.Msrp;
+            // Lend the provider's image if the catalog row has none.
+            if ((!dict.TryGetValue("image_url", out var img) || img == null) && market?.ImageUrl != null)
+                dict["image_url"] = market.ImageUrl;
+            _log.LogInformation("Lookup {Code} -> hit (catalog{Bridged}{Market})", code,
+                bridged ? "+bridge" : "", market != null ? "+market" : "");
+            return new OkObjectResult(row);
+        }
+
+        // 4b. No catalog row — external-only hit. The market price is the only one.
+        if (market != null)
+        {
+            _log.LogInformation("Lookup {Code} -> hit ({Source}, no manifest)", code, market.Source);
             return new OkObjectResult(new
             {
-                match_source    = upc.Source,
+                match_source    = market.Source,
                 lpn             = (string?)null,
-                asin            = (string?)null,
-                upc             = upc.Upc ?? code,
-                title           = upc.Title,
-                description     = upc.Description,
-                brand           = upc.Brand,
-                category        = upc.Category,
+                asin            = market.Asin,
+                upc             = market.Upc ?? code,
+                title           = market.Title,
+                description     = market.Description,
+                brand           = market.Brand,
+                category        = market.Category,
                 subcategory     = (string?)null,
-                msrp            = upc.Msrp,
+                msrp            = (decimal?)null,     // no manifest price for off-catalog UPCs
+                market_price    = market.Msrp,        // the only price we have
                 unit_cost       = (decimal?)null,
+                wholesale_price = (decimal?)null,
                 condition       = (string?)null,
                 qty_in_manifest = (int?)null,
                 pallet_id       = (string?)null,
                 lot_id          = (string?)null,
                 order_number    = (string?)null,
-                image_url       = upc.ImageUrl
+                image_url       = market.ImageUrl
             });
         }
 
@@ -94,5 +129,18 @@ public sealed class LookupFunction
 
         _log.LogInformation("Lookup {Code} -> miss", code);
         return new NotFoundResult();
+    }
+
+    /// <summary>
+    /// UPC-A (12 digits) and EAN-13 (13 digits, leading 0) are the same GTIN in
+    /// two forms. A manifest may store one form while the scanner reads the other,
+    /// so we try the alternate form when bridging a missed scan to the catalog.
+    /// </summary>
+    private static string? NormalizeGtin(string code)
+    {
+        var c = code.Trim();
+        if (System.Text.RegularExpressions.Regex.IsMatch(c, @"^\d{12}$"))  return "0" + c;        // UPC-A → EAN-13
+        if (System.Text.RegularExpressions.Regex.IsMatch(c, @"^0\d{12}$")) return c[1..];          // EAN-13(0) → UPC-A
+        return null;
     }
 }

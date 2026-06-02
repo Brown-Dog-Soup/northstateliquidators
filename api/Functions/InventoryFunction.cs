@@ -120,8 +120,15 @@ SELECT TOP 60 lot, lot_type, n FROM (
     SELECT source_pallet_id AS lot, 'Pallet ID'     AS lot_type, COUNT(*) AS n
         FROM dbo.v_inventory WHERE NULLIF(source_pallet_id,'') IS NOT NULL GROUP BY source_pallet_id
     UNION ALL
-    SELECT lot_id           AS lot, 'Amazon Lot'    AS lot_type, COUNT(*) AS n
-        FROM dbo.v_inventory WHERE NULLIF(lot_id,'')           IS NOT NULL GROUP BY lot_id
+    -- lot_id is overloaded: it's Amazon's Lot ID on B-Stock rows but the NSL
+    -- Lot # on master-imported rows. Label each group by which it is — a group
+    -- whose rows carry an Order # came from B-Stock (Amazon Lot); otherwise it's
+    -- an NSL Lot # the owners attached.
+    SELECT lot_id AS lot,
+           CASE WHEN MAX(CASE WHEN NULLIF(order_number,'') IS NOT NULL THEN 1 ELSE 0 END) = 1
+                THEN 'Amazon Lot' ELSE 'NSL Lot' END AS lot_type,
+           COUNT(*) AS n
+        FROM dbo.v_inventory WHERE NULLIF(lot_id,'') IS NOT NULL GROUP BY lot_id
 ) g
 ORDER BY n DESC")).ToList();
 

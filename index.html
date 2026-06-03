@@ -35,11 +35,11 @@
 <!-- Geographic / Local -->
 <meta name="geo.region" content="US-NC" />
 <meta name="geo.placename" content="Raleigh" />
-<meta name="theme-color" content="#CC0000" />
+<meta name="theme-color" content="#002868" />
 
 <!-- Favicon -->
-<link rel="icon" type="image/jpeg" href="/north_state_liquidators_logo.jpeg" />
-<link rel="apple-touch-icon" href="/north_state_liquidators_logo.jpeg" />
+<link rel="icon" type="image/png" href="/nsl-mark.png" />
+<link rel="apple-touch-icon" href="/nsl-mark.png" />
 
 <!-- LocalBusiness structured data -->
 <script type="application/ld+json">
@@ -168,51 +168,67 @@
   .ticker .live::before { content: '●'; color: var(--nc-red); margin-right: 6px; animation: pulse 1s infinite; }
   @keyframes scroll { from{transform:translateX(0)} to{transform:translateX(-50%)} }
 
-  /* === HERO === */
+  /* === HERO (mockup) === */
   .hero {
-    background: var(--concrete);
-    color: #fff;
     position: relative;
+    color: #fff;
     overflow: hidden;
+    background:
+      radial-gradient(1100px 480px at 72% 8%, rgba(0,40,104,0.65), transparent 70%),
+      linear-gradient(180deg, #0a1730 0%, #0c1e40 55%, #0a1730 100%);
   }
-  .hero .inner { max-width: 1280px; margin: 0 auto; padding: 72px 24px; display: grid; grid-template-columns: 1.1fr 1fr; gap: 48px; align-items: center; }
-  .hero h1 {
-    font-size: clamp(48px, 7vw, 96px);
-    color: #fff;
-    line-height: 0.88;
+  .hero::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.022) 0, rgba(255,255,255,0.022) 2px, transparent 2px, transparent 14px);
   }
-  .hero h1 .hl { background: var(--warehouse-yellow); color: var(--ink); padding: 0 12px; display: inline-block; transform: rotate(-0.8deg); }
-  .hero p { font-size: 18px; max-width: 52ch; color: #D8D4C6; margin: 24px 0 32px; }
-  .hero .cta-row { display: flex; gap: 12px; flex-wrap: wrap; }
-  .hero .photo-box {
-    background: #1a1c1f;
-    aspect-ratio: 4/3;
-    border: 1px solid #35383D;
-    position: relative;
-    display: flex; align-items: center; justify-content: center;
-    background-image:
-      linear-gradient(135deg, rgba(249,215,28,0.05) 0%, transparent 50%),
-      repeating-linear-gradient(45deg, rgba(255,255,255,0.02) 0, rgba(255,255,255,0.02) 2px, transparent 2px, transparent 12px);
+
+  /* top callout strip */
+  .hero-callouts { position: relative; z-index: 2; border-bottom: 1px solid rgba(255,255,255,0.12); }
+  .hero-callouts .inner { max-width: 1280px; margin: 0 auto; padding: 12px 24px; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  .hero-callouts .callout { display: flex; align-items: center; gap: 10px; }
+  .hero-callouts .ico { font-size: 22px; line-height: 1; }
+  .hero-callouts strong { display: block; font-family: 'Anton', sans-serif; font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; color: #fff; }
+  .hero-callouts em { display: block; font-family: 'JetBrains Mono', monospace; font-style: normal; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--warehouse-yellow); margin-top: 1px; }
+  .hero-callouts .div { width: 1px; height: 30px; background: rgba(255,255,255,0.15); }
+
+  /* main two-column hero */
+  .hero-main { position: relative; z-index: 2; max-width: 1280px; margin: 0 auto; padding: 44px 24px 60px; display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 40px; align-items: center; }
+
+  /* wordmark lockup */
+  .lockup { font-family: 'Anton', sans-serif; line-height: 0.8; text-transform: uppercase; margin-bottom: 22px; text-shadow: 0 2px 0 rgba(0,0,0,0.25); }
+  .lockup .l1, .lockup .l2 { display: block; font-size: clamp(40px, 6vw, 76px); }
+  .lockup .l1 { color: #fff; }
+  .lockup .l2 { color: var(--warehouse-yellow); }
+  .lockup .l3 { display: block; font-size: clamp(16px, 2.3vw, 28px); letter-spacing: 0.4em; color: #fff; margin-top: 4px; }
+
+  .hero h1 { font-size: clamp(34px, 4.8vw, 60px); line-height: 0.96; color: #fff; }
+  .hero h1 .hl { color: var(--warehouse-yellow); }
+  .hero h1 .ev { font-family: 'Permanent Marker', cursive; font-size: 0.6em; color: #fff; display: inline-block; margin-top: 8px; }
+  .hero p { font-size: 17px; max-width: 46ch; color: #D6DDEC; margin: 18px 0 28px; }
+  .btn-shop {
+    display: inline-flex; align-items: center; gap: 10px;
+    background: var(--warehouse-yellow); color: var(--ink);
+    font-family: 'Anton', sans-serif; font-size: 20px; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 14px 28px; text-decoration: none; border: 2px solid var(--ink);
+    box-shadow: 3px 4px 0 rgba(0,0,0,0.35); transition: transform 0.1s, box-shadow 0.1s;
   }
-  .hero .photo-box::before {
-    content: 'PHOTO: LOADING DOCK · TRUCK #47 · 04.17';
-    position: absolute; top: 16px; left: 16px;
-    font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #666;
-    letter-spacing: 0.12em;
-  }
-  .hero .photo-box::after {
-    content: '📦';
-    font-size: 140px; opacity: 0.15;
-  }
-  .hero .overlay-card {
-    position: absolute; bottom: 24px; left: 24px; right: 24px;
-    background: rgba(0,0,0,0.75); backdrop-filter: blur(4px);
-    border-left: 4px solid var(--warehouse-yellow);
-    padding: 16px 20px;
-    font-family: 'JetBrains Mono', monospace; font-size: 12px;
-    color: #EAE6DA;
-  }
-  .hero .overlay-card strong { color: var(--warehouse-yellow); }
+  .btn-shop:hover { transform: translateY(-1px); box-shadow: 4px 6px 0 rgba(0,0,0,0.4); }
+  .btn-shop:active { transform: translateY(2px); box-shadow: 1px 2px 0 rgba(0,0,0,0.35); }
+
+  .hero-art { position: relative; }
+  .hero-art img { width: 100%; height: auto; display: block; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 18px 50px rgba(0,0,0,0.45); }
+
+  /* === FEATURE STRIP === */
+  .features { background: var(--paper); border-bottom: 1px solid var(--rule); }
+  .features .inner { max-width: 1280px; margin: 0 auto; padding: 28px 24px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 28px; }
+  .feature { display: flex; gap: 14px; align-items: flex-start; }
+  .feature .fico { flex: 0 0 auto; width: 46px; height: 46px; border-radius: 50%; background: var(--nc-navy); color: var(--warehouse-yellow); display: flex; align-items: center; justify-content: center; font-size: 22px; }
+  .feature h3 { font-family: 'Anton', sans-serif; font-size: 17px; letter-spacing: 0.03em; text-transform: uppercase; color: var(--nc-navy); margin-bottom: 4px; }
+  .feature p { font-size: 13px; color: #555; line-height: 1.45; }
+
+  /* === RIBBON === */
+  .ribbon { background: var(--ink); color: #fff; text-align: center; font-family: 'Anton', sans-serif; font-size: clamp(15px, 2.1vw, 22px); letter-spacing: 0.06em; text-transform: uppercase; padding: 14px 24px; }
+  .ribbon span { color: var(--warehouse-yellow); }
 
   /* === STRIP: COUNTS === */
   .counts {
@@ -370,10 +386,16 @@
   .copyright { max-width: 1280px; margin: 24px auto 0; padding: 16px 24px 0; border-top: 1px solid #3a3d42; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #777; display: flex; justify-content: space-between; }
 
   @media (max-width: 900px) {
-    .hero .inner, .owners .inner { grid-template-columns: 1fr; }
-    .counts .inner, .steps, .hunt-grid { grid-template-columns: repeat(2, 1fr); }
+    .hero-main, .owners .inner { grid-template-columns: 1fr; }
+    .hero-art { order: -1; max-width: 460px; }
+    .counts .inner, .steps, .hunt-grid, .features .inner { grid-template-columns: repeat(2, 1fr); }
     .fine .inner { grid-template-columns: 1fr 1fr; }
     .nav nav { display: none; }
+  }
+  @media (max-width: 560px) {
+    .features .inner { grid-template-columns: 1fr; }
+    .hero-callouts .div { display: none; }
+    .hero-callouts .inner { gap: 14px 22px; }
   }
 </style>
 </head>
@@ -395,7 +417,7 @@
 <!-- NAV -->
 <header class="nav">
   <div class="inner">
-    <img src="north_state_liquidators_logo.jpeg" alt="North State Liquidators">
+    <img src="nsl-mark.png" alt="North State Liquidators">
     <nav>
       <a href="#pallets">Wholesale Pallets</a>
       <a href="#hunt">Shop Retail</a>
@@ -437,23 +459,58 @@
 
 <!-- HERO -->
 <section class="hero">
-  <div class="inner">
-    <div>
-      <h1>AMAZON RETURNS.<br><span class="hl">DIRECT TO YOU.</span><br>RALEIGH, NC.</h1>
-      <p>We buy truckloads of returns and overstock from Amazon and the big boxes. We sort it, grade it, price it, and move it. You save 40–80% off retail — by the pallet or by the piece.</p>
-      <div class="cta-row">
-        <a class="btn btn-primary" href="#pallets">Browse Pallets →</a>
-        <a class="btn btn-secondary" href="#hunt">Shop Retail →</a>
-      </div>
+  <!-- top callout strip -->
+  <div class="hero-callouts">
+    <div class="inner">
+      <div class="callout"><span class="ico">🏷️</span><div><strong>Great Brands</strong><em>Low Prices</em></div></div>
+      <span class="div"></span>
+      <div class="callout"><span class="ico">📦</span><div><strong>New Inventory</strong><em>Every Week</em></div></div>
+      <span class="div"></span>
+      <div class="callout"><span class="ico">👨‍👩‍👧</span><div><strong>Family Owned</strong><em>&amp; Operated</em></div></div>
     </div>
-    <div class="photo-box">
-      <div class="overlay-card">
-        <strong>ON THE DOCK RIGHT NOW</strong>
-        14 pallets · 2,410 units · est. MSRP $58,200 · ask $14,300
+  </div>
+
+  <div class="hero-main">
+    <div class="hero-copy">
+      <div class="lockup">
+        <span class="l1">North</span>
+        <span class="l2">★ State</span>
+        <span class="l3">Liquidators</span>
       </div>
+      <h1>Big Brands.<br><span class="hl">Deep Discounts.</span><br><span class="ev">Every Time.</span></h1>
+      <p>We buy truckloads and store overstock, customer returns, and shelf pulls — so you save big!</p>
+      <a class="btn-shop" href="#pallets">🛒 Shop Our Inventory</a>
+    </div>
+    <div class="hero-art">
+      <img src="hero-illustration.png" alt="North State Liquidators — Norm and Rob with a forklift and a North Carolina map" />
     </div>
   </div>
 </section>
+
+<!-- FEATURE STRIP -->
+<div class="features">
+  <div class="inner">
+    <div class="feature">
+      <span class="fico">🏷️</span>
+      <div><h3>Unbeatable Prices</h3><p>Top brands for a fraction of retail prices.</p></div>
+    </div>
+    <div class="feature">
+      <span class="fico">📦</span>
+      <div><h3>New Inventory Weekly</h3><p>Fresh deals arrive all the time.</p></div>
+    </div>
+    <div class="feature">
+      <span class="fico">🛒</span>
+      <div><h3>Something For Everyone</h3><p>Home goods, electronics, appliances, tools &amp; more!</p></div>
+    </div>
+    <div class="feature">
+      <span class="fico">👨‍👩‍👧</span>
+      <div><h3>Family Owned &amp; Operated</h3><p>Proudly serving our community with honest deals.</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- RIBBON -->
+<div class="ribbon">Quality Products. Incredible Prices. Right Here In <span>North Carolina</span>.</div>
 
 <!-- COUNTS -->
 <div class="counts">

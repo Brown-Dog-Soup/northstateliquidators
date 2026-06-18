@@ -5,6 +5,7 @@ const meEl = $('#me');
 
 let debounceTimer = null;
 let lastRows = [];                  // rows currently shown (for select-all)
+let boxes = [];                     // working boxes available as allocation targets
 const selectedLpns = new Set();     // #9 build-a-box selection (keyed by lpn)
 
 init();
@@ -12,6 +13,7 @@ async function init() {
   const me = await apiClient.me();
   meEl.innerHTML = me ? `${me.userDetails} · <a href="/logout">sign out</a>` : `<a href="/login">sign in</a>`;
 
+  await loadBoxes();
   await loadSummary();
   await loadResults();
 
@@ -27,18 +29,37 @@ async function init() {
     $('#filter-lot').value = '';
     loadResults();
   });
+
+  // Per-row allocate / delete actions (event delegation — rows re-render often).
+  $('#results').addEventListener('click', onResultsClick);
+  $('#results').addEventListener('change', onResultsChange);
+}
+
+// Draft/live working boxes the user can drop items into. Ghost/sold/archived
+// pallets are not valid targets, so filter them out.
+async function loadBoxes() {
+  try {
+    const all = await apiClient.pallets();
+    boxes = (all || []).filter(p => p.publish_state === 'draft' || p.publish_state === 'live');
+  } catch { boxes = []; }
+}
+
+function boxOptions() {
+  return '<option value="">— pick a box —</option>'
+    + boxes.map(b => `<option value="${b.manifest_id}">${escape(b.display_name || ('Box #' + b.pallet_number))}</option>`).join('')
+    + '<option value="__new__">＋ New box…</option>';
 }
 
 async function loadSummary() {
   try {
     const s = await apiClient.inventorySummary();
 
-    // Top cards: Available, On a pallet, Sold/Other, totals.
+    // Top cards: Available, In a box, Ghost, Sold/Done, totals.
     const cardsHost = $('#summary-cards');
     const byStatus = Object.fromEntries((s.byStatus || []).map(r => [r.status, r.n]));
     const cards = [
       { label: 'Available',  value: byStatus.available || 0, color: '#0a5' },
-      { label: 'On a pallet', value: (byStatus.on_pallet || 0) + (byStatus.individual || 0), color: '#002868' },
+      { label: 'In a box', value: (byStatus.on_pallet || 0) + (byStatus.individual || 0) + (byStatus.allocated || 0), color: '#002868' },
       { label: 'Ghost',      value: byStatus.ghost || 0, color: '#888' },
       { label: 'Sold / Done', value: (byStatus.sold || 0) + (byStatus.archived || 0), color: '#b00' }
     ];
@@ -93,19 +114,23 @@ function renderRow(it) {
     ? `<a href="admin.html#/pallet/${it.assigned_pallet_id}" style="color:#002868;text-decoration:underline;">${escape(it.assigned_pallet_name || `Pallet #${it.assigned_pallet_number}`)}</a>`
     : '';
   const checked = selectedLpns.has(it.lpn) ? ' checked' : '';
+  const avail = Number(it.available_qty ?? 0);
+  const allocated = Number(it.allocated_qty ?? 0);
   return `
-    <div class="item-row">
+    <div class="item-row" data-lpn="${escape(it.lpn)}" data-title="${escape(it.title || it.lpn || '')}">
       <input type="checkbox" class="inv-select" data-lpn="${escape(it.lpn)}"${checked} style="width:20px;height:20px;cursor:pointer;flex-shrink:0;align-self:center;">
       <div class="body">
         <h4>${escape(it.title || it.lpn || it.upc || '(no title)')}</h4>
         <div class="meta">
-          <b>qty ${it.scanned_qty ?? it.qty_in_manifest ?? 1}</b> · ${escape(it.brand || '')}${it.brand ? ' · ' : ''}${escape(it.lpn || '')}${it.upc ? ' · UPC ' + escape(it.upc) : ''}${(it.order_number || it.source_pallet_id || it.lot_id) ? ' · Lot ' + escape(it.order_number || it.source_pallet_id || it.lot_id) : ''}
+          <b>qty ${it.qty_in_manifest ?? 1}</b> · ${escape(it.brand || '')}${it.brand ? ' · ' : ''}${escape(it.lpn || '')}${it.upc ? ' · UPC ' + escape(it.upc) : ''}${(it.order_number || it.source_pallet_id || it.lot_id) ? ' · Lot ' + escape(it.order_number || it.source_pallet_id || it.lot_id) : ''}
         </div>
         <div class="meta" style="margin-top:4px;">
           ${statusBadge}
+          ${allocated > 0 ? `· <b>${allocated}</b> in boxes` : ''}
           ${palletLink ? '· on ' + palletLink : ''}
           ${it.scanned_at ? ' · scanned ' + new Date(it.scanned_at).toLocaleDateString() : ''}
         </div>
+        ${renderAllocStrip(it, avail, allocated)}
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;font-family:'JetBrains Mono',monospace;font-size:12px;min-width:120px;">
         <div><span style="color:#888;letter-spacing:0.1em;text-transform:uppercase;font-size:10px;">MSRP </span>${fmtMoney(it.msrp)}</div>
@@ -115,9 +140,34 @@ function renderRow(it) {
     </div>`;
 }
 
+// The split-quantity control. Only shown when there are units left to place.
+// A trash button appears only when nothing has been allocated yet (so deletion
+// can't strand units already in a box — the server enforces this too).
+function renderAllocStrip(it, avail, allocated) {
+  if (avail <= 0) return '';
+  const del = allocated === 0
+    ? `<button class="alloc-del" title="Delete this item" style="margin-left:auto;background:none;border:none;color:#b00;cursor:pointer;font-size:16px;line-height:1;">🗑</button>`
+    : '';
+  return `
+    <div class="alloc-strip" style="margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+      <span style="font-size:11px;color:#0a5;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;">${avail} available</span>
+      <input type="number" class="alloc-qty" min="1" max="${avail}" value="1" inputmode="numeric"
+        style="width:64px;padding:6px 8px;border:1.5px solid #ccc;border-radius:4px;font-size:15px;">
+      <span style="font-size:12px;color:#888;">into</span>
+      <select class="alloc-box" style="padding:6px 8px;border:1.5px solid #ccc;border-radius:4px;font-size:13px;max-width:220px;">
+        ${boxOptions()}
+      </select>
+      <input type="text" class="alloc-newname" placeholder="New box name (optional)" hidden
+        style="padding:6px 8px;border:1.5px solid #ccc;border-radius:4px;font-size:13px;width:170px;">
+      <button class="btn alloc-add" style="padding:6px 14px;font-size:13px;">Add to box →</button>
+      ${del}
+    </div>`;
+}
+
 function renderBadge(status, isGhost) {
   const map = {
     available:  { txt: 'AVAILABLE',  bg: '#dff5e8', color: '#0a5' },
+    allocated:  { txt: 'IN A BOX',   bg: '#dde6f5', color: '#002868' },
     on_pallet:  { txt: 'ON PALLET',  bg: '#dde6f5', color: '#002868' },
     individual: { txt: 'INDIVIDUAL', bg: '#fff4d4', color: '#a06400' },
     ghost:      { txt: 'GHOST',      bg: '#eee',    color: '#666' },
@@ -127,6 +177,71 @@ function renderBadge(status, isGhost) {
   };
   const m = map[status] || map.unknown;
   return `<span style="background:${m.bg};color:${m.color};padding:1px 6px;border-radius:2px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;font-weight:700;">${m.txt}</span>`;
+}
+
+// ---- per-row allocate / delete -----------------------------------------
+function onResultsChange(e) {
+  const sel = e.target.closest('.alloc-box');
+  if (!sel) return;
+  const strip = sel.closest('.alloc-strip');
+  const newName = strip?.querySelector('.alloc-newname');
+  if (newName) newName.hidden = sel.value !== '__new__';
+}
+
+async function onResultsClick(e) {
+  const addBtn = e.target.closest('.alloc-add');
+  const delBtn = e.target.closest('.alloc-del');
+  if (!addBtn && !delBtn) return;
+
+  const row = e.target.closest('.item-row');
+  const lpn = row?.dataset.lpn;
+  const title = row?.dataset.title || lpn;
+  if (!lpn) return;
+
+  if (delBtn) {
+    if (!confirm(`Delete "${title}" from inventory? This can't be undone.`)) return;
+    delBtn.disabled = true;
+    try {
+      await apiClient.deleteInventoryItem(lpn);
+      toast('Item deleted', 'ok', 1800);
+      await refresh();
+    } catch (err) {
+      const msg = err.status === 409 ? (err.data?.error || 'Item is already in a box') : err.message;
+      toast(msg, 'err', 4000);
+      delBtn.disabled = false;
+    }
+    return;
+  }
+
+  // Add-to-box
+  const strip = addBtn.closest('.alloc-strip');
+  const qty = parseInt(strip.querySelector('.alloc-qty').value, 10);
+  const boxSel = strip.querySelector('.alloc-box');
+  const newName = strip.querySelector('.alloc-newname')?.value.trim() || null;
+  const boxVal = boxSel.value;
+
+  if (!qty || qty < 1) { toast('Enter a quantity of 1 or more', 'err', 2500); return; }
+  if (!boxVal) { toast('Pick a box (or choose “New box”)', 'err', 2500); return; }
+
+  const manifestId = boxVal === '__new__' ? null : boxVal;
+  const newBoxName = boxVal === '__new__' ? newName : null;
+
+  addBtn.disabled = true;
+  try {
+    const r = await apiClient.allocateToBox(lpn, qty, manifestId, newBoxName);
+    toast(`Added ${r.allocated} to ${r.display_name} · ${r.remaining} left`, 'ok', 2600);
+    await refresh();
+  } catch (err) {
+    toast(err.data?.error || err.message, 'err', 4000);
+    addBtn.disabled = false;
+  }
+}
+
+// Reload boxes (an add may have created one), summary cards, and the list.
+async function refresh() {
+  await loadBoxes();
+  await loadSummary();
+  await loadResults();
 }
 
 // ---- #9 build a box from checked items ---------------------------------

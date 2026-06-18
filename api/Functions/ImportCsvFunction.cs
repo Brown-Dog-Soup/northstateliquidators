@@ -111,7 +111,7 @@ public sealed class ImportCsvFunction
                 Upc: Get(r, cUpc), Asin: Get(r, cAsin),
                 Title: title, Description: Get(r, cDesc),
                 Brand: Get(r, cBrand), Category: Get(r, cCat),
-                Condition: Get(r, cCond), Qty: Int(r, cQty),
+                Condition: Get(r, cCond), Qty: Int(r, cQty) ?? 1,   // default 1 unit so it can be allocated
                 Msrp: Money(r, cMsrp), UnitCost: Money(r, cCost),
                 WholesalePrice: Money(r, cPrice), SourceManifest: filename));
         }

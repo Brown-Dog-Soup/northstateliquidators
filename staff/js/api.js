@@ -77,6 +77,13 @@ export const apiClient = {
     return api('GET', `/api/inventory${qs ? '?' + qs : ''}`);
   },
   inventorySummary: () => api('GET', '/api/inventory/summary'),
+  // Put a specific quantity of an inventory item into a box. manifestId targets
+  // an existing box; pass null + newBoxName to create one.
+  allocateToBox: (lpn, qty, manifestId = null, newBoxName = null) =>
+    api('POST', '/api/inventory/allocate', { lpn, qty, manifestId, newBoxName }),
+  // Delete an inventory item (only if it's not already in a box → 409 otherwise).
+  deleteInventoryItem: (lpn) =>
+    api('DELETE', `/api/inventory?lpn=${encodeURIComponent(lpn)}`),
   setPalletGhost: (id, isGhost) => api('PATCH', `/api/pallets/${id}`, { isGhost }),
   generateGhostBackstock: (palletCount = 5, itemsPerPallet = 12) =>
     api('POST', '/api/pallets/generate-ghost-backstock', { palletCount, itemsPerPallet }),

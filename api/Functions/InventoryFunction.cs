@@ -4,6 +4,8 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using NSL.Api.Services;
 using Dapper;
+using Microsoft.Data.SqlClient;
+using System.Text.Json;
 
 namespace NSL.Api.Functions;
 
@@ -70,7 +72,8 @@ public sealed class InventoryFunction
 SELECT TOP (@Limit)
     lpn, upc, asin, title, brand, category,
     catalog_condition, msrp, unit_cost, wholesale_price,
-    qty_in_manifest, lot_id, order_number, source_pallet_ref, source_pallet_id, imported_at,
+    qty_in_manifest, available_qty, allocated_qty,
+    lot_id, order_number, source_pallet_ref, source_pallet_id, imported_at,
     line_item_id, assigned_pallet_id, assigned_pallet_name, assigned_pallet_number,
     assigned_sell_mode, assigned_pallet_is_ghost,
     scanned_qty, scanned_at, sold_at,
@@ -133,5 +136,89 @@ SELECT TOP 60 lot, lot_type, n FROM (
 ORDER BY n DESC")).ToList();
 
         return new OkObjectResult(new { byStatus, totals, lots });
+    }
+
+    public sealed record AllocateRequest(string? lpn, int? qty, Guid? manifestId, string? newBoxName);
+
+    /// <summary>
+    /// POST /api/inventory/allocate — put a specific QUANTITY of an inventory
+    /// item into a box (Rob's split-quantity ask). Body:
+    ///   { lpn, qty, manifestId?, newBoxName? }
+    /// manifestId picks an existing box; omit it to create a new one (named by
+    /// newBoxName, or auto-numbered). Availability is total-on-hand minus what's
+    /// already boxed, so the remainder stays available for other boxes.
+    /// </summary>
+    [Function("AllocateInventory")]
+    public async Task<IActionResult> Allocate(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "inventory/allocate")] HttpRequest req,
+        CancellationToken ct)
+    {
+        AllocateRequest? body;
+        try
+        {
+            body = await JsonSerializer.DeserializeAsync<AllocateRequest>(
+                req.Body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct);
+        }
+        catch (JsonException ex) { return new BadRequestObjectResult(new { error = "Invalid JSON", detail = ex.Message }); }
+
+        if (string.IsNullOrWhiteSpace(body?.lpn))
+            return new BadRequestObjectResult(new { error = "lpn is required" });
+        if (!body!.qty.HasValue || body.qty.Value < 1)
+            return new BadRequestObjectResult(new { error = "qty must be a positive whole number" });
+
+        await using var conn = await _sql.OpenAsync(ct);
+        try
+        {
+            var row = await conn.QueryFirstOrDefaultAsync(@"
+EXEC dbo.sp_AllocateCatalogToBox
+  @lpn = @Lpn, @qty = @Qty, @manifest_id = @Mid, @new_box_name = @Name",
+                new { Lpn = body.lpn, Qty = body.qty.Value, Mid = body.manifestId, Name = body.newBoxName });
+
+            if (row == null)
+                return new ObjectResult(new { error = "allocation returned no rows" }) { StatusCode = 500 };
+
+            _log.LogInformation("Allocate {Lpn} x{Qty} -> box {Box}", body.lpn, body.qty, (object?)row.manifest_id);
+            return new OkObjectResult(row);
+        }
+        catch (SqlException ex)
+        {
+            // sp_AllocateCatalogToBox raises friendly messages (over-allocation,
+            // unknown code, missing box) at severity 16 — surface them as 400s.
+            _log.LogWarning("Allocate rejected: {Msg}", ex.Message);
+            return new BadRequestObjectResult(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// DELETE /api/inventory?lpn=...  — remove a catalog item, but only if it
+    /// isn't on a pallet yet (no line items reference it). Returns 409 if any
+    /// units have already been allocated to a box.
+    /// </summary>
+    [Function("DeleteInventoryItem")]
+    public async Task<IActionResult> DeleteItem(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "inventory")] HttpRequest req,
+        CancellationToken ct)
+    {
+        var lpn = req.Query["lpn"].ToString();
+        if (string.IsNullOrWhiteSpace(lpn))
+            return new BadRequestObjectResult(new { error = "lpn query parameter is required" });
+
+        await using var conn = await _sql.OpenAsync(ct);
+
+        var assigned = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(1) FROM dbo.line_items WHERE lpn = @lpn", new { lpn });
+        if (assigned > 0)
+            return new ConflictObjectResult(new
+            {
+                error = "This item is already in a box — remove it from the box first.",
+                assigned
+            });
+
+        var rows = await conn.ExecuteAsync(
+            "DELETE FROM dbo.lpn_catalog WHERE lpn = @lpn", new { lpn });
+        if (rows == 0) return new NotFoundResult();
+
+        _log.LogInformation("DeleteInventoryItem {Lpn}: removed", lpn);
+        return new OkObjectResult(new { lpn, deleted = true });
     }
 }

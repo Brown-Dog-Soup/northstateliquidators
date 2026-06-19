@@ -434,4 +434,66 @@ async function loadRecent() {
   } catch (e) { /* ignore */ }
 }
 
+// ---- #6 no-barcode inventory lookup -----------------------------------
+// Search inventory (any word order) and add a quantity of a match straight to
+// the active pallet — for goods that never had a barcode to scan.
+const invSearch  = $('#inv-search');
+const invResults = $('#inv-results');
+let invTimer;
+
+invSearch?.addEventListener('input', () => {
+  clearTimeout(invTimer);
+  const q = invSearch.value.trim();
+  if (q.length < 2) { invResults.innerHTML = ''; return; }
+  invTimer = setTimeout(() => runInvSearch(q), 250);
+});
+
+async function runInvSearch(q) {
+  if (!q) { invResults.innerHTML = ''; return; }
+  invResults.innerHTML = '<div class="lookup-empty">Searching…</div>';
+  try {
+    const rows = await apiClient.inventory({ q, status: 'available', limit: 20 });
+    invResults.innerHTML = rows.length
+      ? rows.map(renderInvResult).join('')
+      : '<div class="lookup-empty">No available items match.</div>';
+  } catch (e) {
+    invResults.innerHTML = `<div class="lookup-empty" style="color:#b00;">${escape(e.message)}</div>`;
+  }
+}
+
+function renderInvResult(it) {
+  const avail = Number(it.available_qty ?? 0);
+  return `
+    <div class="item-row" data-lpn="${escape(it.lpn)}">
+      <div class="body">
+        <h4>${escape(it.title || it.lpn || '(no title)')}</h4>
+        <div class="meta">${escape(it.brand || '')}${it.brand ? ' · ' : ''}${escape(it.lpn || '')} · <b style="color:#0a5;">${avail} available</b></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="number" class="inv-add-qty" min="1" max="${avail}" value="1" inputmode="numeric" style="width:60px;padding:6px;border:1.5px solid #ccc;border-radius:4px;font-size:15px;">
+        <button class="btn inv-add" style="padding:6px 12px;font-size:13px;">Add to pallet</button>
+      </div>
+    </div>`;
+}
+
+invResults?.addEventListener('click', async e => {
+  const btn = e.target.closest('.inv-add');
+  if (!btn) return;
+  if (!activePallet) { toast('Pick a pallet at the top first', 'err', 3000); return; }
+  const row = e.target.closest('.item-row');
+  const lpn = row.dataset.lpn;
+  const qty = parseInt(row.querySelector('.inv-add-qty').value, 10);
+  if (!qty || qty < 1) { toast('Enter a quantity of 1 or more', 'err', 2500); return; }
+  btn.disabled = true;
+  try {
+    const r = await apiClient.allocateToBox(lpn, qty, activePallet.manifest_id);
+    toast(`Added ${r.allocated} to ${r.display_name} · ${r.remaining} left`, 'ok', 2600);
+    await loadRecent();
+    runInvSearch(invSearch.value.trim());   // refresh remaining availability
+  } catch (err) {
+    toast(err.data?.error || err.message, 'err', 4000);
+    btn.disabled = false;
+  }
+});
+
 function escape(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }

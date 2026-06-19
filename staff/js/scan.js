@@ -105,6 +105,20 @@ codeEl.addEventListener('keydown', e => {
   }
 });
 
+// --- keep the hardware scanner aimed at the scan box --------------------
+// A USB barcode scanner types into whatever element has focus. On a warehouse
+// tablet, receivers often tap elsewhere (the no-barcode lookup, a button, the
+// pallet picker), which would send the next scan into the wrong field. Pull
+// focus back to the scan box when the tab is re-activated or the user taps
+// neutral space. Deliberate typing in a real field is left alone — clicks on an
+// input/select/textarea/button/link/summary/label are respected.
+function refocusScan() { try { codeEl.focus(); } catch { /* ignore */ } }
+window.addEventListener('focus', refocusScan);
+document.addEventListener('click', e => {
+  if (e.target.closest('input, select, textarea, button, a, summary, label')) return;
+  refocusScan();
+});
+
 async function doLookup() {
   const code = codeEl.value.trim();
   if (!code) return;

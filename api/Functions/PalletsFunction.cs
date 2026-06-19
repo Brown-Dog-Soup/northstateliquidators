@@ -233,7 +233,7 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
         return new OkObjectResult(updated);
     }
 
-    public sealed record GenerateGhostRequest(int? palletCount, int? itemsPerPallet);
+    public sealed record GenerateGhostRequest(int? palletCount, int? itemsPerPallet, string? category);
 
     /// <summary>
     /// POST /api/pallets/generate-ghost-backstock
@@ -255,15 +255,18 @@ FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id 
         catch (JsonException) { /* body optional — defaults applied below */ }
 
         var palletCount = Math.Clamp(body?.palletCount ?? 5, 1, 50);
-        var itemsPerPallet = Math.Clamp(body?.itemsPerPallet ?? 12, 1, 50);
+        var itemsPerPallet = Math.Clamp(body?.itemsPerPallet ?? 12, 1, 200);
+        // null/empty = let the proc randomize the category per pallet (old behavior).
+        var category = string.IsNullOrWhiteSpace(body?.category) ? null : body!.category!.Trim();
 
         await using var conn = await _sql.OpenAsync(ct);
         var rows = (await conn.QueryAsync(
-            "EXEC dbo.sp_GenerateGhostBackstock @pallet_count = @P, @items_per_pallet = @I",
-            new { P = palletCount, I = itemsPerPallet })).ToList();
+            "EXEC dbo.sp_GenerateGhostBackstock @pallet_count = @P, @items_per_pallet = @I, @category = @C",
+            new { P = palletCount, I = itemsPerPallet, C = category })).ToList();
 
-        _log.LogInformation("GenerateGhostBackstock: created {N} ghost pallets ({I} items each)", rows.Count, itemsPerPallet);
-        return new OkObjectResult(new { generated = rows.Count, palletCount, itemsPerPallet, pallets = rows });
+        _log.LogInformation("GenerateGhostBackstock: created {N} ghost pallets ({I} items each, category={C})",
+            rows.Count, itemsPerPallet, category ?? "random");
+        return new OkObjectResult(new { generated = rows.Count, palletCount, itemsPerPallet, category, pallets = rows });
     }
 
     /// <summary>

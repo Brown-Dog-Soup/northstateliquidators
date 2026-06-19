@@ -60,12 +60,20 @@ public sealed class InventoryFunction
         }
         if (!string.IsNullOrWhiteSpace(q))
         {
-            // Free-text search also matches the lot identifiers, so staff can just
+            // Each whitespace-separated word must match SOMEWHERE (AND across
+            // words, OR across columns), so "6400 blue XL" finds the item no
+            // matter the word order. Also matches lot identifiers, so staff can
             // type "AMZ0N-OJ5-4G8R" or a pallet id to pull up a whole group.
-            where.Add(@"(title LIKE @Q OR brand LIKE @Q OR upc LIKE @Q OR lpn LIKE @Q
-                        OR order_number LIKE @Q OR lot_id LIKE @Q
-                        OR source_pallet_id LIKE @Q OR source_pallet_ref LIKE @Q)");
-            p.Add("Q", $"%{q}%");
+            var tokens = q.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                var pn = "Q" + i;
+                where.Add($@"(title LIKE @{pn} OR brand LIKE @{pn} OR category LIKE @{pn}
+                             OR upc LIKE @{pn} OR lpn LIKE @{pn}
+                             OR order_number LIKE @{pn} OR lot_id LIKE @{pn}
+                             OR source_pallet_id LIKE @{pn} OR source_pallet_ref LIKE @{pn})");
+                p.Add(pn, $"%{tokens[i]}%");
+            }
         }
 
         var sql = $@"
@@ -220,5 +228,78 @@ EXEC dbo.sp_AllocateCatalogToBox
 
         _log.LogInformation("DeleteInventoryItem {Lpn}: removed", lpn);
         return new OkObjectResult(new { lpn, deleted = true });
+    }
+
+    /// <summary>
+    /// GET /api/inventory/allocations?lpn=...  — where did this item's units go?
+    /// Returns one row per box that holds some of this lpn, with the box name,
+    /// quantity in it, and whether that box is sold (so sold units read as gone).
+    /// </summary>
+    [Function("InventoryAllocations")]
+    public async Task<IActionResult> Allocations(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "inventory/allocations")] HttpRequest req,
+        CancellationToken ct)
+    {
+        var lpn = req.Query["lpn"].ToString();
+        if (string.IsNullOrWhiteSpace(lpn))
+            return new BadRequestObjectResult(new { error = "lpn query parameter is required" });
+
+        await using var conn = await _sql.OpenAsync(ct);
+        var rows = (await conn.QueryAsync(@"
+SELECT m.id            AS manifest_id,
+       m.display_name,
+       m.pallet_number,
+       m.publish_state,
+       m.sold_at,
+       SUM(li.qty)     AS qty,
+       CAST(CASE WHEN m.publish_state = 'sold' OR m.sold_at IS NOT NULL THEN 1 ELSE 0 END AS BIT) AS is_sold
+FROM dbo.line_items li
+JOIN dbo.manifests m ON m.id = li.manifest_id
+WHERE li.lpn = @lpn
+GROUP BY m.id, m.display_name, m.pallet_number, m.publish_state, m.sold_at
+ORDER BY m.pallet_number", new { lpn })).ToList();
+
+        return new OkObjectResult(rows);
+    }
+
+    public sealed record BulkDeleteInventoryRequest(string[] lpns);
+
+    /// <summary>
+    /// POST /api/inventory/bulk-delete  { lpns: [...] }  — delete many catalog
+    /// items at once (the select-all → delete action). Items already in a box are
+    /// skipped, never deleted; the response reports how many were skipped.
+    /// </summary>
+    [Function("BulkDeleteInventory")]
+    public async Task<IActionResult> BulkDelete(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "inventory/bulk-delete")] HttpRequest req,
+        CancellationToken ct)
+    {
+        BulkDeleteInventoryRequest? body;
+        try
+        {
+            body = await JsonSerializer.DeserializeAsync<BulkDeleteInventoryRequest>(
+                req.Body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct);
+        }
+        catch (JsonException ex) { return new BadRequestObjectResult(new { error = "Invalid JSON", detail = ex.Message }); }
+
+        if (body?.lpns == null || body.lpns.Length == 0)
+            return new BadRequestObjectResult(new { error = "lpns array is required and must be non-empty" });
+
+        await using var conn = await _sql.OpenAsync(ct);
+
+        // Anything with line items is in a box — leave those alone.
+        var inBox = (await conn.QueryAsync<string>(
+            "SELECT DISTINCT lpn FROM dbo.line_items WHERE lpn IN @Lpns",
+            new { Lpns = body.lpns })).ToHashSet();
+        var deletable = body.lpns.Where(l => !inBox.Contains(l)).ToArray();
+
+        int deleted = 0;
+        if (deletable.Length > 0)
+            deleted = await conn.ExecuteAsync(
+                "DELETE FROM dbo.lpn_catalog WHERE lpn IN @Lpns", new { Lpns = deletable });
+
+        _log.LogInformation("BulkDeleteInventory: deleted {Del}, skipped {Skip} (in a box) of {Req}",
+            deleted, inBox.Count, body.lpns.Length);
+        return new OkObjectResult(new { deleted, skipped = inBox.Count, requested = body.lpns.Length });
     }
 }

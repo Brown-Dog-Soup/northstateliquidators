@@ -126,10 +126,11 @@ function renderRow(it) {
         </div>
         <div class="meta" style="margin-top:4px;">
           ${statusBadge}
-          ${allocated > 0 ? `· <b>${allocated}</b> in boxes` : ''}
+          ${allocated > 0 ? `· <button class="alloc-toggle" style="background:none;border:none;color:#002868;text-decoration:underline;cursor:pointer;font:inherit;padding:0;"><b>${allocated}</b> in boxes ▾</button>` : ''}
           ${palletLink ? '· on ' + palletLink : ''}
           ${it.scanned_at ? ' · scanned ' + new Date(it.scanned_at).toLocaleDateString() : ''}
         </div>
+        <div class="alloc-detail" hidden style="margin-top:6px;"></div>
         ${renderAllocStrip(it, avail, allocated)}
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;font-family:'JetBrains Mono',monospace;font-size:12px;min-width:120px;">
@@ -164,6 +165,20 @@ function renderAllocStrip(it, avail, allocated) {
     </div>`;
 }
 
+// Per-box allocation breakdown for the "N in boxes ▾" expander. Sold boxes are
+// flagged so the team knows those units are gone, not pullable.
+function renderAllocDetail(rows) {
+  return `<div style="border-left:2px solid #dde6f5;padding:4px 0 4px 10px;">
+    ${rows.map(r => {
+      const name = escape(r.display_name || ('Box #' + r.pallet_number));
+      const sold = r.is_sold
+        ? ` <span style="background:#fce4e4;color:#b00;padding:0 5px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">SOLD — gone</span>`
+        : '';
+      return `<div style="padding:2px 0;font-size:12px;"><a href="admin.html#/pallet/${r.manifest_id}" style="color:#002868;text-decoration:underline;">${name}</a> · <b>${r.qty}</b> unit${r.qty === 1 ? '' : 's'}${sold}</div>`;
+    }).join('')}
+  </div>`;
+}
+
 function renderBadge(status, isGhost) {
   const map = {
     available:  { txt: 'AVAILABLE',  bg: '#dff5e8', color: '#0a5' },
@@ -189,14 +204,30 @@ function onResultsChange(e) {
 }
 
 async function onResultsClick(e) {
+  const toggle = e.target.closest('.alloc-toggle');
   const addBtn = e.target.closest('.alloc-add');
   const delBtn = e.target.closest('.alloc-del');
-  if (!addBtn && !delBtn) return;
+  if (!toggle && !addBtn && !delBtn) return;
 
   const row = e.target.closest('.item-row');
   const lpn = row?.dataset.lpn;
   const title = row?.dataset.title || lpn;
   if (!lpn) return;
+
+  // Expand/collapse the per-box breakdown ("N in boxes ▾").
+  if (toggle) {
+    const panel = row.querySelector('.alloc-detail');
+    if (!panel) return;
+    if (!panel.hidden) { panel.hidden = true; return; }
+    panel.hidden = false;
+    panel.innerHTML = '<span style="font-size:12px;color:#888;">Loading…</span>';
+    try {
+      const rows = await apiClient.inventoryAllocations(lpn);
+      panel.innerHTML = rows.length ? renderAllocDetail(rows)
+        : '<span style="font-size:12px;color:#888;">No box allocations.</span>';
+    } catch (err) { panel.innerHTML = `<span style="font-size:12px;color:#b00;">${escape(err.message)}</span>`; }
+    return;
+  }
 
   if (delBtn) {
     if (!confirm(`Delete "${title}" from inventory? This can't be undone.`)) return;
@@ -292,6 +323,26 @@ $('#build-pallet')?.addEventListener('click', async () => {
     // jump straight to the new box in the admin app
     location.href = `admin.html#/pallet/${r.id}`;
   } catch (e) { toast(`Create failed: ${e.message}`, 'err', 4000); btn.disabled = false; }
+});
+
+$('#build-delete')?.addEventListener('click', async () => {
+  const lpns = [...selectedLpns];
+  if (lpns.length === 0) return;
+  if (!confirm(`Delete ${lpns.length} selected item${lpns.length === 1 ? '' : 's'} from inventory? Items already in a box are skipped. This can't be undone.`)) return;
+  const btn = $('#build-delete');
+  btn.disabled = true;
+  try {
+    const r = await apiClient.bulkDeleteInventory(lpns);
+    const msg = r.skipped > 0
+      ? `Deleted ${r.deleted}; skipped ${r.skipped} already in a box`
+      : `Deleted ${r.deleted} item${r.deleted === 1 ? '' : 's'}`;
+    toast(msg, 'ok', 3000);
+    selectedLpns.clear();
+    const selAll = $('#select-all'); if (selAll) selAll.checked = false;
+    updateBuildBar();
+    await refresh();
+  } catch (e) { toast(`Delete failed: ${e.message}`, 'err', 4000); }
+  finally { btn.disabled = false; }
 });
 
 function escape(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }

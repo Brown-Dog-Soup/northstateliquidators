@@ -84,9 +84,15 @@ export const apiClient = {
   // Delete an inventory item (only if it's not already in a box → 409 otherwise).
   deleteInventoryItem: (lpn) =>
     api('DELETE', `/api/inventory?lpn=${encodeURIComponent(lpn)}`),
+  // Where an item's units went: per-box breakdown with qty + sold status.
+  inventoryAllocations: (lpn) =>
+    api('GET', `/api/inventory/allocations?lpn=${encodeURIComponent(lpn)}`),
+  // Delete many catalog items at once; items in a box are skipped server-side.
+  bulkDeleteInventory: (lpns) =>
+    api('POST', '/api/inventory/bulk-delete', { lpns }),
   setPalletGhost: (id, isGhost) => api('PATCH', `/api/pallets/${id}`, { isGhost }),
-  generateGhostBackstock: (palletCount = 5, itemsPerPallet = 12) =>
-    api('POST', '/api/pallets/generate-ghost-backstock', { palletCount, itemsPerPallet }),
+  generateGhostBackstock: (palletCount = 5, itemsPerPallet = 12, category = null) =>
+    api('POST', '/api/pallets/generate-ghost-backstock', { palletCount, itemsPerPallet, category }),
 
   // POST a Blob/ArrayBuffer; sets Content-Type from the Blob's type
   uploadPhoto: async (kind, id, blob) => {

@@ -77,6 +77,17 @@ public sealed class LookupFunction
         {
             var dict = (IDictionary<string, object>)row;
             dict["market_price"] = market?.Msrp;
+            // Self-heal: a bridged hit means the catalog row lacked this UPC.
+            // NULL-fill it so the next unit of the same product matches the
+            // catalog directly (and survives the provider's daily rate cap).
+            if (bridged
+                && System.Text.RegularExpressions.Regex.IsMatch(code, @"^\d{12,13}$")
+                && dict.TryGetValue("lpn", out var lpnVal) && lpnVal is string matchedLpn
+                && (!dict.TryGetValue("upc", out var upcVal) || string.IsNullOrWhiteSpace(upcVal as string)))
+            {
+                await conn.ExecuteAsync("EXEC dbo.sp_LearnUpc @lpn = @l, @upc = @u", new { l = matchedLpn, u = code });
+                dict["upc"] = code;
+            }
             // Lend the provider's image if the catalog row has none.
             if ((!dict.TryGetValue("image_url", out var img) || img == null) && market?.ImageUrl != null)
                 dict["image_url"] = market.ImageUrl;

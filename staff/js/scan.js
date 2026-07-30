@@ -190,7 +190,11 @@ function renderLookup(r) {
         <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#a06400;display:block;font-weight:700;margin-bottom:2px;">Market</span>
         <span style="font-size:22px;font-weight:700;color:#a06400;">${fmtMoney(r.market_price)}</span>
       </div>` : ''}
-    </div>`;
+    </div>
+    ${!r.lpn ? `<div style="margin-top:8px;padding:8px 10px;background:#fff8e0;border:1px solid #e6d68f;font-size:13px;color:#6b5900;">
+      No manifest match for this barcode — MSRP, cost and price aren't available.
+      If the item has an <b>LPN sticker</b>, scan that instead to pull our numbers.
+    </div>` : ''}`;
 
   lookup.innerHTML = `
     <div class="lookup-title">${escape(r.title || '')}</div>
@@ -297,7 +301,11 @@ confirmBtn.addEventListener('click', async () => {
       msrp:           lr?.msrp ?? lr?.market_price ?? null,
       matchSource:    lr?.match_source ?? null,
       wholesalePrice: lr?.wholesale_price ?? null,  // PRICE column on Recent list
-      description:    lr?.description ?? null         // carried so a UPCitemdb hit keeps its description
+      description:    lr?.description ?? null,        // carried so a UPCitemdb hit keeps its description
+      // Names the exact catalog row the lookup matched. Without it, a bridged
+      // hit (retail UPC → ASIN → catalog) re-probes by the raw UPC server-side,
+      // misses, and drops cost/price from the recorded line item.
+      lpn:            lr?.lpn ?? null
     };
     const result = await apiClient.scan(record);
 

@@ -42,7 +42,8 @@ public sealed class ScanFunction
         decimal? msrp,
         string? matchSource,
         decimal? wholesalePrice,    // PRICE column on receiving page (manifest's Wholesale Price)
-        string? description);       // product description (catalog or UPCitemdb)
+        string? description,        // product description (catalog or UPCitemdb)
+        string? lpn);               // catalog LPN the lookup matched — names the exact row on bridged hits
 
     public ScanFunction(SqlService sql, ILogger<ScanFunction> log)
     {
@@ -87,7 +88,8 @@ EXEC dbo.sp_RecordScan
   @arg_msrp            = @Msrp,
   @arg_match_source    = @MatchSource,
   @arg_wholesale_price = @WholesalePrice,
-  @arg_description     = @Description",
+  @arg_description     = @Description,
+  @arg_lpn             = @Lpn",
             new
             {
                 ManifestId     = body.manifestId,
@@ -103,7 +105,8 @@ EXEC dbo.sp_RecordScan
                 Msrp           = body.msrp,
                 MatchSource    = body.matchSource,
                 WholesalePrice = body.wholesalePrice,
-                Description    = body.description
+                Description    = body.description,
+                Lpn            = body.lpn
             });
 
         if (row == null) return new ObjectResult(new { error = "sp_RecordScan returned no rows" }) { StatusCode = 500 };

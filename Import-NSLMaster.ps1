@@ -7,12 +7,15 @@
     Item # | UPC | Seller Category | Condition | NSL Lot # | Qty | Unit Retail |
     Ext. Retail | Unit Cost | Wholesale Price | Sold).
 
-    Rows whose Item # is LPN- or LPTG-prefixed key on that LPN (within-file
-    duplicates collapse last-row-wins). Rows WITHOUT an LP sticker but WITH a
-    UPC barcode (cell phone accessories etc.) are catalog-able too — they key
-    on a synthetic 'UPC-<code>' lpn and qty is SUMMED across duplicate UPC rows
-    so availability math still works. Rows with neither are skipped (apparel
-    sizes live in their own import).
+    Every row is catalog-able; the key depends on what identifiers it has:
+      - LPN/LPTG-prefixed Item num -> that LPN (within-file dupes: last wins)
+      - UPC barcode, no LPN        -> 'UPC-<code>'      (qty summed)
+      - numeric SKU, no barcode    -> '<lot>-<SKU>'     (qty summed)
+      - description only           -> '<lot>-<slug>'    (qty summed)
+    Qty summing keeps availability math working (qty_in_manifest - boxed).
+    The whole ALP8R-OAD-K1E0 apparel lot is EXCLUDED — its per-size rows live
+    in the dedicated Bella Canvas & Harriton import and re-keying them here
+    would double the stock.
 
     Drives the import via Invoke-Sqlcmd: builds a single SQL batch with a temp
     staging table, multi-row INSERTs, and a MERGE — all in one connection so the
@@ -56,25 +59,46 @@ $byLpn = @{}
 foreach ($r in $catalogable) { $byLpn[$r.'Item #'.Trim()] = $r }
 Write-Host "  $(@($byLpn.Values).Count) unique LPNs after collapsing within-file duplicates"
 
-# UPC-only rows: no LP sticker, but a scannable barcode. The scanner matches
-# lpn_catalog on upc (sp_RecordScan: c.upc = @code), so these carry manifest
-# cost/price onto scanned line items once imported. Same UPC can appear on
-# several manifest rows (one per unit/lot) — qty sums, last row wins the rest.
-$upcRows = $rows | Where-Object {
-    "$($_.'Item #')" -notmatch '^LP[A-Z0-9]' -and "$($_.UPC)".Trim() -ne ''
+# Non-LPN rows group on a synthetic key so scans (UPC) and inventory search
+# (title/lot) can find them. Same product can appear on several manifest rows
+# (one per unit/lot receipt) — qty sums, last row wins the other fields.
+$ExcludedLots = @('ALP8R-OAD-K1E0')   # apparel: dedicated per-size import owns this lot
+
+function Get-SyntheticKey([object]$r) {
+    $upc = "$($r.UPC)".Trim()
+    if ($upc -match '^\d+(\.\d+)?$') { $upc = ([decimal]$upc).ToString('0', [System.Globalization.CultureInfo]::InvariantCulture) }
+    if ($upc) { return @{ Key = "UPC-$upc"; Upc = $upc } }
+    $lot = "$($r.'NSL Lot #')".Trim()
+    if (-not $lot) { return $null }
+    $sku = "$($r.'Item #')".Trim()
+    if ($sku -match '^\d+(\.\d+)?$') {
+        $sku = ([decimal]$sku).ToString('0', [System.Globalization.CultureInfo]::InvariantCulture)
+        return @{ Key = "$lot-$sku"; Upc = $null }
+    }
+    # description-only row: stable slug from the item description. lpn is
+    # varchar(40); lot (14) + dash leaves 25 chars of slug.
+    $slug = ("$($r.'Item Description')".ToUpperInvariant() -replace '[^A-Z0-9]', '')
+    if (-not $slug) { return $null }
+    if ($slug.Length -gt 25) { $slug = $slug.Substring(0, 25) }
+    return @{ Key = "$lot-$slug"; Upc = $null }
 }
-$byUpc = @{}
-foreach ($r in $upcRows) {
-    $u = "$($r.UPC)".Trim()
-    if ($u -match '^\d+(\.\d+)?$') { $u = ([decimal]$u).ToString('0', [System.Globalization.CultureInfo]::InvariantCulture) }
+
+$grouped = [ordered]@{}
+$skippedApparel = 0; $unkeyable = 0
+foreach ($r in $rows) {
+    if ("$($r.'Item #')" -match '^LP[A-Z0-9]') { continue }              # LPN bucket already handled
+    if ("$($r.Brand)".Trim() -eq 'Total') { continue }                    # summary row
+    if ($ExcludedLots -contains "$($r.'NSL Lot #')".Trim()) { $skippedApparel++; continue }
+    $k = Get-SyntheticKey $r
+    if (-not $k) { $unkeyable++; continue }
     $q = 1; [void][int]::TryParse(("$($r.Qty)" -replace '\..*$',''), [ref]$q)
-    if ($byUpc.ContainsKey($u)) { $byUpc[$u].Qty += [Math]::Max($q, 1) }
-    else { $byUpc[$u] = @{ Row = $r; Upc = $u; Qty = [Math]::Max($q, 1) } }
+    if ($grouped.Contains($k.Key)) { $grouped[$k.Key].Qty += [Math]::Max($q, 1) }
+    else { $grouped[$k.Key] = @{ Row = $r; Key = $k.Key; Upc = $k.Upc; Qty = [Math]::Max($q, 1) } }
 }
-$upcCatalog = foreach ($e in $byUpc.Values) {
+$synthCatalog = foreach ($e in $grouped.Values) {
     $r = $e.Row
     [pscustomobject]@{
-        'Item #'           = "UPC-$($e.Upc)"
+        'Item #'           = $e.Key
         UPC                = $e.Upc
         'Item Description' = $r.'Item Description'
         Brand              = $r.Brand
@@ -87,9 +111,11 @@ $upcCatalog = foreach ($e in $byUpc.Values) {
         'Wholesale Price'  = $r.'Wholesale Price'
     }
 }
-Write-Host "  $(@($upcCatalog).Count) UPC-only products (keyed UPC-<code>) from $(@($upcRows).Count) barcode rows without an LPN"
+Write-Host "  $(@($synthCatalog).Count) synthetic-key products (UPC-/lot-SKU/lot-slug) from non-LPN rows"
+if ($skippedApparel) { Write-Host "  $skippedApparel apparel rows skipped (excluded lot(s): $($ExcludedLots -join ', '))" }
+if ($unkeyable)      { Write-Host "  WARNING: $unkeyable rows had no UPC, no SKU, no lot/description — NOT imported" -ForegroundColor Yellow }
 
-$dedup = @($byLpn.Values) + @($upcCatalog)
+$dedup = @($byLpn.Values) + @($synthCatalog)
 Write-Host "  $($dedup.Count) catalog rows total"
 
 if ($WhatIfPreference) {

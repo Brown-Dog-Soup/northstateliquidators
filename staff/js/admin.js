@@ -136,7 +136,7 @@ async function showDetail(id) {
     `items        ${current.unit_count || 0}\n` +
     `MSRP total   ${fmtMoney(current.total_msrp)}\n` +
     `est. resale  ${current.total_est_resale ? fmtMoney(current.total_est_resale) : '— (pending enrichment)'}\n` +
-    `cost         ${fmtMoney(current.total_cost)}`;
+    `cost         ${fmtMoney(current.total_cost ?? current.total_cost_units)}`;
 
   // mark active sell-mode button
   document.querySelectorAll('.mode-toggle button').forEach(b =>

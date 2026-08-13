@@ -7,9 +7,12 @@
     Item # | UPC | Seller Category | Condition | NSL Lot # | Qty | Unit Retail |
     Ext. Retail | Unit Cost | Wholesale Price | Sold).
 
-    Skips rows whose Item # is not LPN- or LPTG-prefixed (apparel rows + numeric
-    SKUs without barcodes are not catalog-able). Within-file duplicates collapse
-    on the lpn primary key (last-row-wins).
+    Rows whose Item # is LPN- or LPTG-prefixed key on that LPN (within-file
+    duplicates collapse last-row-wins). Rows WITHOUT an LP sticker but WITH a
+    UPC barcode (cell phone accessories etc.) are catalog-able too — they key
+    on a synthetic 'UPC-<code>' lpn and qty is SUMMED across duplicate UPC rows
+    so availability math still works. Rows with neither are skipped (apparel
+    sizes live in their own import).
 
     Drives the import via Invoke-Sqlcmd: builds a single SQL batch with a temp
     staging table, multi-row INSERTs, and a MERGE — all in one connection so the
@@ -42,7 +45,7 @@ try {
             @(Import-Excel -Path $tmp -WorksheetName 'Headphones')
     Write-Host "  $($rows.Count) total rows across Manifest + Headphones"
 } finally {
-    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false
 }
 
 # --- Filter + dedupe -----------------------------------------------------
@@ -51,8 +54,43 @@ Write-Host "  $($catalogable.Count) rows have an LP-prefixed Item # (Amazon LPN,
 
 $byLpn = @{}
 foreach ($r in $catalogable) { $byLpn[$r.'Item #'.Trim()] = $r }
-$dedup = @($byLpn.Values)
-Write-Host "  $($dedup.Count) unique LPNs after collapsing within-file duplicates"
+Write-Host "  $(@($byLpn.Values).Count) unique LPNs after collapsing within-file duplicates"
+
+# UPC-only rows: no LP sticker, but a scannable barcode. The scanner matches
+# lpn_catalog on upc (sp_RecordScan: c.upc = @code), so these carry manifest
+# cost/price onto scanned line items once imported. Same UPC can appear on
+# several manifest rows (one per unit/lot) — qty sums, last row wins the rest.
+$upcRows = $rows | Where-Object {
+    "$($_.'Item #')" -notmatch '^LP[A-Z0-9]' -and "$($_.UPC)".Trim() -ne ''
+}
+$byUpc = @{}
+foreach ($r in $upcRows) {
+    $u = "$($r.UPC)".Trim()
+    if ($u -match '^\d+(\.\d+)?$') { $u = ([decimal]$u).ToString('0', [System.Globalization.CultureInfo]::InvariantCulture) }
+    $q = 1; [void][int]::TryParse(("$($r.Qty)" -replace '\..*$',''), [ref]$q)
+    if ($byUpc.ContainsKey($u)) { $byUpc[$u].Qty += [Math]::Max($q, 1) }
+    else { $byUpc[$u] = @{ Row = $r; Upc = $u; Qty = [Math]::Max($q, 1) } }
+}
+$upcCatalog = foreach ($e in $byUpc.Values) {
+    $r = $e.Row
+    [pscustomobject]@{
+        'Item #'           = "UPC-$($e.Upc)"
+        UPC                = $e.Upc
+        'Item Description' = $r.'Item Description'
+        Brand              = $r.Brand
+        'Seller Category'  = $r.'Seller Category'
+        Condition          = $r.Condition
+        'NSL Lot #'        = $r.'NSL Lot #'
+        Qty                = $e.Qty
+        'Unit Retail'      = $r.'Unit Retail'
+        'Unit Cost'        = $r.'Unit Cost'
+        'Wholesale Price'  = $r.'Wholesale Price'
+    }
+}
+Write-Host "  $(@($upcCatalog).Count) UPC-only products (keyed UPC-<code>) from $(@($upcRows).Count) barcode rows without an LPN"
+
+$dedup = @($byLpn.Values) + @($upcCatalog)
+Write-Host "  $($dedup.Count) catalog rows total"
 
 if ($WhatIfPreference) {
     Write-Host ""

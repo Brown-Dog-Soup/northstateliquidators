@@ -136,15 +136,37 @@ EXEC dbo.sp_CreateManifest
         if (pallet == null) return new NotFoundResult();
         SignRowPhotos((object)pallet);
 
-        var items = (await conn.QueryAsync(@"
-SELECT id, lpn, upc, asin, qty, condition, title, description, brand, category,
-       est_msrp, est_resale, unit_cost, wholesale_price,
-       photo_blob_url, enrich_status, enrich_source, notes, created_at
-FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id })).ToList();
+        var items = (await conn.QueryAsync(ItemsWithCatalogSql, new { id })).ToList();
         SignRowPhotos(items);
 
         return new OkObjectResult(new { pallet, items });
     }
+
+    /// <summary>
+    /// Staff-facing line-item query. Joins each row back to lpn_catalog (by the
+    /// key that matched at scan time: lpn > upc > asin) so the admin UI can show
+    /// the manifest's Seller Category, and so cost/wholesale still display for
+    /// items scanned BEFORE a manifest import filled those in on the catalog
+    /// (line_items snapshots catalog pricing at scan time, so late-arriving
+    /// manifest data never reaches old rows without this fallback).
+    /// </summary>
+    private const string ItemsWithCatalogSql = @"
+SELECT li.id, li.lpn, li.upc, li.asin, li.qty, li.condition, li.title, li.description,
+       li.brand, li.category, cat.seller_category,
+       li.est_msrp, li.est_resale,
+       COALESCE(li.unit_cost, cat.unit_cost)             AS unit_cost,
+       COALESCE(li.wholesale_price, cat.wholesale_price) AS wholesale_price,
+       li.photo_blob_url, li.enrich_status, li.enrich_source, li.notes, li.created_at
+FROM dbo.line_items li
+OUTER APPLY (
+    SELECT TOP 1 c.seller_category, c.unit_cost, c.wholesale_price
+    FROM dbo.lpn_catalog c
+    WHERE c.lpn = li.lpn
+       OR (li.upc  IS NOT NULL AND c.upc  = li.upc)
+       OR (li.asin IS NOT NULL AND c.asin = li.asin)
+    ORDER BY CASE WHEN c.lpn = li.lpn THEN 0 WHEN c.upc = li.upc THEN 1 ELSE 2 END
+) cat
+WHERE li.manifest_id = @id ORDER BY li.created_at DESC";
 
     [Function("UpdatePallet")]
     public async Task<IActionResult> Update(
@@ -380,11 +402,7 @@ FROM dbo.line_items WHERE manifest_id = @sid",
         CancellationToken ct)
     {
         await using var conn = await _sql.OpenAsync(ct);
-        var items = (await conn.QueryAsync(@"
-SELECT id, lpn, upc, asin, qty, condition, title, description, brand, category,
-       est_msrp, est_resale, unit_cost, wholesale_price,
-       photo_blob_url, enrich_status, enrich_source, notes, created_at
-FROM dbo.line_items WHERE manifest_id = @id ORDER BY created_at DESC", new { id })).ToList();
+        var items = (await conn.QueryAsync(ItemsWithCatalogSql, new { id })).ToList();
         SignRowPhotos(items);
         return new OkObjectResult(items);
     }

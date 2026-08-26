@@ -51,7 +51,8 @@ async function loadList() {
         <h3>${escape(p.display_name || `Pallet #${p.pallet_number}`)}</h3>
         <div class="stats">
           ${p.unit_count || 0} items<br>
-          MSRP: <b>${fmtMoney(p.total_msrp)}</b>${priceLine ? ` · ask: ${priceLine}` : ''}
+          MSRP: <b>${fmtMoney(p.total_msrp)}</b>${priceLine ? ` · ask: ${priceLine}` : ''}<br>
+          Cost: <b>${fmtMoney(p.total_cost ?? p.total_cost_units)}</b>
           ${p.category ? `<br><span style="color:#0a5;">${escape(p.category)}</span>` : ''}
         </div>
         <span class="pill ${state}">${state}</span>
@@ -151,9 +152,12 @@ async function showDetail(id) {
       <div class="thumb"${it.photo_blob_url ? ` style="background-image:url('${escape(it.photo_blob_url)}')"` : ''}></div>
       <div class="body">
         <h4>${escape(it.title || it.lpn || it.upc || '(no title)')}</h4>
+        ${it.seller_category ? `<div class="meta" style="color:#0a5;">${escape(it.seller_category)}</div>` : ''}
         <div class="meta">qty ${it.qty} · ${escape(it.condition || '—')} · ${escape(it.brand || '')} · ${escape(it.lpn || it.upc || '')}</div>
         <div class="meta" style="margin-top:4px;">
-          MSRP ${fmtMoney(it.est_msrp)}${it.est_resale ? ` · sell ${fmtMoney(it.est_resale)}` : ''}
+          MSRP ${fmtMoney(it.est_msrp)}
+          · Cost ${fmtMoney(it.unit_cost)}
+          · <span style="color:#0a5;">Price ${fmtMoney(it.wholesale_price)}</span>${it.est_resale ? ` · Sell ${fmtMoney(it.est_resale)}` : ''}
         </div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;">

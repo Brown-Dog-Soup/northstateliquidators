@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>You got it — North State Liquidators</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/png" href="/nsl-mark.png">
+  <style>
+    body { margin:0; font-family:Inter,-apple-system,sans-serif; background:#faf8f3; color:#20242c;
+           min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+    .card { max-width:520px; text-align:center; background:#fff; border:1px solid #e2ddd0;
+            border-top:6px solid #002868; padding:44px 36px 36px; }
+    img.mark { width:72px; height:auto; }
+    h1 { font-family:Anton,Inter,sans-serif; font-weight:400; text-transform:uppercase;
+         font-size:34px; margin:18px 0 6px; letter-spacing:0.01em; }
+    .boxno { display:inline-block; background:#002868; color:#fff; font-weight:700;
+             padding:6px 16px; font-size:18px; margin:10px 0 4px; }
+    p { line-height:1.6; color:#4a4f59; margin:12px 0; }
+    a.home { display:inline-block; margin-top:18px; color:#002868; font-weight:700; }
+    .fine { font-size:12.5px; color:#8a8f99; margin-top:22px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <img class="mark" src="/nsl-mark.png" alt="North State Liquidators">
+    <h1>It's yours!</h1>
+    <div class="boxno" id="boxno" hidden></div>
+    <p><strong>Payment received.</strong> We'll reach out shortly using the contact info
+       from your Square receipt to arrange pickup in Raleigh (or local delivery).</p>
+    <p>Questions right now? Call <a href="tel:+19195260112">(919)&nbsp;526-0112</a>.</p>
+    <a class="home" href="/">← Back to the inventory</a>
+    <p class="fine">Your receipt comes from Square, the same payment company we use in person.</p>
+  </div>
+  <script>
+    const n = new URLSearchParams(location.search).get('box');
+    if (n && /^\d+$/.test(n)) {
+      const el = document.getElementById('boxno');
+      el.textContent = 'BOX #' + n;
+      el.hidden = false;
+    }
+  </script>
+</body>
+</html>

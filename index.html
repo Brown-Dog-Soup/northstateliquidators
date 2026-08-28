@@ -937,6 +937,27 @@
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const money = n => (n === null || n === undefined || n === '') ? '—'
       : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  // Online checkout: Buy buttons render only when the backend says Square
+  // checkout is enabled (SQUARE_CHECKOUT_ENABLED app setting — the kill switch).
+  window.nslCheckoutEnabled = false;
+  try {
+    const cs = await fetch('/api/public/checkout-status', { credentials: 'omit' }).then(x => x.json());
+    window.nslCheckoutEnabled = !!cs.enabled;
+  } catch { /* stays off */ }
+  window.nslBuyBox = async function (id, el) {
+    const prev = el.textContent;
+    el.textContent = 'One sec…';
+    try {
+      const r = await fetch(`/api/public/checkout/${encodeURIComponent(id)}`, { method: 'POST', credentials: 'omit' });
+      const j = await r.json();
+      if (!r.ok) { alert(j.error || 'This box is no longer available.'); location.reload(); return; }
+      window.location.href = j.url;   // Square-hosted checkout
+    } catch {
+      el.textContent = prev;
+      alert("Couldn't start checkout — call us at (919) 526-0112 and we'll take care of you.");
+    }
+  };
+
   try {
     const r = await fetch('/api/public/pallets', { credentials: 'omit' });
     if (!r.ok) return;
@@ -965,9 +986,14 @@
             <td class="msrp">${money(p.total_msrp)}</td>
             <td class="ask">${ask}</td>
             <td><span class="cond shelf">${esc(p.category || 'Mixed')}</span></td>
-            <td><a class="view" href="#" data-id="${esc(p.manifest_id)}" data-name="${esc(p.display_name || ('Box #' + p.pallet_number))}">View Manifest →</a></td>
+            <td><a class="view" href="#" data-id="${esc(p.manifest_id)}" data-name="${esc(p.display_name || ('Box #' + p.pallet_number))}">View Manifest →</a>${window.nslCheckoutEnabled ? `<a class="view" href="#" data-buy="${esc(p.manifest_id)}" style="display:block;margin-top:6px;font-weight:700;">Buy now →</a>` : ''}</td>
           </tr>`;
       }).join('');
+
+      tbody.querySelectorAll('a[data-buy]').forEach(a => a.addEventListener('click', e => {
+        e.preventDefault();
+        window.nslBuyBox(a.getAttribute('data-buy'), a);
+      }));
 
       tbody.querySelectorAll('a.view[data-id]').forEach(a => a.addEventListener('click', e => {
         e.preventDefault();
@@ -1055,11 +1081,18 @@
       const items = data.items || [];
       const units = p.unit_count || items.length;
       subEl.textContent = `${units} item${units === 1 ? '' : 's'} · Est. retail ${money(p.total_msrp)} · Ask ${money(p.ask_price)}`;
-      const blurb = p.public_description
+      const blurb = (p.public_description
         ? `<p style="font-style:italic;color:#555;margin:0 0 14px;line-height:1.5;">${esc(p.public_description)}</p>`
-        : '';
+        : '') + (window.nslCheckoutEnabled && p.publish_state === 'live'
+        ? `<p style="margin:0 0 16px;"><a href="#" data-buy-modal="${esc(p.manifest_id)}" style="display:inline-block;background:#002868;color:#fff;font-weight:700;padding:12px 26px;text-decoration:none;">Buy this box — ${money(p.ask_price)}</a></p>`
+        : '');
+      const bindBuy = () => bodyEl.querySelector('a[data-buy-modal]')?.addEventListener('click', e => {
+        e.preventDefault();
+        window.nslBuyBox(e.currentTarget.getAttribute('data-buy-modal'), e.currentTarget);
+      });
       if (items.length === 0) {
         bodyEl.innerHTML = blurb + '<p class="mf-empty">No itemized manifest available for this lot yet — give us a call for details.</p>';
+        bindBuy();
         return;
       }
       bodyEl.innerHTML = blurb + `
@@ -1076,6 +1109,7 @@
               </tr>`).join('')}
           </tbody>
         </table>`;
+      bindBuy();
     } catch (e) {
       bodyEl.innerHTML = '<p class="mf-empty">Couldn\'t load the manifest right now — please call (919) 526-0112.</p>';
     }

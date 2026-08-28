@@ -48,7 +48,7 @@ async function loadPalletPicker() {
 
   const storedId = localStorage.getItem('nsl.active.pallet');
   picker.innerHTML = '<option value="">— pick a pallet to scan to —</option>' +
-    draft.map(p => `<option value="${p.manifest_id}"${p.manifest_id === storedId ? ' selected' : ''}>${escape(p.display_name || `Pallet #${p.pallet_number}`)} (${p.unit_count || 0})</option>`).join('');
+    draft.map(p => `<option value="${p.manifest_id}"${p.manifest_id === storedId ? ' selected' : ''}>BOX #${p.pallet_number ?? '—'} — ${escape(p.display_name || `Pallet #${p.pallet_number}`)} (${p.unit_count || 0})</option>`).join('');
 
   activePallet = draft.find(p => p.manifest_id === storedId) || null;
   updatePalletDisplay();
@@ -65,7 +65,7 @@ async function loadPalletPicker() {
 
 function updatePalletDisplay() {
   if (activePallet) {
-    palletEl.textContent = `${activePallet.display_name} · ${activePallet.unit_count || 0} items`;
+    palletEl.textContent = `BOX #${activePallet.pallet_number ?? '—'} · ${activePallet.display_name} · ${activePallet.unit_count || 0} items`;
   } else {
     palletEl.textContent = 'no pallet selected';
   }

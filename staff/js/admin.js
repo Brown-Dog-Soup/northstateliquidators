@@ -34,7 +34,9 @@ async function loadList() {
   galleryEl.innerHTML = pallets.map(p => {
     const archived = !!p.archived_at;
     const state = p.publish_state || 'draft';
-    const ghost = state === 'ghost';
+    // Older generator ghosts have is_ghost=1 but publish_state 'draft' (box 28
+    // class of confusion) — treat either signal as fictitious.
+    const ghost = state === 'ghost' || !!p.is_ghost;
     const hasList = p.list_price != null && p.list_price > 0;
     const hasSale = p.sale_price != null && p.sale_price > 0 && hasList && p.sale_price < p.list_price;
     const priceLine = hasSale
@@ -52,7 +54,9 @@ async function loadList() {
         <div class="stats">
           ${p.unit_count || 0} items<br>
           MSRP: <b>${fmtMoney(p.total_msrp)}</b>${priceLine ? ` · ask: ${priceLine}` : ''}<br>
-          Cost: <b>${fmtMoney(p.total_cost ?? p.total_cost_units)}</b>
+          Cost: <b>${fmtMoney(p.total_cost ?? p.total_cost_units)}</b><br>
+          <span style="color:${(p.items_with_cost ?? 0) < (p.item_count ?? 0) ? '#c60' : '#999'};">${p.items_with_cost ?? 0}/${p.item_count ?? 0} items have costs</span>
+          ${ghost ? `<br><span style="color:#c00;font-weight:700;">FICTITIOUS — display only, not real stock</span>` : ''}
           ${p.category ? `<br><span style="color:#0a5;">${escape(p.category)}</span>` : ''}
         </div>
         <span class="pill ${state}">${state}</span>
@@ -129,15 +133,18 @@ async function showDetail(id) {
   const photo = current.photo_url;
   $('#pallet-photo').style.backgroundImage = photo ? `url('${photo}')` : '';
 
+  const isGhost = (current.publish_state === 'ghost') || !!current.is_ghost;
   $('#stats').textContent =
     `pallet #     ${current.pallet_number}\n` +
+    `box type     ${isGhost ? 'GHOST / FICTITIOUS — website display only, not real stock' : 'REAL inventory box'}\n` +
     `received     ${current.received_date ? new Date(current.received_date).toLocaleString() : '—'}\n` +
     `status       ${current.status}\n` +
     `sell mode    ${current.sell_mode}\n` +
     `items        ${current.unit_count || 0}\n` +
     `MSRP total   ${fmtMoney(current.total_msrp)}\n` +
-    `est. resale  ${current.total_est_resale ? fmtMoney(current.total_est_resale) : '— (pending enrichment)'}\n` +
-    `cost         ${fmtMoney(current.total_cost ?? current.total_cost_units)}`;
+    `est. resale  ${current.total_est_resale ? fmtMoney(current.total_est_resale) : '— (no sell prices entered yet)'}\n` +
+    `cost         ${fmtMoney(current.total_cost ?? current.total_cost_units)}\n` +
+    `have costs   ${current.items_with_cost ?? 0} of ${current.item_count ?? 0} items`;
 
   // mark active sell-mode button
   document.querySelectorAll('.mode-toggle button').forEach(b =>
@@ -178,6 +185,7 @@ async function showDetail(id) {
             ${['new','open_box','damaged','untested','customer_return'].map(c => `<option value="${c}"${(it.condition||'')===c?' selected':''}>${c}</option>`).join('')}
           </select>
         </div>
+        <div class="col field" style="max-width:120px;"><label>MSRP</label><input type="number" step="0.01" min="0" data-f="msrp" value="${it.est_msrp ?? ''}"></div>
         <div class="col field" style="max-width:120px;"><label>Sell price</label><input type="number" step="0.01" min="0" data-f="sellPrice" value="${it.est_resale ?? ''}"></div>
       </div>
       <div class="field" style="margin-top:8px;"><label>Description</label><textarea data-f="description" rows="3">${escape(it.description || '')}</textarea></div>
@@ -211,7 +219,7 @@ async function showDetail(id) {
       const k = el.dataset.f;
       const v = el.value.trim();
       if (k === 'qty')         fields[k] = v === '' ? null : Number(v);
-      else if (k === 'sellPrice') fields[k] = v === '' ? null : Number(v);
+      else if (k === 'sellPrice' || k === 'msrp') fields[k] = v === '' ? null : Number(v);
       else                       fields[k] = v;
     });
     try {
@@ -291,6 +299,10 @@ document.querySelectorAll('.publish-toggle button').forEach(b => {
     const ps = b.dataset.ps;
     // Sold removes items from stock; Ghost shows as sold without touching it.
     if (ps === 'sold' && !confirm('Mark this box SOLD? Its items are removed from available inventory (use this when sold via another channel).')) return;
+    // A "(copy)" name means this pallet came from Duplicate Pallet — make the
+    // user vouch that a physical box exists before it goes live for sale.
+    if (ps === 'live' && /\(copy\)/i.test(current.display_name || '') &&
+        !confirm('This box was created with Duplicate Pallet and is still named "(copy)".\n\nIs this a REAL physical box in inventory? OK = yes, put it live. Cancel = keep it off the site.')) return;
     try {
       await apiClient.setPublishState(current.manifest_id, ps);
       toast(`Listing: ${ps.toUpperCase()}`, 'ok');

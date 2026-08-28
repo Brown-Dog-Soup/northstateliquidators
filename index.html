@@ -1058,7 +1058,7 @@
       }
       bodyEl.innerHTML = `
         <table class="mf-table">
-          <thead><tr><th>Item</th><th>Condition</th><th>Qty</th><th>Est. Retail</th></tr></thead>
+          <thead><tr><th>Item</th><th>Condition</th><th>Qty</th><th>Est. Retail</th><th></th></tr></thead>
           <tbody>
             ${items.map(it => `
               <tr>
@@ -1066,6 +1066,7 @@
                 <td><span class="cond ${condClass(it.condition)}">${esc(it.condition || '—')}</span></td>
                 <td>${it.qty || 1}</td>
                 <td>${money(it.est_msrp)}</td>
+                <td>${it.title ? `<a class="view" style="white-space:nowrap;font-size:12px;" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent([it.brand, it.title].filter(Boolean).join(' '))}">Price&nbsp;check&nbsp;→</a>` : ''}</td>
               </tr>`).join('')}
           </tbody>
         </table>`;

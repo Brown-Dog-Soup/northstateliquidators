@@ -11,7 +11,7 @@ namespace NSL.Api.Functions;
 /// <summary>
 /// Edit and delete endpoints for individual scanned line items.
 ///
-///   PATCH  /api/items/{id}   — edit qty/condition/sell_price/title/brand/notes
+///   PATCH  /api/items/{id}   — edit qty/condition/sell_price/msrp/title/brand/notes
 ///   DELETE /api/items/{id}   — remove an accidental scan (hard delete)
 /// </summary>
 public sealed class ItemsFunction
@@ -23,6 +23,7 @@ public sealed class ItemsFunction
         int? qty,
         string? condition,
         decimal? sellPrice,
+        decimal? msrp,
         string? title,
         string? brand,
         string? notes,
@@ -55,6 +56,7 @@ public sealed class ItemsFunction
         if (body.qty.HasValue)               { sets.Add("qty = @q");           p.Add("q", body.qty.Value); }
         if (body.condition != null)          { sets.Add("condition = @c");     p.Add("c", body.condition); }
         if (body.sellPrice.HasValue)         { sets.Add("est_resale = @sp");   p.Add("sp", body.sellPrice.Value); }
+        if (body.msrp.HasValue)              { sets.Add("est_msrp = @m");      p.Add("m", body.msrp.Value); }
         if (body.title != null)              { sets.Add("title = @t");         p.Add("t", body.title); }
         if (body.brand != null)              { sets.Add("brand = @b");         p.Add("b", body.brand); }
         if (body.notes != null)              { sets.Add("notes = @n");         p.Add("n", body.notes); }

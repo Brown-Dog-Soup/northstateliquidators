@@ -954,9 +954,12 @@
         const thumb = p.photo_url
           ? `<span class="thumb" style="background-image:url('${esc(p.photo_url)}');background-size:cover;background-position:center;"></span>`
           : `<span class="thumb"></span>`;
+        const blurb = p.public_description
+          ? `<small style="display:block;margin-top:3px;color:#777;font-style:italic;font-weight:400;max-width:240px;white-space:normal;">${esc(p.public_description.length > 90 ? p.public_description.slice(0, 90) + '…' : p.public_description)}</small>`
+          : '';
         return `
           <tr>
-            <td>${thumb}<span class="lot">BOX #${esc(p.pallet_number)}</span></td>
+            <td>${thumb}<span class="lot">BOX #${esc(p.pallet_number)}${blurb}</span></td>
             <td class="cat">${esc(p.category || p.display_name || 'Mixed Goods')}</td>
             <td>${p.unit_count || 0}</td>
             <td class="msrp">${money(p.total_msrp)}</td>
@@ -1052,11 +1055,14 @@
       const items = data.items || [];
       const units = p.unit_count || items.length;
       subEl.textContent = `${units} item${units === 1 ? '' : 's'} · Est. retail ${money(p.total_msrp)} · Ask ${money(p.ask_price)}`;
+      const blurb = p.public_description
+        ? `<p style="font-style:italic;color:#555;margin:0 0 14px;line-height:1.5;">${esc(p.public_description)}</p>`
+        : '';
       if (items.length === 0) {
-        bodyEl.innerHTML = '<p class="mf-empty">No itemized manifest available for this lot yet — give us a call for details.</p>';
+        bodyEl.innerHTML = blurb + '<p class="mf-empty">No itemized manifest available for this lot yet — give us a call for details.</p>';
         return;
       }
-      bodyEl.innerHTML = `
+      bodyEl.innerHTML = blurb + `
         <table class="mf-table">
           <thead><tr><th>Item</th><th>Condition</th><th>Qty</th><th>Est. Retail</th><th></th></tr></thead>
           <tbody>

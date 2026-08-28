@@ -35,6 +35,10 @@
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#444;cursor:pointer;">
           <input type="checkbox" id="show-archived"> Show archived
         </label>
+        <div style="display:flex;gap:0;margin-left:auto;" title="Switch between card and table view">
+          <button id="view-cards" class="btn btn-secondary" style="padding:8px 16px;font-size:12px;">Cards</button>
+          <button id="view-table" class="btn btn-ghost" style="padding:8px 16px;font-size:12px;">Table</button>
+        </div>
       </div>
 
       <!-- Ghost backstock generator: auto-creates fake-sold past pallets from real
@@ -69,6 +73,31 @@
       </details>
 
       <div class="gallery" id="pallets"></div>
+
+      <!-- Table view: same data as the cards, sortable + inline-editable pricing.
+           Edits autosave on click-away (change event); no Save button needed. -->
+      <div id="pallets-table" hidden style="overflow-x:auto;">
+        <style>
+          .ptab { width:100%; border-collapse:collapse; font-size:13px; background:#fff; }
+          .ptab th { font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.06em;
+                     text-transform:uppercase; color:#444; text-align:left; padding:8px 10px;
+                     border-bottom:2px solid #002868; cursor:pointer; user-select:none; white-space:nowrap; }
+          .ptab th.sorted { color:#002868; }
+          .ptab td { padding:6px 10px; border-bottom:1px solid #e5e0d0; vertical-align:middle; white-space:nowrap; }
+          .ptab tr.archived td { opacity:0.55; }
+          .ptab input[type=text]   { width:200px; padding:4px 6px; font-size:13px; border:1px solid #ccc; }
+          .ptab input[type=number] { width:90px;  padding:4px 6px; font-size:13px; border:1px solid #ccc;
+                                     font-family:'JetBrains Mono',monospace; }
+          .ptab input:focus { outline:2px solid #002868; }
+          .ptab .box-link { font-family:'JetBrains Mono',monospace; font-weight:700; color:#002868; text-decoration:none; }
+          .ptab .box-link:hover { text-decoration:underline; }
+          .ptab .ghost-flag { color:#c00; font-weight:700; font-size:11px; }
+        </style>
+        <table class="ptab">
+          <thead id="ptab-head"></thead>
+          <tbody id="ptab-body"></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- Pallet detail view -->
@@ -138,7 +167,11 @@
               <select id="cat"></select>
             </div>
             <div class="field">
-              <label for="notes">Notes</label>
+              <label for="pubdesc">Website description <span style="font-weight:400;color:#666;font-size:10px;letter-spacing:0;text-transform:none;">— PUBLIC, shows under the box on the site</span></label>
+              <textarea id="pubdesc" rows="3" placeholder="Witty commentary for shoppers…"></textarea>
+            </div>
+            <div class="field">
+              <label for="notes">Notes <span style="font-weight:400;color:#666;font-size:10px;letter-spacing:0;text-transform:none;">— internal only</span></label>
               <textarea id="notes" rows="3"></textarea>
             </div>
             <button id="save-meta" class="btn btn-secondary" style="width:100%;">Save</button>

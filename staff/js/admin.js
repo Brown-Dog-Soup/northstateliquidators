@@ -29,8 +29,29 @@ function route() {
 }
 
 // ---- list view ---------------------------------------------------------
+// Two renderers over the same v_pallets payload: cards (default) and a
+// sortable table with inline-editable name/pricing that autosaves on
+// click-away. Choice persists per-browser in localStorage.
+let viewMode = localStorage.getItem('nsl.admin.view') || 'cards';
+let sortKey = 'pallet_number', sortDir = -1;
+
 async function loadList() {
   pallets = await apiClient.pallets({ includeArchived: showArchived });
+  renderList();
+}
+
+function renderList() {
+  $('#view-cards')?.classList.toggle('btn-secondary', viewMode === 'cards');
+  $('#view-cards')?.classList.toggle('btn-ghost',     viewMode !== 'cards');
+  $('#view-table')?.classList.toggle('btn-secondary', viewMode === 'table');
+  $('#view-table')?.classList.toggle('btn-ghost',     viewMode !== 'table');
+  galleryEl.hidden = viewMode !== 'cards';
+  const tw = $('#pallets-table');
+  if (tw) tw.hidden = viewMode !== 'table';
+  if (viewMode === 'table') renderTable(); else renderCards();
+}
+
+function renderCards() {
   galleryEl.innerHTML = pallets.map(p => {
     const archived = !!p.archived_at;
     const state = p.publish_state || 'draft';
@@ -65,6 +86,110 @@ async function loadList() {
     </a>
   `;}).join('') || '<p style="color:#666;">No pallets yet — create one above.</p>';
 }
+
+const TABLE_COLS = [
+  { key: 'pallet_number',   label: 'Box #' },
+  { key: 'display_name',    label: 'Name' },
+  { key: 'publish_state',   label: 'Status' },
+  { key: 'unit_count',      label: 'Items' },
+  { key: 'total_msrp',      label: 'MSRP' },
+  { key: '_cost',           label: 'Cost' },
+  { key: 'items_with_cost', label: 'Have costs' },
+  { key: 'list_price',      label: 'Box price' },
+  { key: 'sale_price',      label: 'Sale price' },
+  { key: 'category',        label: 'Category' },
+];
+
+function sortVal(p, key) {
+  const v = key === '_cost' ? (p.total_cost ?? p.total_cost_units) : p[key];
+  return v ?? null;
+}
+
+function renderTable() {
+  const head = $('#ptab-head'), body = $('#ptab-body');
+  if (!head || !body) return;
+
+  head.innerHTML = '<tr>' + TABLE_COLS.map(c =>
+    `<th data-key="${c.key}" class="${sortKey === c.key ? 'sorted' : ''}">${c.label}${sortKey === c.key ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`
+  ).join('') + '</tr>';
+
+  const rows = [...pallets].sort((a, b) => {
+    const av = sortVal(a, sortKey), bv = sortVal(b, sortKey);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;             // nulls sink regardless of direction
+    if (bv == null) return -1;
+    const cmp = typeof av === 'number' && typeof bv === 'number'
+      ? av - bv
+      : String(av).localeCompare(String(bv), undefined, { sensitivity: 'base' });
+    return cmp * sortDir;
+  });
+
+  body.innerHTML = rows.map(p => {
+    const ghost = (p.publish_state === 'ghost') || !!p.is_ghost;
+    const cost = p.total_cost ?? p.total_cost_units;
+    const partial = (p.items_with_cost ?? 0) < (p.item_count ?? 0);
+    return `
+    <tr class="${p.archived_at ? 'archived' : ''}">
+      <td><a class="box-link" href="#/pallet/${p.manifest_id}">#${p.pallet_number ?? '—'}</a></td>
+      <td><input type="text" data-id="${p.manifest_id}" data-f="displayName" value="${escape(p.display_name || '')}"></td>
+      <td><span class="pill ${p.publish_state || 'draft'}">${p.publish_state || 'draft'}</span>${ghost ? ' <span class="ghost-flag">FICTITIOUS</span>' : ''}</td>
+      <td>${p.unit_count || 0}</td>
+      <td>${fmtMoney(p.total_msrp)}</td>
+      <td>${fmtMoney(cost)}</td>
+      <td style="color:${partial ? '#c60' : '#999'};">${p.items_with_cost ?? 0}/${p.item_count ?? 0}</td>
+      <td><input type="number" step="0.01" min="0" data-id="${p.manifest_id}" data-f="listPrice" value="${p.list_price ?? ''}" placeholder="auto"></td>
+      <td><input type="number" step="0.01" min="0" data-id="${p.manifest_id}" data-f="salePrice" value="${p.sale_price ?? ''}" placeholder="—"></td>
+      <td>${escape(p.category || '—')}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="10" style="color:#666;">No pallets yet.</td></tr>';
+
+  head.querySelectorAll('th').forEach(th => th.addEventListener('click', () => {
+    const key = th.dataset.key;
+    if (sortKey === key) sortDir = -sortDir;
+    else { sortKey = key; sortDir = key === 'display_name' || key === 'category' || key === 'publish_state' ? 1 : -1; }
+    renderTable();
+  }));
+  body.querySelectorAll('input[data-f]').forEach(inp => inp.addEventListener('change', onTableEdit));
+}
+
+// Autosave on click-away: 'change' fires when an input loses focus with a new
+// value. Name saves alone; a price edit sends BOTH price keys from the row so
+// the untouched one isn't cleared (the PATCH clears any price key it receives
+// as null). On failure, re-render from the last server-known values.
+async function onTableEdit(e) {
+  const inp = e.currentTarget;
+  const id = inp.dataset.id;
+  const row = pallets.find(p => p.manifest_id === id);
+  if (!row) return;
+  try {
+    if (inp.dataset.f === 'displayName') {
+      const name = inp.value.trim();
+      if (!name) { inp.value = row.display_name || ''; return; }
+      if (name === row.display_name) return;
+      await apiClient.patchPallet(id, { displayName: name });
+      row.display_name = name;
+    } else {
+      const tr = inp.closest('tr');
+      const val = sel => { const v = parseFloat(tr.querySelector(sel)?.value); return Number.isFinite(v) && v > 0 ? v : null; };
+      const list = val('input[data-f="listPrice"]');
+      const sale = val('input[data-f="salePrice"]');
+      await apiClient.setPalletPrices(id, list, sale);
+      row.list_price = list;
+      row.sale_price = sale;
+    }
+    toast(`Saved — BOX #${row.pallet_number ?? '—'}`, 'ok', 1200);
+  } catch (err) {
+    toast(`Save failed: ${err.message}`, 'err', 4000);
+    renderTable();
+  }
+}
+
+$('#view-cards')?.addEventListener('click', () => {
+  viewMode = 'cards'; localStorage.setItem('nsl.admin.view', 'cards'); renderList();
+});
+$('#view-table')?.addEventListener('click', () => {
+  viewMode = 'table'; localStorage.setItem('nsl.admin.view', 'table'); renderList();
+});
 
 function showList() {
   $('#view-list').hidden = false;
@@ -107,6 +232,7 @@ async function showDetail(id) {
   titleSuffix.textContent = current.display_name;
   $('#dn').value = current.display_name || '';
   $('#notes').value = current.notes || '';
+  $('#pubdesc').value = current.public_description || '';
   $('#cat').value = current.category || '';
   $('#cur-mode').textContent = (current.sell_mode || 'undecided').toUpperCase();
 
@@ -283,9 +409,10 @@ $('#save-meta').addEventListener('click', async () => {
   if (!current) return;
   try {
     await apiClient.patchPallet(current.manifest_id, {
-      displayName: $('#dn').value.trim(),
-      notes:       $('#notes').value,
-      category:    $('#cat').value         // empty string → server stores '' (treat as unset visually)
+      displayName:       $('#dn').value.trim(),
+      notes:             $('#notes').value,
+      publicDescription: $('#pubdesc').value,
+      category:          $('#cat').value   // empty string → server stores '' (treat as unset visually)
     });
     toast('Saved', 'ok');
     await showDetail(current.manifest_id);

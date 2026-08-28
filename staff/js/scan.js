@@ -335,6 +335,37 @@ $('#decline')?.addEventListener('click', () => {
   toast('Scan declined — discarded', 'ok', 1200);
 });
 
+// Manual entry for never-manifested goods (mystery/bonus items). Uses the same
+// AddPalletItem endpoint as the admin page's ad-hoc add, so the item carries
+// est_msrp/unit_cost/wholesale_price and rolls into the box totals and the
+// "N/M items have costs" coverage like any scanned item.
+$('#me-add')?.addEventListener('click', async () => {
+  if (!activePallet) { toast('Pick an active pallet first', 'err', 2500); return; }
+  const title = $('#me-name').value.trim();
+  if (!title) { toast('Product name is required', 'err', 2500); return; }
+  const num = sel => { const v = parseFloat($(sel).value); return Number.isFinite(v) && v > 0 ? v : null; };
+  const btn = $('#me-add');
+  btn.disabled = true;
+  try {
+    await apiClient.addPalletItem(activePallet.manifest_id, {
+      title,
+      brand:          $('#me-brand').value.trim() || null,   // "manufacturer"
+      description:    $('#me-desc').value.trim() || null,
+      msrp:           num('#me-msrp'),
+      cost:           num('#me-cost'),
+      wholesalePrice: num('#me-price'),
+      condition:      $('#me-cond').value,
+      qty:            Number($('#me-qty').value) || 1
+    });
+    toast(`Added to BOX #${activePallet.pallet_number ?? '—'}`, 'ok');
+    ['#me-name', '#me-brand', '#me-desc', '#me-msrp', '#me-cost', '#me-price'].forEach(s => { $(s).value = ''; });
+    $('#me-qty').value = '1';
+    $('#me-cond').value = 'untested';
+    await loadRecent();
+  } catch (e) { toast(`Add failed: ${e.message}`, 'err', 4000); }
+  finally { btn.disabled = false; }
+});
+
 function resetForm() {
   codeEl.value = '';
   $('#qty').value = '1';
@@ -354,7 +385,7 @@ async function loadRecent() {
     const detail = await apiClient.pallet(activePallet.manifest_id);
     const allItems = detail.items || [];
     recentItems = allItems.slice(0, 8);
-    palletEl.textContent = `${detail.pallet.display_name} · ${detail.pallet.unit_count || 0} items`;
+    palletEl.textContent = `BOX #${detail.pallet.pallet_number ?? '—'} · ${detail.pallet.display_name} · ${detail.pallet.unit_count || 0} items`;
 
     // Pallet-wide totals across ALL items on this manifest, not just the 8
     // recent ones — Rob asked for the running totals at the top of the page.

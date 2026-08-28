@@ -32,6 +32,7 @@ public sealed class PalletsFunction
     public sealed record CreatePalletRequest(string? displayName, string? source, string? palletReference, string? notes);
     public sealed record UpdatePalletRequest(
         string? displayName, string? sellMode, string? photoUrl, string? notes,
+        string? publicDescription,  // public website blurb (distinct from internal notes)
         string? category,      // pallet-level top bucket: Apparel, Electronics, ...
         bool?   archived,      // true = archive, false = restore, null = no change
         bool?   isGhost,       // legacy: true = ghost backstock, false = real, null = no change
@@ -222,6 +223,7 @@ WHERE li.manifest_id = @id ORDER BY li.created_at DESC";
         if (body?.displayName != null) { sets.Add("display_name = @dn"); p.Add("dn", body.displayName); }
         if (body?.photoUrl    != null) { sets.Add("photo_url = @pu");    p.Add("pu", body.photoUrl); }
         if (body?.notes       != null) { sets.Add("notes = @nt");        p.Add("nt", body.notes); }
+        if (body?.publicDescription != null) { sets.Add("public_description = @pd"); p.Add("pd", body.publicDescription); }
         if (body?.category    != null) { sets.Add("category = @cat");    p.Add("cat", body.category); }
         if (body?.archived.HasValue == true)
         {
@@ -420,8 +422,8 @@ FROM dbo.line_items WHERE manifest_id = @sid",
         await using var conn = await _sql.OpenAsync(ct);
         var rows = (await conn.QueryAsync(@"
 SELECT manifest_id, pallet_number, display_name, category, publish_state,
-       received_date, sold_at, photo_url, item_count, unit_count, total_msrp,
-       list_price, sale_price, is_sold, is_on_sale, ask_price
+       received_date, sold_at, photo_url, public_description, item_count,
+       unit_count, total_msrp, list_price, sale_price, is_sold, is_on_sale, ask_price
 FROM dbo.v_public_pallets
 ORDER BY CASE WHEN publish_state = 'live' THEN 0 ELSE 1 END,
          COALESCE(sold_at, received_date) DESC")).ToList();
@@ -451,7 +453,7 @@ ORDER BY CASE WHEN publish_state = 'live' THEN 0 ELSE 1 END,
         var pallet = await conn.QueryFirstOrDefaultAsync(@"
 SELECT manifest_id, pallet_number, display_name, category, publish_state,
        item_count, unit_count, total_msrp, ask_price, list_price, sale_price,
-       is_sold, is_on_sale, photo_url
+       is_sold, is_on_sale, photo_url, public_description
 FROM dbo.v_public_pallets WHERE manifest_id = @id", new { id });
         if (pallet == null) return new NotFoundResult();   // not public → don't leak it
         SignRowPhotos((object)pallet);
@@ -502,7 +504,7 @@ ORDER BY CASE WHEN est_msrp IS NULL THEN 1 ELSE 0 END, est_msrp DESC, created_at
 
     public sealed record AddItemRequest(
         string? title, string? brand, string? category, int? qty,
-        string? condition, decimal? sellPrice, decimal? msrp,
+        string? condition, decimal? sellPrice, decimal? msrp, decimal? cost,
         decimal? wholesalePrice, string? description, string? notes);
 
     /// <summary>
@@ -533,18 +535,18 @@ ORDER BY CASE WHEN est_msrp IS NULL THEN 1 ELSE 0 END, est_msrp DESC, created_at
         await conn.ExecuteAsync(@"
 INSERT INTO dbo.line_items
     (id, manifest_id, qty, condition, enrich_status, enrich_source,
-     title, description, brand, category, est_msrp, est_resale, wholesale_price, notes,
+     title, description, brand, category, est_msrp, est_resale, unit_cost, wholesale_price, notes,
      created_at, enriched_at)
 VALUES
     (@id, @mid, @qty, @cond, 'hit', 'manual',
-     @title, @desc, @brand, @cat, @msrp, @sell, @whole, @notes,
+     @title, @desc, @brand, @cat, @msrp, @sell, @cost, @whole, @notes,
      SYSUTCDATETIME(), SYSUTCDATETIME())",
             new
             {
                 id = newId, mid = id, qty = body.qty ?? 1,
                 cond = string.IsNullOrWhiteSpace(body.condition) ? "untested" : body.condition,
                 title = body.title, desc = body.description, brand = body.brand, cat = body.category,
-                msrp = body.msrp, sell = body.sellPrice, whole = body.wholesalePrice, notes = body.notes
+                msrp = body.msrp, sell = body.sellPrice, cost = body.cost, whole = body.wholesalePrice, notes = body.notes
             });
 
         _log.LogInformation("AddPalletItem {Item} -> pallet {Pallet}", newId, id);

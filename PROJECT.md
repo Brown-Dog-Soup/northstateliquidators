@@ -1,10 +1,46 @@
 # North State Liquidators — Website Project
 
 **Owner:** Jeff Blanchard
-**Status:** Kickoff
-**Working dir:** `C:\repo\ElHeffe\Powershell\North State Liquidators`
+**Status:** LIVE & SELLING — Square checkout live 2026-08-28
+**Working dir:** `ElHeffe_new/northstateliquidators` (this repo)
 **Started:** 2026-04-17
-**Site type:** **E-commerce** — must sell directly (wholesale pallets AND retail items)
+**Site type:** **E-commerce** — sells one-of-a-kind boxes/pallets directly
+
+---
+
+## Current State (2026-08-28)
+
+**Stack:** Azure Static Web Apps (`stapp-nsl-website`, rg-nsl-website) —
+static marketing site at repo root, staff portal `/staff/*` behind AAD,
+`.NET 8` isolated Functions in `api/`, Azure SQL (`sqldb-nsl-prod`), Blob
+photos. Deploy = merge to `main` (PR build is the only compile check — no
+local .NET SDK). DB migrations are hand-applied files in `db/`.
+
+**Live capabilities:**
+- **Square checkout (2026-08-28):** every live box gets a Buy button →
+  Square-hosted Quick Pay link → `payment.updated` webhook (HMAC) marks it
+  SOLD via `sp_SetPublishState` + `dbo.payments` audit row. Staff reconcile
+  endpoint `/api/square-reconcile` heals missed webhooks (SWA = HTTP-only,
+  no timers). Kill switch: `SQUARE_CHECKOUT_ENABLED` app setting. Proven
+  with a real $1 sale. Design: `SQUARE-INTEGRATION.md`.
+- **Receiving** (`/staff/scan.html`): barcode scan w/ catalog lookup
+  (LPN>UPC>ASIN bridge), inventory search add, manual no-barcode entry,
+  BOX #s in picker, MSRP/COST/PRICE surfaces.
+- **Admin** (`/staff/admin.html`): card + sortable/inline-editable table
+  views, publish states (draft/live/ghost/sold), pricing, Seller Category,
+  cost coverage warnings, ghost-vs-real labeling, public description
+  (distinct from internal notes), duplicate guard, ghost backstock
+  generator.
+- **Importers:** `Import-NSLMaster.ps1` + `Import-NSLBStockOrder.ps1` —
+  BOTH must run after any catalog rebuild (they COALESCE-merge).
+- Shopify fully retired: exit decided 5/06, last site remnants removed
+  8/28. `shopify-theme/`, `Sync-NSLFeatured.ps1`, `Push-NSLTheme.ps1` are
+  dead code kept for history.
+
+**Open:** Rob/Norm launch decisions (all boxes buyable? pickup-only? who
+watches refund flags); "Sell As" module removal awaiting nod; reseller
+program (designed, not built — `RESELLER-PROGRAM-DESIGN.md`); Rob's move-in
+target 9/25, fully operational first week of Oct.
 
 ---
 

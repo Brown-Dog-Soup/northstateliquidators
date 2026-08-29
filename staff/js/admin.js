@@ -252,6 +252,16 @@ async function showDetail(id) {
   const totalUnits = currentItems.reduce((a, it) => a + (Number(it.qty) || 1), 0);
   $('#items-count').textContent = `(${totalUnits} item${totalUnits === 1 ? '' : 's'})`;
 
+  // Wholesale invoice card: show form or the outstanding-invoice state.
+  const hasInvoice = !!current.invoice_id;
+  const invForm = $('#inv-form'), invActive = $('#inv-active');
+  if (invForm && invActive) {
+    invForm.hidden = hasInvoice;
+    invActive.hidden = !hasInvoice;
+    if (hasInvoice) $('#inv-link').href = current.invoice_url || '#';
+    $('#inv-price').placeholder = current.sale_price ?? current.list_price ?? '';
+  }
+
   // Archive button label flips between Archive / Restore
   const archBtn = $('#archive-pallet');
   if (archBtn) archBtn.textContent = current.archived_at ? 'Restore pallet' : 'Archive pallet';
@@ -491,6 +501,36 @@ $('#add-item')?.addEventListener('click', async () => {
     $('#ai-qty').value = '1';
     await showDetail(current.manifest_id);
   } catch (e) { toast(`Add failed: ${e.message}`, 'err', 4000); }
+});
+
+// Wholesale invoice: send + cancel
+$('#inv-send')?.addEventListener('click', async () => {
+  if (!current) return;
+  const email = $('#inv-email').value.trim();
+  if (!email || !email.includes('@')) { toast('Buyer email is required', 'err', 2500); return; }
+  const price = parseFloat($('#inv-price').value);
+  const priceVal = Number.isFinite(price) && price > 0 ? price : null;
+  const askShown = priceVal ?? current.sale_price ?? current.list_price ?? '(box ask price)';
+  if (!confirm(`Email a Square invoice for "${current.display_name}" to ${email} for $${askShown}?\n\nThe box comes off the website until it's paid or canceled.`)) return;
+  const btn = $('#inv-send');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const r = await apiClient.invoiceBox(current.manifest_id, email, $('#inv-name').value.trim() || null, priceVal);
+    toast(`Invoice sent — $${r.price}`, 'ok', 3000);
+    ['inv-email', 'inv-name', 'inv-price'].forEach(id => { $('#' + id).value = ''; });
+    await showDetail(current.manifest_id);
+  } catch (e) { toast(`Invoice failed: ${e.data?.error || e.message}`, 'err', 5000); }
+  finally { btn.disabled = false; btn.textContent = 'Send invoice'; }
+});
+
+$('#inv-cancel')?.addEventListener('click', async () => {
+  if (!current) return;
+  if (!confirm('Cancel this invoice? The buyer can no longer pay it; the box stays in Draft until you put it back live.')) return;
+  try {
+    await apiClient.cancelBoxInvoice(current.manifest_id);
+    toast('Invoice canceled', 'ok');
+    await showDetail(current.manifest_id);
+  } catch (e) { toast(`Cancel failed: ${e.data?.error || e.message}`, 'err', 4000); }
 });
 
 // Show-archived toggle on the list view

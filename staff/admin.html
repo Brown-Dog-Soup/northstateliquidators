@@ -148,6 +148,22 @@
           </div>
 
           <div class="card" style="margin-top:16px;">
+            <h3 style="margin:0 0 12px;font-family:Anton;letter-spacing:0.02em;text-transform:uppercase;">Wholesale invoice</h3>
+            <div id="inv-form">
+              <p style="margin:0 0 10px;font-size:12px;color:#666;line-height:1.5;">Emails the buyer a real Square invoice for this box (card or bank transfer — bank is 1% vs 3.3% card). Box comes off the website while the invoice is out; it marks SOLD automatically when paid.</p>
+              <div class="field"><label for="inv-email">Buyer email</label><input type="email" id="inv-email" placeholder="buyer@company.com"></div>
+              <div class="field"><label for="inv-name">Buyer / company (optional)</label><input type="text" id="inv-name"></div>
+              <div class="field"><label for="inv-price">Price (blank = box ask price)</label><input type="number" id="inv-price" step="0.01" min="0"></div>
+              <button id="inv-send" class="btn btn-secondary" style="width:100%;">Send invoice</button>
+            </div>
+            <div id="inv-active" hidden>
+              <p style="margin:0 0 10px;font-size:13px;color:#444;">📄 <b>Invoice outstanding.</b> Box is reserved (off the website) until it's paid or canceled.</p>
+              <a id="inv-link" href="#" target="_blank" rel="noopener" style="font-size:13px;">View invoice ↗</a>
+              <button id="inv-cancel" class="btn btn-ghost" style="width:100%;margin-top:10px;color:#b00;border:1px solid #d4ada6;">Cancel invoice</button>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:16px;">
             <h3 style="margin:0 0 12px;font-family:Anton;letter-spacing:0.02em;text-transform:uppercase;">Sell as</h3>
             <div class="mode-toggle">
               <button data-mode="lot"        class="btn btn-secondary">Lot</button>

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#002868">
+  <title>NSL Sales</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/staff.css">
+  <link rel="icon" type="image/jpeg" href="/north_state_liquidators_logo.jpeg">
+  <style>
+    .tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:14px; margin:18px 0 26px; }
+    .tile { background:#fff; border:1px solid #e2ddd0; padding:14px 16px; }
+    .tile .lbl { font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:700;
+                 letter-spacing:0.12em; text-transform:uppercase; color:#888; }
+    .tile .val { font-size:26px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; }
+    .tile .sub { font-size:12px; color:#888; margin-top:2px; font-variant-numeric:tabular-nums; }
+    .stable { width:100%; border-collapse:collapse; font-size:13.5px; background:#fff; }
+    .stable th { font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:700; letter-spacing:0.1em;
+                 text-transform:uppercase; color:#666; text-align:left; padding:8px 12px 6px;
+                 border-bottom:2px solid #002868; white-space:nowrap; }
+    .stable td { padding:8px 12px; border-bottom:1px solid #eee6d8; white-space:nowrap;
+                 font-variant-numeric:tabular-nums; }
+    .stable td.money { text-align:right; font-family:'JetBrains Mono',monospace; }
+    .stable th.money { text-align:right; }
+    .chan { font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:700; letter-spacing:0.08em;
+            text-transform:uppercase; padding:2px 8px; }
+    .chan.web   { background:#e7ecf6; color:#002868; }
+    .chan.floor { background:#ece5da; color:#6a5b3a; }
+    .flag { color:#b42318; font-weight:700; }
+    .sect { margin:34px 0 10px; font-family:Anton; letter-spacing:0.03em; text-transform:uppercase; font-size:20px; }
+    .range button.active { background:#002868; color:#fff; }
+    .twrap { overflow-x:auto; }
+    .pos { color:#087a4c; } .neg { color:#b42318; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <div class="title-block">
+      <a href="index.html" class="back" title="Staff Tools">←</a>
+      <h1>NSL · Sales</h1>
+    </div>
+    <div class="meta">
+      <a href="https://northstateliquidators.com" target="_blank" rel="noopener" style="margin-right:14px;font-size:12px;color:#444;">Public site ↗</a>
+      <span id="me"></span>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+      <div class="range" style="display:flex;gap:0;">
+        <button class="btn btn-ghost" data-days="7"  style="padding:8px 16px;font-size:12px;">7 days</button>
+        <button class="btn btn-ghost" data-days="30" style="padding:8px 16px;font-size:12px;">30 days</button>
+        <button class="btn btn-ghost" data-days="90" style="padding:8px 16px;font-size:12px;">90 days</button>
+      </div>
+      <button id="reconcile" class="btn btn-secondary" style="padding:8px 16px;font-size:12px;"
+              title="Double-checks open checkout links against Square and heals anything a missed webhook left behind.">Reconcile with Square</button>
+    </div>
+
+    <div class="tiles" id="tiles"><div class="tile"><div class="lbl">Loading…</div></div></div>
+
+    <div id="attention" hidden>
+      <div class="sect" style="color:#b42318;">⚠ Needs attention</div>
+      <p style="margin:0 0 10px;font-size:13px;color:#666;">Payments that landed on an already-sold box (or matched no box). Refund sends the full amount back through Square.</p>
+      <div class="twrap"><table class="stable" id="attention-table"></table></div>
+    </div>
+
+    <div class="sect">Sales</div>
+    <div class="twrap"><table class="stable" id="sales-table"></table></div>
+
+    <div class="sect">Bank deposits (payouts)</div>
+    <div class="twrap"><table class="stable" id="payouts-table"></table></div>
+
+    <div class="sect">Payment log</div>
+    <p style="margin:0 0 10px;font-size:13px;color:#666;">Our own audit trail of website payments — one row per Square payment the webhook recorded.</p>
+    <div class="twrap"><table class="stable" id="payments-table"></table></div>
+  </div>
+
+  <script type="module" src="js/sales.js"></script>
+</body>
+</html>

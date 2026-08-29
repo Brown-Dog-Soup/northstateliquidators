@@ -61,6 +61,14 @@ export const apiClient = {
   // public-site read of live + recently-sold pallets
   publicPallets: () => api('GET', '/api/public/pallets'),
 
+  // Square: sales dashboard, payment audit, refunds, reconcile, wholesale invoices
+  salesSummary:     (days = 30) => api('GET', `/api/sales-summary?days=${days}`),
+  squarePayments:   () => api('GET',  '/api/square-payments'),
+  squareRefund:     (paymentId, reason = null) => api('POST', '/api/square-refund', { paymentId, reason }),
+  squareReconcile:  () => api('POST', '/api/square-reconcile'),
+  invoiceBox:       (id, email, name = null, price = null) => api('POST', `/api/pallets/${id}/invoice`, { email, name, price }),
+  cancelBoxInvoice: (id) => api('POST', `/api/pallets/${id}/invoice-cancel`),
+
   patchItem:  (id,b) => api('PATCH',  `/api/items/${id}`, b),
   deleteItem: (id)   => api('DELETE', `/api/items/${id}`),
   bulkDeleteItems: (ids) => api('POST', '/api/items/bulk-delete', { ids }),

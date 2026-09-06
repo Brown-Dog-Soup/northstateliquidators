@@ -151,7 +151,7 @@ EXEC dbo.sp_CreateManifest
     /// (line_items snapshots catalog pricing at scan time, so late-arriving
     /// manifest data never reaches old rows without this fallback).
     /// </summary>
-    private const string ItemsWithCatalogSql = @"
+    internal const string ItemsWithCatalogSql = @"
 SELECT li.id, li.lpn, li.upc, li.asin, li.qty, li.condition, li.title, li.description,
        li.brand, li.category, cat.seller_category,
        li.est_msrp, li.est_resale,

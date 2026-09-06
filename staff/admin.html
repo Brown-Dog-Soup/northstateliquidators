@@ -35,6 +35,7 @@
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#444;cursor:pointer;">
           <input type="checkbox" id="show-archived"> Show archived
         </label>
+        <a id="export-all" class="btn btn-ghost" href="/api/inventory/export" style="padding:8px 14px;font-size:12px;" title="Every box and every item as an Excel workbook (two sheets)">⬇ Export all (.xlsx)</a>
         <div style="display:flex;gap:0;margin-left:auto;" title="Switch between card and table view">
           <button id="view-cards" class="btn btn-secondary" style="padding:8px 16px;font-size:12px;">Cards</button>
           <button id="view-table" class="btn btn-ghost" style="padding:8px 16px;font-size:12px;">Table</button>
@@ -199,6 +200,14 @@
             <button id="set-active" class="btn btn-yellow" style="width:100%;margin-top:8px;">Make this the active pallet for receiving</button>
             <button id="duplicate-pallet" class="btn btn-secondary" style="width:100%;margin-top:8px;">Duplicate this pallet</button>
             <p style="margin:6px 0 0;font-size:12px;color:#666;">Creates a new pallet with a copy of every item on this one.</p>
+          </div>
+
+          <div class="card" style="margin-top:16px;">
+            <h3 style="margin:0 0 8px;font-family:Anton;letter-spacing:0.02em;text-transform:uppercase;">Manifest</h3>
+            <a id="dl-manifest" class="btn btn-secondary" href="#" style="width:100%;display:block;text-align:center;box-sizing:border-box;">⬇ Download manifest (.xlsx)</a>
+            <p style="margin:6px 0 0;font-size:12px;color:#666;">Internal copy — includes cost and wholesale. Do not send this one to a buyer.</p>
+            <a id="dl-manifest-public" class="btn btn-ghost" href="#" style="width:100%;display:block;text-align:center;box-sizing:border-box;margin-top:8px;">⬇ Buyer copy (.xlsx)</a>
+            <p id="dl-manifest-public-note" style="margin:6px 0 0;font-size:12px;color:#666;">Title, brand, condition, qty, est. retail only. Same file the public site offers. Only works while the box is Live, Sold, or Ghost.</p>
           </div>
 
           <div class="card" style="margin-top:16px;">

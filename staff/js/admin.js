@@ -262,6 +262,17 @@ async function showDetail(id) {
     $('#inv-price').placeholder = current.sale_price ?? current.list_price ?? '';
   }
 
+  // Manifest downloads (Excel). Plain links — the SWA session cookie rides along.
+  const dl = $('#dl-manifest'), dlPub = $('#dl-manifest-public');
+  if (dl) dl.href = `/api/pallets/${current.manifest_id}/manifest`;
+  if (dlPub) {
+    const isPublic = ['live', 'sold', 'ghost'].includes(current.publish_state) && !current.archived_at;
+    dlPub.href = `/api/public/pallets/${current.manifest_id}/manifest`;
+    dlPub.style.opacity = isPublic ? '' : '0.45';
+    dlPub.style.pointerEvents = isPublic ? '' : 'none';
+    dlPub.title = isPublic ? '' : 'Put the box Live first — buyer copies only exist for public boxes';
+  }
+
   // Archive button label flips between Archive / Restore
   const archBtn = $('#archive-pallet');
   if (archBtn) archBtn.textContent = current.archived_at ? 'Restore pallet' : 'Archive pallet';
@@ -536,6 +547,8 @@ $('#inv-cancel')?.addEventListener('click', async () => {
 // Show-archived toggle on the list view
 $('#show-archived')?.addEventListener('change', e => {
   showArchived = e.currentTarget.checked;
+  const ex = $('#export-all');
+  if (ex) ex.href = `/api/inventory/export${showArchived ? '?includeArchived=true' : ''}`;
   loadList();
 });
 

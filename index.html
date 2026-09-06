@@ -1068,6 +1068,9 @@
         : '') + (window.nslCheckoutEnabled && p.publish_state === 'live'
         ? `<p style="margin:0 0 16px;"><a href="#" data-buy-modal="${esc(p.manifest_id)}" style="display:inline-block;background:#002868;color:#fff;font-weight:700;padding:12px 26px;text-decoration:none;">Buy this box — ${money(p.ask_price)}</a></p>`
         : '');
+      const dlLink = items.length
+        ? `<p style="margin:0 0 14px;font-size:14px;"><a class="view" href="/api/public/pallets/${encodeURIComponent(id)}/manifest">⬇ Download this manifest (Excel)</a></p>`
+        : '';
       const bindBuy = () => bodyEl.querySelector('a[data-buy-modal]')?.addEventListener('click', e => {
         e.preventDefault();
         window.nslBuyBox(e.currentTarget.getAttribute('data-buy-modal'), e.currentTarget);
@@ -1077,7 +1080,7 @@
         bindBuy();
         return;
       }
-      bodyEl.innerHTML = blurb + `
+      bodyEl.innerHTML = blurb + dlLink + `
         <table class="mf-table">
           <thead><tr><th>Item</th><th>Condition</th><th>Qty</th><th>Est. Retail</th><th></th></tr></thead>
           <tbody>

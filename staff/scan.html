@@ -19,6 +19,7 @@
     </div>
     <div class="meta">
       <a href="https://northstateliquidators.com" target="_blank" rel="noopener" style="margin-right:14px;font-size:12px;color:#444;">Public site ↗</a>
+      <span id="lookup-quota" title="Online UPC lookups used today (free tier, resets at midnight UTC)" style="margin-right:14px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#666;"></span>
       <span id="me"></span>
     </div>
   </div>
@@ -55,6 +56,10 @@
         <div class="col field" style="max-width:140px;">
           <label for="qty">Qty</label>
           <input type="number" id="qty" value="1" min="1" max="999"/>
+        </div>
+        <div class="col field" style="max-width:170px;">
+          <label for="tag-msrp">MSRP <span id="tag-msrp-hint" style="font-weight:400;color:#666;font-size:10px;letter-spacing:0;text-transform:none;"></span></label>
+          <input type="number" id="tag-msrp" step="0.01" min="0" placeholder="from tag" style="font-family:'JetBrains Mono',monospace;"/>
         </div>
         <div class="col field" style="max-width:180px;">
           <label for="sell-price">Sell price <span id="sell-price-hint" style="font-weight:400;color:#666;font-size:10px;letter-spacing:0;text-transform:none;"></span></label>

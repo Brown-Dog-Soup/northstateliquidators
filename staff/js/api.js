@@ -37,6 +37,7 @@ export const NSL_CATEGORIES = [
 export const apiClient = {
   health:           () => api('GET',  '/api/health'),
   lookup:    (code) => api('GET',  `/api/lookup/${encodeURIComponent(code)}`),
+  lookupStats: ()   => api('GET',  '/api/lookup-stats'),
   scan:    (record) => api('POST', '/api/scan', record),
 
   // pallets({ includeArchived: true }) surfaces archived pallets too.

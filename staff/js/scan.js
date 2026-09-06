@@ -32,6 +32,7 @@ async function init() {
 
   await loadPalletPicker();
   await loadRecent();
+  try { updateQuota(await apiClient.lookupStats()); } catch { /* badge is optional */ }
   codeEl.focus();
 }
 
@@ -124,7 +125,12 @@ async function doLookup() {
   if (!code) return;
   try {
     const res = await fetch(`/api/lookup/${encodeURIComponent(code)}`, { credentials: 'same-origin' });
-    if (res.status === 404) { renderLookup(null); return; }
+    if (res.status === 404) {
+      const body = await res.json().catch(() => ({}));
+      updateQuota(body);
+      renderLookup(null, body);
+      return;
+    }
     if (res.status === 422) {
       const body = await res.json().catch(() => ({}));
       lookupResult = null;
@@ -135,17 +141,64 @@ async function doLookup() {
     }
     if (!res.ok) throw new Error(`lookup ${res.status}`);
     lookupResult = await res.json();
+    updateQuota(lookupResult);
     renderLookup(lookupResult);
   } catch (err) {
     toast(`Lookup error: ${err.message}`, 'err', 3000);
   }
 }
 
-function renderLookup(r) {
+// Online-lookup quota badge in the header. Fed by every /api/lookup response
+// (both hit and 404 bodies carry lookups_today / lookups_cap).
+function updateQuota(b) {
+  const el = $('#lookup-quota');
+  if (!el || b?.lookups_today == null) return;
+  const used = Number(b.lookups_today), cap = Number(b.lookups_cap || 100);
+  el.textContent = `online lookups today ${used}/${cap}`;
+  el.style.color = used >= cap ? '#b00' : (used >= cap * 0.8 ? '#a06400' : '#666');
+}
+
+// MSRP field: pre-fill from the manifest or online price, otherwise ask for
+// the tag. What the receiver leaves in this box is what gets saved as MSRP
+// (sp_RecordScan prefers the catalog's own MSRP when it has one).
+function setTagMsrp(value, hint, needsInput) {
+  const el = $('#tag-msrp'), h = $('#tag-msrp-hint');
+  if (!el) return;
+  el.value = (value == null || value === '') ? '' : Number(value).toFixed(2);
+  if (h) h.textContent = hint || '';
+  el.style.borderColor = needsInput ? '#b00' : '';
+  el.style.background  = needsInput ? '#fff8f7' : '';
+}
+
+function renderLookup(r, notFound = null) {
   if (!r) {
     lookupResult = null;
-    lookup.innerHTML = `<div class="lookup-empty">${codeEl.value.trim() ? `No catalog match for ${escape(codeEl.value)} — will be flagged for manual entry.` : 'Scan a code to see product info.'}</div>`;
-    confirmBtn.disabled = !codeEl.value.trim() || !activePallet;
+    const code = codeEl.value.trim();
+    if (!code) {
+      lookup.innerHTML = `<div class="lookup-empty">Scan a code to see product info.</div>`;
+      setTagMsrp(null, '', false);
+      confirmBtn.disabled = true;
+      return;
+    }
+    const ms = notFound?.market_status;
+    const why = ms === 'rate_limited'
+      ? `<b style="color:#b00;">Online lookups are used up for today</b> (${notFound.lookups_today ?? '100'}/${notFound.lookups_cap ?? 100}). The cap resets at midnight UTC.`
+      : ms === 'skipped'
+        ? `Not in a manifest. This isn't a UPC-shaped barcode, so it wasn't looked up online.`
+        : ms === 'error'
+          ? `Not in a manifest, and the online lookup service didn't answer.`
+          : `Not in a manifest and <b>not found online</b>.`;
+    const isUpc = /^\d{12,13}$/.test(code);
+    lookup.innerHTML = `
+      <div class="lookup-title" style="color:#6b5900;">Unknown item · ${escape(code)}</div>
+      <div style="margin-top:8px;padding:10px 12px;background:#fff8e0;border:1px solid #e6d68f;font-size:14px;color:#6b5900;line-height:1.5;">
+        ${why}<br>
+        <b>Type the MSRP from the tag</b> in the MSRP box below, pick a condition, and confirm. The item saves with the barcode as its ID; you can add a name in Recent afterwards.
+        ${ms !== 'rate_limited' && isUpc ? '<br><span style="font-size:12px;">If the item has an <b>LPN sticker</b>, scan that instead to pull our manifest numbers.</span>' : ''}
+      </div>`;
+    setTagMsrp(null, '(from tag)', true);
+    $('#tag-msrp')?.focus();
+    confirmBtn.disabled = !activePallet;
     return;
   }
 
@@ -187,14 +240,19 @@ function renderLookup(r) {
       </div>
       ${r.market_price != null ? `
       <div style="padding-left:24px;border-left:1px solid var(--rule);">
-        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#a06400;display:block;font-weight:700;margin-bottom:2px;">Market</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#a06400;display:block;font-weight:700;margin-bottom:2px;">Online price${r.market_status === 'cached_hit' ? ' · cached' : ''}</span>
         <span style="font-size:22px;font-weight:700;color:#a06400;">${fmtMoney(r.market_price)}</span>
       </div>` : ''}
     </div>
     ${!r.lpn ? `<div style="margin-top:8px;padding:8px 10px;background:#fff8e0;border:1px solid #e6d68f;font-size:13px;color:#6b5900;">
-      No manifest match for this barcode — MSRP, cost and price aren't available.
+      Not in a manifest. ${r.market_price != null
+        ? `The <b>online price ${fmtMoney(r.market_price)}</b> is pre-filled as MSRP below — it's the lowest price seen online for this barcode, not the tag. Correct it from the tag if they differ.`
+        : `Found online but <b>no price</b> — type the MSRP from the tag below.`}
+      Cost and wholesale price aren't available without a manifest.
       If the item has an <b>LPN sticker</b>, scan that instead to pull our numbers.
-    </div>` : ''}`;
+    </div>` : (r.msrp == null ? `<div style="margin-top:8px;padding:8px 10px;background:#fff8e0;border:1px solid #e6d68f;font-size:13px;color:#6b5900;">
+      Manifest match but the manifest had <b>no MSRP</b>.${r.market_price != null ? ` Online price ${fmtMoney(r.market_price)} is pre-filled below.` : ' Type the MSRP from the tag below.'}
+    </div>` : '')}`;
 
   lookup.innerHTML = `
     <div class="lookup-title">${escape(r.title || '')}</div>
@@ -239,6 +297,11 @@ function renderLookup(r) {
     if (condHint) condHint.textContent = '';
   }
 
+  // MSRP box: manifest first, then online price, else ask for the tag.
+  if (r.msrp != null)               setTagMsrp(r.msrp, '(manifest)', false);
+  else if (r.market_price != null)  setTagMsrp(r.market_price, '(online — check tag)', false);
+  else                              setTagMsrp(null, '(from tag)', true);
+
   suggestSellPrice();
   confirmBtn.disabled = !activePallet;
 }
@@ -249,7 +312,8 @@ function suggestSellPrice() {
   const sp = $('#sell-price');
   const hint = $('#sell-price-hint');
   // Prefer the real market resale price as the basis; fall back to manifest MSRP.
-  const ref = lookupResult?.market_price ?? lookupResult?.msrp;
+  const boxVal = Number($('#tag-msrp')?.value);
+  const ref = Number.isFinite(boxVal) && boxVal > 0 ? boxVal : (lookupResult?.msrp ?? lookupResult?.market_price);
   const cond = $('#condition').value;
   const mult = SELL_MULT[cond] ?? 0.5;
 
@@ -266,6 +330,7 @@ function suggestSellPrice() {
 $('#condition').addEventListener('change', suggestSellPrice);
 // Mark the field as user-edited so we stop overwriting it
 $('#sell-price').addEventListener('input', () => { sellPriceTouched = true; });
+$('#tag-msrp')?.addEventListener('input', () => { const el = $('#tag-msrp'); el.style.borderColor = ''; el.style.background = ''; suggestSellPrice(); });
 
 confirmBtn.addEventListener('click', async () => {
   if (!codeEl.value.trim()) return;
@@ -298,7 +363,9 @@ confirmBtn.addEventListener('click', async () => {
       category:       lr?.category ?? null,
       // Persist a reference price even for off-catalog UPCs: manifest MSRP if we
       // have it, otherwise the market price from the lookup provider.
-      msrp:           lr?.msrp ?? lr?.market_price ?? null,
+      // What's in the MSRP box wins (receiver may have typed it from the tag);
+      // falls back to manifest MSRP, then the online price.
+      msrp:           (() => { const v = $('#tag-msrp')?.value.trim(); const n = v === '' ? NaN : Number(v); return Number.isFinite(n) ? n : (lr?.msrp ?? lr?.market_price ?? null); })(),
       matchSource:    lr?.match_source ?? null,
       wholesalePrice: lr?.wholesale_price ?? null,  // PRICE column on Recent list
       description:    lr?.description ?? null,        // carried so a UPCitemdb hit keeps its description
@@ -373,6 +440,7 @@ function resetForm() {
   $('#photo').value = '';
   $('#sell-price').value = '';
   $('#sell-price-hint').textContent = '';
+  setTagMsrp(null, '', false);
   const ch = $('#condition-hint'); if (ch) ch.textContent = '';
   sellPriceTouched = false;
   renderLookup(null);

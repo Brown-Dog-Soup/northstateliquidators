@@ -49,7 +49,11 @@ public sealed class LookupFunction
         //    we can show a *market* price alongside the *manifest* price — and so
         //    a retail UPC that missed the catalog can bridge to the manifest row
         //    by ASIN/EAN below.
-        var market = await _upc.LookupAsync(code, ct);
+        var outcome = await _upc.LookupAsync(code, ct);
+        var market  = outcome.Result;
+        var stats   = await _upc.GetStatsAsync(ct);
+        var statsD  = stats as IDictionary<string, object>;
+        object? lookupsToday = statsD != null && statsD.TryGetValue("calls_today", out var lt) ? lt : null;
 
         // 3. Bridge. B-Stock catalog rows are keyed on LPN/ASIN and often have a
         //    blank UPC, so scanning a product's retail UPC misses the catalog even
@@ -76,7 +80,11 @@ public sealed class LookupFunction
         if (row != null)
         {
             var dict = (IDictionary<string, object>)row;
-            dict["market_price"] = market?.Msrp;
+            dict["market_price"]  = market?.Msrp;
+            dict["market_status"] = outcome.StatusKey;
+            dict["market_source"] = market == null ? null : (outcome.FromCache ? market.Source + " (cached)" : market.Source);
+            dict["lookups_today"] = lookupsToday;
+            dict["lookups_cap"]   = UpcLookupService.DailyCap;
             // Self-heal: a bridged hit means the catalog row lacked this UPC.
             // NULL-fill it so the next unit of the same product matches the
             // catalog directly (and survives the provider's daily rate cap).
@@ -103,6 +111,10 @@ public sealed class LookupFunction
             return new OkObjectResult(new
             {
                 match_source    = market.Source,
+                market_status   = outcome.StatusKey,
+                market_source   = outcome.FromCache ? market.Source + " (cached)" : market.Source,
+                lookups_today   = lookupsToday,
+                lookups_cap     = UpcLookupService.DailyCap,
                 lpn             = (string?)null,
                 asin            = market.Asin,
                 upc             = market.Upc ?? code,
@@ -139,7 +151,17 @@ public sealed class LookupFunction
         }
 
         _log.LogInformation("Lookup {Code} -> miss", code);
-        return new NotFoundResult();
+        _log.LogInformation("Lookup {Code} -> not found (market {Status})", code, outcome.StatusKey);
+        return new NotFoundObjectResult(new
+        {
+            error         = "not_found",
+            market_status = outcome.StatusKey,
+            lookups_today = lookupsToday,
+            lookups_cap   = UpcLookupService.DailyCap,
+            message       = outcome.Status == UpcLookupService.MarketStatus.RateLimited
+                ? "Online lookups are used up for today. Enter the price from the tag."
+                : "Not in a manifest and not found online. Enter the price from the tag."
+        });
     }
 
     /// <summary>
@@ -153,5 +175,21 @@ public sealed class LookupFunction
         if (System.Text.RegularExpressions.Regex.IsMatch(c, @"^\d{12}$"))  return "0" + c;        // UPC-A → EAN-13
         if (System.Text.RegularExpressions.Regex.IsMatch(c, @"^0\d{12}$")) return c[1..];          // EAN-13(0) → UPC-A
         return null;
+    }
+
+    /// <summary>
+    /// GET /api/lookup-stats — today's online-lookup usage against the free-tier
+    /// cap, plus cache size. Drives the "online lookups today: n/100" badge on
+    /// the scan page and tells us whether a paid provider is ever justified.
+    /// </summary>
+    [Function("LookupStats")]
+    public async Task<IActionResult> Stats(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "lookup-stats")] HttpRequest req,
+        CancellationToken ct)
+    {
+        var stats = await _upc.GetStatsAsync(ct);
+        return stats == null
+            ? new ObjectResult(new { error = "stats unavailable" }) { StatusCode = 503 }
+            : new OkObjectResult(stats);
     }
 }

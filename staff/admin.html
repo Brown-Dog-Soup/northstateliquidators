@@ -76,8 +76,30 @@
       <div class="gallery" id="pallets"></div>
 
       <!-- Table view: same data as the cards, sortable + inline-editable pricing.
-           Edits autosave on click-away (change event); no Save button needed. -->
+           Edits autosave on click-away (change event); no Save button needed.
+           The leading checkbox column feeds the multi-box manifest export. -->
       <div id="pallets-table" hidden style="overflow-x:auto;">
+        <!-- Sticks to the top of the scroll area so the buttons stay reachable
+             on a long list; hidden entirely until something is selected. -->
+        <div id="box-select-bar" hidden
+             style="position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+                    padding:10px 12px;margin-bottom:8px;background:#fffbe6;border:1px solid #e0c860;border-radius:4px;">
+          <strong style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#002868;">
+            <span id="box-select-count">0</span> selected
+          </strong>
+          <a id="dl-batch-staff" class="btn btn-secondary" href="#"
+             style="padding:6px 12px;font-size:12px;"
+             title="One workbook, one tab per box (Manifest###), full internal detail including cost">
+            ⬇ Manifests (.xlsx)
+          </a>
+          <a id="dl-batch-buyer" class="btn btn-ghost" href="#"
+             style="padding:6px 12px;font-size:12px;"
+             title="Same tabs, buyer-safe columns only — no cost or wholesale. Safe to email.">
+            ⬇ Buyer copies (.xlsx)
+          </a>
+          <button id="box-select-clear" class="btn btn-ghost" style="padding:6px 12px;font-size:12px;">Clear</button>
+          <span id="box-select-note" style="font-size:12px;color:#666;"></span>
+        </div>
         <style>
           .ptab { width:100%; border-collapse:collapse; font-size:13px; background:#fff; }
           .ptab th { font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.06em;
@@ -93,6 +115,9 @@
           .ptab .box-link { font-family:'JetBrains Mono',monospace; font-weight:700; color:#002868; text-decoration:none; }
           .ptab .box-link:hover { text-decoration:underline; }
           .ptab .ghost-flag { color:#c00; font-weight:700; font-size:11px; }
+          .ptab th.sel, .ptab td.sel { width:34px; padding-left:8px; padding-right:0; cursor:default; }
+          .ptab input[type=checkbox] { width:18px; height:18px; cursor:pointer; accent-color:#002868; }
+          .ptab tr.picked td { background:#fffbe6; }
         </style>
         <table class="ptab">
           <thead id="ptab-head"></thead>
@@ -207,7 +232,7 @@
             <a id="dl-manifest" class="btn btn-secondary" href="#" style="width:100%;display:block;text-align:center;box-sizing:border-box;">⬇ Download manifest (.xlsx)</a>
             <p style="margin:6px 0 0;font-size:12px;color:#666;">Internal copy — includes cost and wholesale. Do not send this one to a buyer.</p>
             <a id="dl-manifest-public" class="btn btn-ghost" href="#" style="width:100%;display:block;text-align:center;box-sizing:border-box;margin-top:8px;">⬇ Buyer copy (.xlsx)</a>
-            <p id="dl-manifest-public-note" style="margin:6px 0 0;font-size:12px;color:#666;">Title, brand, condition, qty, est. retail only. Same file the public site offers. Only works while the box is Live, Sold, or Ghost.</p>
+            <p id="dl-manifest-public-note" style="margin:6px 0 0;font-size:12px;color:#666;">Title, brand, condition, qty, est. retail only. Works in any status, draft included.</p>
           </div>
 
           <div class="card" style="margin-top:16px;">

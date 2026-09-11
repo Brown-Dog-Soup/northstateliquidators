@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+
+<!-- One page, many views: ?view=all|new|hot|mega_box|mini_pallet|full_pallet|individual|sold
+     Title / canonical / heading are set from NSL.VIEW_DEFS in the script at the bottom. -->
+<title>All Inventory — North State Liquidators</title>
+<meta name="description" content="Live boxes and pallets on the floor at North State Liquidators — Mega Boxes, mini pallets, full pallets and individual items. Amazon and big-box returns, overstock and shelf-pulls. Photos and manifests on every box." />
+<meta name="robots" content="index,follow" />
+<link rel="canonical" href="https://northstateliquidators.com/shop.html?view=all" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="North State Liquidators" />
+<meta property="og:title" content="Shop Inventory — North State Liquidators" />
+<meta property="og:description" content="Live boxes and pallets on the floor — photos and manifests on every one. Pickup in Wake Forest, Friday delivery to the Raleigh Flea Market, or we ship." />
+<meta property="og:url" content="https://northstateliquidators.com/shop.html" />
+<meta property="og:image" content="https://northstateliquidators.com/north_state_liquidators_logo.jpeg" />
+<meta name="theme-color" content="#002868" />
+<link rel="icon" type="image/png" href="/nsl-mark.png" />
+<link rel="apple-touch-icon" href="/nsl-mark.png" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Permanent+Marker&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+<style>
+  .shop-head { display: flex; justify-content: space-between; align-items: end; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  .shop-head .updated { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #777; letter-spacing: 0.08em; text-transform: uppercase; }
+  .shop-foot-line { margin-top: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #555; }
+  .shop-foot-line a.call { color: var(--nc-red); text-decoration: none; font-weight: 700; }
+  .box-grid .box-loading { grid-column: 1 / -1; color: #777; font-size: 14px; padding: 40px 0; text-align: center; }
+</style>
+</head>
+<body>
+
+<!-- HEADER (compact; matches index.html's nav) -->
+<header class="site-nav">
+  <div class="inner">
+    <a href="index.html" aria-label="North State Liquidators home"><img src="nsl-mark.png" alt="North State Liquidators"></a>
+    <nav id="site-links">
+      <a href="shop.html?view=all" data-view="all">Shop All</a>
+      <a href="shop.html?view=new" data-view="new">Just Dropped</a>
+      <a href="shop.html?view=hot" data-view="hot">Hot Deals</a>
+      <a href="shop.html?view=mega_box" data-view="mega_box">Mega Boxes</a>
+      <a href="shop.html?view=mini_pallet" data-view="mini_pallet">Mini Pallets</a>
+      <a href="shop.html?view=full_pallet" data-view="full_pallet">Full Pallets</a>
+      <a href="shop.html?view=individual" data-view="individual">Individual</a>
+      <a href="faq.html">FAQ</a>
+    </nav>
+    <div class="actions">
+      <a class="phone" href="tel:+19195260112">📞 (919) 526-0112</a>
+      <button type="button" id="join-open" class="join-btn" data-open-register>★ Join — get your member #</button>
+    </div>
+  </div>
+</header>
+
+<main class="site-main">
+  <div class="shop-head">
+    <div>
+      <div class="eyebrow" id="shop-eyebrow">Everything on the floor</div>
+      <h1 id="shop-title">All Inventory</h1>
+      <p class="subhead" id="shop-sub">Every live box and pallet — photos and manifests on each one.</p>
+    </div>
+    <div class="updated">↻ Updated continuously</div>
+  </div>
+
+  <div class="view-tabs" id="view-tabs">
+    <a class="view-tab" href="shop.html?view=all" data-view="all">All</a>
+    <a class="view-tab" href="shop.html?view=new" data-view="new">Just Dropped</a>
+    <a class="view-tab hot" href="shop.html?view=hot" data-view="hot">🔥 Hot Deals</a>
+    <a class="view-tab" href="shop.html?view=mega_box" data-view="mega_box">Mega Boxes</a>
+    <a class="view-tab" href="shop.html?view=mini_pallet" data-view="mini_pallet">Mini Pallets</a>
+    <a class="view-tab" href="shop.html?view=full_pallet" data-view="full_pallet">Full Pallets</a>
+    <a class="view-tab" href="shop.html?view=individual" data-view="individual">Individual</a>
+    <a class="view-tab" href="shop.html?view=sold" data-view="sold">Recently Sold</a>
+  </div>
+
+  <div class="box-grid" id="shop-grid"><p class="box-loading">Loading what's on the floor…</p></div>
+
+  <div class="shop-foot-line">
+    <span id="shop-count-line">Live inventory — updated continuously</span>
+    <a class="call" href="tel:+19195260112">CALL TO BUY → (919) 526-0112</a>
+  </div>
+</main>
+
+<!-- FOOTER (compact; matches index.html's footer) -->
+<footer class="site-foot" id="contact">
+  <div class="inner">
+    <div>
+      <h4>North State Liquidators</h4>
+      <div class="addr">
+        WAREHOUSE · WAKE FOREST, NC<br>
+        Address by appointment<br>
+        📞 <a href="tel:+19195260112">(919) 526-0112</a><br>
+        ✉ <a href="mailto:hello@northstateliquidators.com">hello@northstateliquidators.com</a>
+      </div>
+    </div>
+    <div class="links">
+      <a href="index.html">Home</a>
+      <a href="shop.html?view=all">Shop All</a>
+      <a href="shop.html?view=new">Just Dropped</a>
+      <a href="shop.html?view=hot">Hot Deals</a>
+      <a href="faq.html">FAQ</a>
+      <a href="faq.html#delivery">Pickup &amp; Delivery</a>
+    </div>
+  </div>
+  <div class="copyright">
+    <span>© 2026 NORTH STATE LIQUIDATORS · WAKE FOREST, NC</span>
+    <span>BUILT IN NC · <a href="https://staff.northstateliquidators.com" style="color:#888;text-decoration:none;border-bottom:1px dotted #555;">Staff</a></span>
+  </div>
+</footer>
+
+<script src="js/site.js"></script>
+<script>
+(async function () {
+  const raw = new URLSearchParams(location.search).get('view') || 'all';
+  const view = NSL.VIEW_DEFS[raw] ? raw : 'all';
+  const def = NSL.VIEW_DEFS[view];
+
+  // Heading, title, canonical, active tab/link
+  document.title = `${def.title} — North State Liquidators`;
+  const canon = document.querySelector('link[rel="canonical"]');
+  if (canon) canon.href = `https://northstateliquidators.com/shop.html?view=${view}`;
+  document.getElementById('shop-title').textContent = def.title;
+  document.getElementById('shop-eyebrow').textContent = def.eyebrow;
+  document.getElementById('shop-sub').textContent = def.sub;
+  document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('active', a.getAttribute('data-view') === view));
+
+  const grid = document.getElementById('shop-grid');
+  const countLine = document.getElementById('shop-count-line');
+
+  await NSL.initPage({ joinTrigger: '#join-open' });   // resolves once the Buy-button switch is known
+
+  try {
+    const rows = await NSL.fetchPublicPallets();
+    const shown = NSL.filterByView(rows, view);
+    NSL.renderBoxCards(shown, '#shop-grid', def.empty);
+    if (countLine) countLine.textContent = shown.length
+      ? `Showing ${shown.length} box${shown.length === 1 ? '' : 'es'} · updated continuously`
+      : 'Nothing to show right now';
+  } catch (e) {
+    grid.innerHTML = `<p class="box-empty">Couldn't load the floor right now — call (919) 526-0112 for what's available.</p>`;
+  }
+})();
+</script>
+</body>
+</html>

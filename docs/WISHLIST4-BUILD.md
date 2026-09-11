@@ -80,7 +80,7 @@ status table at merge time.
 | F10 | Raleigh pickup → Wake Forest | public-index | public-pages (`thanks.html`, modal footer) | done — `<title>`/meta keep Raleigh on purpose (§8.11) |
 | F11 | Flea-market Friday delivery + $10 / 20 mi | public-index | public-pages (modal footer, faq) | done — no delivery fee at checkout (§8.1) |
 | F12 | Owner avatars | public-index | — | done — figcaption corners clip inside the circle on narrow phones; cosmetic |
-| — | `db/wishlist4.sql` applied to prod (Jeff, before merge) | integrator | — | not done — Jeff applies to `sqldb-nsl-prod` and runs the §2.10 checks |
+| — | `db/wishlist4.sql` applied to prod | integrator | — | **done 2026-09-11** — applied to `sqldb-nsl-prod` via Invoke-Sqlcmd (Entra token); all objects present, views compute (box 90 = 97/97 units), sp_RegisterMember round-trip tested and test row removed; public rows unchanged (2), live box 123 backfilled outside the Just Dropped window |
 | — | Verify + PR | integrator | — | gap — merged 4 branches with no conflicts; `dotnet build` 0 errors; `node --check` clean; grep gate clean; seams cross-checked, no mismatches. PR not opened (no push from this session); no SWA preview smoke yet (§10.3) |
 
 Box size (`box_size`) is not a wishlist item but F7/F8/F9 are impossible

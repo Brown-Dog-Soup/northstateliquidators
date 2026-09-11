@@ -58,8 +58,9 @@ a { color: inherit; }
 }
 .site-nav .inner { max-width: 1280px; margin: 0 auto; padding: 10px 24px; display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
 .site-nav img { height: 56px; width: auto; display: block; }
-.site-nav nav { flex: 1; display: flex; gap: 18px; flex-wrap: wrap; }
-.site-nav nav a { text-decoration: none; font-weight: 600; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--nc-navy); white-space: nowrap; }
+.site-nav nav { flex: 1; display: flex; gap: 14px; flex-wrap: wrap; }
+.site-nav nav a { text-decoration: none; font-weight: 600; font-size: 12.5px; letter-spacing: 0.03em; text-transform: uppercase; color: var(--nc-navy); white-space: nowrap; }
+@media (max-width: 1240px) { .site-nav .phone { display: none; } }
 .site-nav nav a:hover, .site-nav nav a.active { color: var(--nc-red); }
 .site-nav .actions { display: flex; gap: 10px; align-items: center; }
 .site-nav .phone { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; color: var(--nc-red); text-decoration: none; white-space: nowrap; }

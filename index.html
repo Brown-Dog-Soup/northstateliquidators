@@ -58,7 +58,7 @@
   "priceRange": "$",
   "address": {
     "@type": "PostalAddress",
-    "addressLocality": "Raleigh",
+    "addressLocality": "Wake Forest",
     "addressRegion": "NC",
     "addressCountry": "US"
   },
@@ -124,6 +124,7 @@
   }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
   .topbar a.phone { color: var(--warehouse-yellow); font-weight: 700; text-decoration: none; }
+  .join-btn { background:var(--warehouse-yellow); color:var(--ink); border:0; font-family:'Anton',sans-serif; font-size:12px; letter-spacing:.06em; text-transform:uppercase; padding:5px 10px; cursor:pointer; }
 
   /* === NAV === */
   .nav {
@@ -222,6 +223,14 @@
     padding: 13px 24px; text-decoration: none; transition: background 0.15s, border-color 0.15s;
   }
   .btn-hero-ghost:hover { background: rgba(255,255,255,0.12); border-color: #fff; }
+  /* Hot Deals — same size as .btn-shop, red, with flickering flames */
+  .btn-hot { background: var(--nc-red); color: #fff; border-color: #7a0000; position: relative; }
+  .btn-hot:hover { background: var(--nc-red-dark); }
+  .btn-hot .flame { display:inline-block; font-size: 24px; transform-origin: 50% 90%; animation: flicker 0.9s ease-in-out infinite alternate; filter: drop-shadow(0 0 6px rgba(255,140,0,.85)); }
+  .btn-hot::before { content:'🔥'; position:absolute; top:-14px; left:10px; font-size:16px; opacity:.9; animation: flicker 1.3s ease-in-out infinite alternate-reverse; }
+  .btn-hot::after  { content:'🔥'; position:absolute; top:-12px; right:12px; font-size:14px; opacity:.85; animation: flicker 1.1s ease-in-out infinite alternate; }
+  @keyframes flicker { from { transform: scale(1) rotate(-4deg); } to { transform: scale(1.18) rotate(5deg); } }
+  @media (prefers-reduced-motion: reduce) { .btn-hot .flame, .btn-hot::before, .btn-hot::after { animation: none; } }
 
   .hero-art { position: relative; }
   .hero-art img { width: 100%; height: auto; display: block; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 18px 50px rgba(0,0,0,0.45); }
@@ -312,34 +321,14 @@
   .ledger .cond.shelf { background: #E8EEF8; color: var(--nc-navy); }
   .ledger .view { color: var(--nc-red); font-weight: 700; text-decoration: none; font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; }
   .ledger .view:hover { text-decoration: underline; }
-  /* Manifest modal */
-  .mf-overlay { position: fixed; inset: 0; background: rgba(14,17,22,0.6); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 1000; }
-  .mf-overlay[hidden] { display: none; }
-  .mf-box { background: #fff; width: 100%; max-width: 720px; max-height: 85vh; display: flex; flex-direction: column; border-radius: 4px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); overflow: hidden; position: relative; }
-  .mf-close { position: absolute; top: 8px; right: 14px; background: none; border: none; font-size: 30px; line-height: 1; color: #999; cursor: pointer; }
-  .mf-close:hover { color: var(--nc-red); }
-  .mf-head { padding: 22px 24px 14px; border-bottom: 3px solid var(--warehouse-yellow); }
-  .mf-head h3 { font-family: 'Anton', sans-serif; font-size: 24px; margin: 0 40px 4px 0; color: var(--nc-navy); text-transform: uppercase; }
-  .mf-sub { margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #777; }
-  .mf-body { padding: 6px 24px 14px; overflow-y: auto; }
-  .mf-loading, .mf-empty { color: #777; font-size: 14px; padding: 24px 0; text-align: center; }
-  .mf-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  .mf-table th { text-align: left; font-family: 'JetBrains Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #999; padding: 10px 8px; border-bottom: 1px solid #EDE4D0; }
-  .mf-table td { padding: 10px 8px; border-top: 1px solid #F0EAD9; vertical-align: middle; }
-  .mf-thumb { display: inline-block; width: 34px; height: 34px; border-radius: 3px; background: #EFE9D8 center/cover no-repeat; vertical-align: middle; margin-right: 10px; }
-  .mf-item { display: inline-block; vertical-align: middle; }
-  .mf-item small { display: block; color: #888; font-size: 12px; }
-  .mf-table .cond { display: inline-block; padding: 3px 8px; font-size: 11px; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.05em; text-transform: uppercase; background: #EFE9D8; border-radius: 2px; }
-  .mf-table .cond.new { background: #E6F4EA; color: #1B7E3A; }
-  .mf-table .cond.returns { background: #FDF0E0; color: #8A4A0B; }
-  .mf-table .cond.shelf { background: #E8EEF8; color: var(--nc-navy); }
-  .mf-foot { padding: 14px 24px; border-top: 1px solid #EDE4D0; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--paper); flex-wrap: wrap; }
-  .mf-foot .note { font-size: 13px; color: #555; }
+  /* Manifest modal + join modal + box cards: css/site.css (shared with shop.html / faq.html) */
+  /* Just Dropped "See all" link */
+  .see-all { color: var(--nc-navy); font-weight:700; text-decoration:none; border-bottom:2px solid var(--warehouse-yellow); }
   /* Recently sold (social proof) */
   .sold-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
   .sold-card { border: 1px solid var(--rule); background: #fff; }
   .sold-photo { position: relative; aspect-ratio: 4 / 3; background: #EFE9D8 center/cover no-repeat; display: flex; align-items: center; justify-content: center; }
-  .sold-stamp { font-family: 'Anton', sans-serif; font-size: 26px; letter-spacing: 0.06em; color: var(--nc-red); border: 4px solid var(--nc-red); padding: 2px 14px; transform: rotate(-12deg); background: rgba(255,255,255,0.72); }
+  .sold-stamp { font-family: 'Anton', sans-serif; font-size: 42px; letter-spacing: 0.06em; color: var(--nc-red); border: 6px solid var(--nc-red); padding: 4px 22px; transform: rotate(-12deg); background: rgba(255,255,255,0.72); }
   .sold-meta { padding: 12px 14px 16px; }
   .sold-meta h3 { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 15px; margin-bottom: 4px; }
   .sold-sub { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #777; }
@@ -390,14 +379,18 @@
   .owners .sig { font-family: 'Permanent Marker', cursive; font-size: 28px; color: var(--warehouse-yellow); margin-top: 16px; }
   .owner-photos { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   .owner-photos .p {
-    aspect-ratio: 3/4;
+    aspect-ratio: 1/1;
+    margin: 0;
+    border-radius: 50%;
+    overflow: hidden;
     background: #1a1c1f;
-    border: 1px solid #35383D;
+    border: 4px solid var(--warehouse-yellow);
     position: relative;
-    background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.02) 0, rgba(255,255,255,0.02) 2px, transparent 2px, transparent 12px);
   }
+  .owner-photos .p img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .owner-photos .p .tag {
-    position: absolute; bottom: 16px; left: 16px; right: 16px;
+    position: absolute; bottom: 10%; left: 12%; right: 12%;
+    text-align: center;
     background: rgba(0,0,0,0.75);
     border-left: 3px solid var(--warehouse-yellow);
     padding: 10px 12px;
@@ -437,19 +430,21 @@
     .hero-callouts .inner { gap: 14px 22px; }
   }
 </style>
+<link rel="stylesheet" href="css/site.css">
 </head>
 <body>
 
 <!-- TOP BAR -->
 <div class="topbar">
   <div class="inner">
+    <button type="button" id="join-open" class="join-btn">★ Join — get your member #</button>
     <span><span class="open-dot"></span>OPEN NOW</span>
     <span class="sep">|</span>
     <span>MON–FRI 9–6 · SAT 9–4 · CLOSED SUN</span>
     <span class="sep">|</span>
     <a class="phone" href="tel:+19195260112">📞 (919) 526-0112</a>
     <span class="sep">|</span>
-    <span>RALEIGH, NC · PICKUP OR SHIP</span>
+    <span>WAKE FOREST, NC · PICKUP · DELIVERY · WE SHIP</span>
   </div>
 </div>
 
@@ -458,15 +453,16 @@
   <div class="inner">
     <img src="nsl-mark.png" alt="North State Liquidators">
     <nav>
-      <a href="#inventory">Shop Inventory</a>
-      <a href="#shop">Mega Boxes</a>
-      <a href="#shop">Pallets</a>
+      <a href="shop.html?view=all">Shop Inventory</a>
+      <a href="shop.html?view=mega_box">Mega Boxes</a>
+      <a href="shop.html?view=full_pallet">Pallets</a>
       <a href="#how">How It Works</a>
       <a href="#owners">About</a>
+      <a href="faq.html">FAQ</a>
       <a href="#contact">Contact</a>
     </nav>
     <div class="actions">
-      <a class="btn btn-primary" href="#inventory">Shop Inventory</a>
+      <a class="btn btn-primary" href="shop.html?view=all">Shop Inventory</a>
     </div>
   </div>
 </header>
@@ -484,7 +480,7 @@
     <span class="sep">·</span>
     <span>FULL PALLETS — MAXIMUM BUYING POWER</span>
     <span class="sep">·</span>
-    <span>RALEIGH PICKUP · LOCAL DELIVERY · WE SHIP</span>
+    <span>WAKE FOREST PICKUP · FREE FRIDAY DELIVERY TO THE RALEIGH FLEA MARKET · $10 DELIVERY WITHIN 20 MILES · WE SHIP</span>
     <span class="sep">·</span>
     <span class="live">FRESH MEGA BOXES ON THE FLOOR</span>
     <span class="sep">·</span>
@@ -496,7 +492,7 @@
     <span class="sep">·</span>
     <span>FULL PALLETS — MAXIMUM BUYING POWER</span>
     <span class="sep">·</span>
-    <span>RALEIGH PICKUP · LOCAL DELIVERY · WE SHIP</span>
+    <span>WAKE FOREST PICKUP · FREE FRIDAY DELIVERY TO THE RALEIGH FLEA MARKET · $10 DELIVERY WITHIN 20 MILES · WE SHIP</span>
   </div>
 </div>
 
@@ -523,7 +519,8 @@
       <h1>Big Inventory.<br><span class="hl">Your Size.</span><br><span class="ev">Your Price Point.</span></h1>
       <p>From individual deals to Mega Boxes and full pallets, buy inventory your way.</p>
       <div class="hero-cta">
-        <a class="btn-shop" href="#inventory">🛒 Shop Inventory</a>
+        <a class="btn-shop" href="shop.html?view=all">🛒 Shop Inventory</a>
+        <a class="btn-shop btn-hot" id="hero-hot-deals" href="shop.html?view=hot"><span class="flame" aria-hidden="true">🔥</span> Hot Deals</a>
         <a class="btn-hero-ghost" href="#how">How It Works</a>
       </div>
     </div>
@@ -594,7 +591,7 @@
       <div class="shop-info">
         <h3>Mega Boxes</h3>
         <p>50–100 mixed items. Big inventory. No pallet required.</p>
-        <a class="btn-tile" href="#inventory">Shop Mega Boxes</a>
+        <a class="btn-tile" href="shop.html?view=mega_box">Shop Mega Boxes</a>
       </div>
     </div>
 
@@ -621,7 +618,7 @@
       <div class="shop-info">
         <h3>Mini Pallets</h3>
         <p>Smaller inventory bundles built for side hustlers and resellers.</p>
-        <a class="btn-tile" href="#inventory">Shop Mini Pallets</a>
+        <a class="btn-tile" href="shop.html?view=mini_pallet">Shop Mini Pallets</a>
       </div>
     </div>
 
@@ -653,7 +650,7 @@
       <div class="shop-info">
         <h3>Full Pallets</h3>
         <p>High-volume inventory and maximum buying power.</p>
-        <a class="btn-tile" href="#inventory">Shop Full Pallets</a>
+        <a class="btn-tile" href="shop.html?view=full_pallet">Shop Full Pallets</a>
       </div>
     </div>
 
@@ -679,7 +676,7 @@
       <div class="shop-info">
         <h3>Individual Items</h3>
         <p>One item. One great deal. No bulk purchase required.</p>
-        <a class="btn-tile" href="#individual">Shop Individual Items</a>
+        <a class="btn-tile" href="shop.html?view=individual">Shop Individual Items</a>
       </div>
     </div>
 
@@ -719,97 +716,28 @@
       </div>
       <div class="step">
         <div class="num">04</div>
-        <h3>Pick Up Or Ship</h3>
-        <p>Choose available pickup in Raleigh, local delivery, or shipping options.</p>
+        <h3>Pick Up Or We Deliver</h3>
+        <p>Pickup in Wake Forest. Free delivery to the Raleigh Flea Market every Friday. $10 delivery within 20 miles of our warehouse. We ship too.</p>
       </div>
     </div>
   </div>
 </section>
 
-<!-- JUST DROPPED — live inventory (pulls live boxes/pallets from the staff app) -->
+<!-- JUST DROPPED — boxes/pallets that went live in the last 48 h (rendered by js/site.js, max 8) -->
 <section class="block" id="inventory">
   <div class="hdr-row">
     <div>
       <div class="eyebrow">Live · New arrivals</div>
       <h2>Just Dropped.</h2>
-      <p class="subhead">The newest inventory on the floor — Mega Boxes, mini pallets, and full pallets. First come, first served. Photos and manifests on each one. Raleigh pickup or we'll ship it.</p>
+      <p class="subhead">The newest boxes and pallets on the floor — live within the last 48 hours. Photos and manifests on each one. Pickup in Wake Forest or we'll deliver.</p>
     </div>
     <div class="updated">↻ UPDATED CONTINUOUSLY</div>
   </div>
 
-  <div class="ledger">
-    <table>
-      <thead>
-        <tr>
-          <th>Lot</th>
-          <th>Category</th>
-          <th>Units</th>
-          <th>Est. MSRP</th>
-          <th>Ask</th>
-          <th>Condition</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody id="pallet-rows">
-        <tr>
-          <td><span class="thumb"></span><span class="lot">#2041</span></td>
-          <td class="cat">Home Goods — Mixed<small>Kitchen, bath, small appliance</small></td>
-          <td>186</td>
-          <td class="msrp">$4,920</td>
-          <td class="ask">$1,180</td>
-          <td><span class="cond returns">Customer Return</span></td>
-          <td><a class="view" href="#">View Manifest →</a></td>
-        </tr>
-        <tr>
-          <td><span class="thumb"></span><span class="lot">#2042</span></td>
-          <td class="cat">Electronics<small>Headphones, chargers, smart home</small></td>
-          <td>312</td>
-          <td class="msrp">$8,740</td>
-          <td class="ask">$2,100</td>
-          <td><span class="cond shelf">Shelf Pull</span></td>
-          <td><a class="view" href="#">View Manifest →</a></td>
-        </tr>
-        <tr>
-          <td><span class="thumb"></span><span class="lot">#2043</span></td>
-          <td class="cat">Apparel — Women's<small>Seasonal mix, mostly S/M</small></td>
-          <td>420</td>
-          <td class="msrp">$6,300</td>
-          <td class="ask">$1,450</td>
-          <td><span class="cond new">New — In Box</span></td>
-          <td><a class="view" href="#">View Manifest →</a></td>
-        </tr>
-        <tr>
-          <td><span class="thumb"></span><span class="lot">#2044</span></td>
-          <td class="cat">Tools & Hardware<small>Cordless, hand tools, fasteners</small></td>
-          <td>94</td>
-          <td class="msrp">$3,980</td>
-          <td class="ask">$980</td>
-          <td><span class="cond returns">Customer Return</span></td>
-          <td><a class="view" href="#">View Manifest →</a></td>
-        </tr>
-        <tr>
-          <td><span class="thumb"></span><span class="lot">#2045</span></td>
-          <td class="cat">Seasonal — Spring/Summer<small>Outdoor, patio, garden</small></td>
-          <td>148</td>
-          <td class="msrp">$5,120</td>
-          <td class="ask">$1,240</td>
-          <td><span class="cond shelf">Shelf Pull</span></td>
-          <td><a class="view" href="#">View Manifest →</a></td>
-        </tr>
-        <tr>
-          <td><span class="thumb"></span><span class="lot">#2046</span></td>
-          <td class="cat">General Merchandise<small>Untested / assorted</small></td>
-          <td>610</td>
-          <td class="msrp">$9,800</td>
-          <td class="ask">$1,900</td>
-          <td><span class="cond returns">Customer Return</span></td>
-          <td><a class="view" href="#">View Manifest →</a></td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-  <div style="margin-top:16px; display:flex; justify-content:space-between; align-items:center; font-family: 'JetBrains Mono', monospace; font-size:12px; color:#555;">
+  <div class="box-grid" id="just-dropped-grid"></div>
+  <div style="margin-top:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; font-family:'JetBrains Mono',monospace; font-size:12px; color:#555;">
     <span id="pallet-count-line">Live inventory — updated continuously</span>
+    <a class="see-all" href="shop.html?view=new">See all just dropped →</a>
     <a href="tel:+19195260112" style="color: var(--nc-red); text-decoration:none; font-weight:700;">CALL TO BUY → (919) 526-0112</a>
   </div>
 </section>
@@ -852,14 +780,14 @@
 <section class="owners" id="owners">
   <div class="inner">
     <div class="owner-photos">
-      <div class="p"><div class="tag"><strong>NORM TURNER</strong>Co-owner · Does the sorting</div></div>
-      <div class="p"><div class="tag"><strong>ROB TECARR</strong>Co-owner · Talks to the trucks</div></div>
+      <figure class="p"><img src="avatar-norm.jpeg" alt="Norm Turner, co-owner" loading="lazy"><figcaption class="tag"><strong>NORM TURNER</strong>Co-owner · Does the sorting</figcaption></figure>
+      <figure class="p"><img src="avatar-rob.jpeg"  alt="Rob TeCarr, co-owner"  loading="lazy"><figcaption class="tag"><strong>ROB TECARR</strong>Co-owner · Talks to the trucks</figcaption></figure>
     </div>
     <div>
-      <div class="eyebrow" style="color: var(--warehouse-yellow);">Raleigh, NC · Family-owned</div>
+      <div class="eyebrow" style="color: var(--warehouse-yellow);">Wake Forest, NC · Family-owned</div>
       <h2>We sort. We sell.<br><span class="hl">We answer the phone.</span></h2>
       <p>Most liquidators hide behind a portal. We don't. We're Norm and Rob. We drive the truck, unload the pallets, and take your call. Whether you want a single item, a Mega Box, or a full pallet — we'd rather have you come see the warehouse than click through a stock-photo website.</p>
-      <p>We buy direct from Amazon and big-box return centers, haul it to Raleigh, and pass the savings. No middle layer. No mystery.</p>
+      <p>We buy direct from Amazon and big-box return centers, haul it to Wake Forest, and pass the savings. No middle layer. No mystery.</p>
       <div class="sig">— Norm & Rob</div>
       <div style="margin-top: 24px;">
         <a class="btn btn-primary" href="tel:+19195260112">Call Us — (919) 526-0112</a>
@@ -873,9 +801,9 @@
   <div class="inner">
     <div>
       <h4>North State Liquidators</h4>
-      <p style="color:#C9CFE0;">Raleigh's direct source for Amazon and big-box liquidation. Buy inventory your way — individual items, Mega Boxes, mini pallets, and full pallets.</p>
+      <p style="color:#C9CFE0;">The Triangle's direct source for Amazon and big-box liquidation. Buy inventory your way — individual items, Mega Boxes, mini pallets, and full pallets.</p>
       <div class="addr" style="margin-top:16px;">
-        WAREHOUSE · RALEIGH, NC<br>
+        WAREHOUSE · WAKE FOREST, NC<br>
         Address by appointment<br>
         📞 <a href="tel:+19195260112" style="color:#C9CFE0;">(919) 526-0112</a><br>
         ✉ <a href="mailto:hello@northstateliquidators.com" style="color:#C9CFE0;">hello@northstateliquidators.com</a>
@@ -883,17 +811,19 @@
     </div>
     <div>
       <h4>Shop Inventory</h4>
-      <a href="#mega">Mega Boxes</a>
-      <a href="#shop">Mini Pallets</a>
-      <a href="#shop">Full Pallets</a>
+      <a href="shop.html?view=mega_box">Mega Boxes</a>
+      <a href="shop.html?view=mini_pallet">Mini Pallets</a>
+      <a href="shop.html?view=full_pallet">Full Pallets</a>
       <a href="#individual">Individual Items</a>
-      <a href="#inventory">Just Dropped</a>
+      <a href="shop.html?view=new">Just Dropped</a>
+      <a href="shop.html?view=hot">Hot Deals</a>
     </div>
     <div>
       <h4>How It Works</h4>
       <a href="#how">The Buying Process</a>
       <a href="#inventory">Current Inventory</a>
-      <a href="#contact">Pickup &amp; Shipping</a>
+      <a href="faq.html">FAQ</a>
+      <a href="faq.html#delivery">Pickup &amp; Shipping</a>
       <a href="#contact">Warehouse Hours</a>
     </div>
     <div>
@@ -904,202 +834,19 @@
     </div>
   </div>
   <div class="copyright">
-    <span>© 2026 NORTH STATE LIQUIDATORS · RALEIGH, NC</span>
+    <span>© 2026 NORTH STATE LIQUIDATORS · WAKE FOREST, NC</span>
     <span>BUILT IN NC · <a href="https://staff.northstateliquidators.com" style="color:#888;text-decoration:none;border-bottom:1px dotted #555;">Staff</a></span>
   </div>
 </footer>
 
-<!-- Live pallet ledger: pull pallets marked "Live" in the staff app and render
-     them into the "Just Dropped" table. Falls back silently to the static demo
-     rows above if the API is unreachable or nothing is published yet, so the
-     page is never empty. Ghost/sold pallets are intentionally not shown here
-     (this is the "just dropped" / for-sale list). -->
+<!-- Shared public runtime (js/site.js): box cards, Just Dropped / Recently Sold
+     renderers, manifest modal, join-for-a-member-number modal, Square checkout.
+     Provides window.NSL, window.nslCheckoutEnabled, window.nslBuyBox, window.showManifest. -->
+<script src="js/site.js"></script>
 <script>
-(async function loadLivePallets() {
-  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const money = n => (n === null || n === undefined || n === '') ? '—'
-      : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
-  // Online checkout: Buy buttons render only when the backend says Square
-  // checkout is enabled (SQUARE_CHECKOUT_ENABLED app setting — the kill switch).
-  window.nslCheckoutEnabled = false;
-  try {
-    const cs = await fetch('/api/public/checkout-status', { credentials: 'omit' }).then(x => x.json());
-    window.nslCheckoutEnabled = !!cs.enabled;
-  } catch { /* stays off */ }
-  window.nslBuyBox = async function (id, el) {
-    const prev = el.textContent;
-    el.textContent = 'One sec…';
-    try {
-      const r = await fetch(`/api/public/checkout/${encodeURIComponent(id)}`, { method: 'POST', credentials: 'omit' });
-      const j = await r.json();
-      if (!r.ok) { alert(j.error || 'This box is no longer available.'); location.reload(); return; }
-      window.location.href = j.url;   // Square-hosted checkout
-    } catch {
-      el.textContent = prev;
-      alert("Couldn't start checkout — call us at (919) 526-0112 and we'll take care of you.");
-    }
-  };
-
-  try {
-    const r = await fetch('/api/public/pallets', { credentials: 'omit' });
-    if (!r.ok) return;
-    const all = await r.json() || [];
-
-    // ── JUST DROPPED — live pallets for sale ──
-    const live = all.filter(p => p.publish_state === 'live');
-    if (live.length > 0) {
-      const tbody = document.getElementById('pallet-rows');
-      tbody.innerHTML = live.map(p => {
-        const onSale = p.is_on_sale && p.list_price != null;
-        const ask = onSale
-          ? `<span class="msrp">${money(p.list_price)}</span> <span style="display:block;">${money(p.sale_price)}</span>`
-          : money(p.ask_price);
-        const thumb = p.photo_url
-          ? `<span class="thumb" style="background-image:url('${esc(p.photo_url)}');background-size:cover;background-position:center;"></span>`
-          : `<span class="thumb"></span>`;
-        const blurb = p.public_description
-          ? `<small style="display:block;margin-top:3px;color:#777;font-style:italic;font-weight:400;max-width:240px;white-space:normal;">${esc(p.public_description.length > 90 ? p.public_description.slice(0, 90) + '…' : p.public_description)}</small>`
-          : '';
-        return `
-          <tr>
-            <td>${thumb}<span class="lot">BOX #${esc(p.pallet_number)}${blurb}</span></td>
-            <td class="cat">${esc(p.category || p.display_name || 'Mixed Goods')}</td>
-            <td>${p.unit_count || 0}</td>
-            <td class="msrp">${money(p.total_msrp)}</td>
-            <td class="ask">${ask}</td>
-            <td><span class="cond shelf">${esc(p.category || 'Mixed')}</span></td>
-            <td><a class="view" href="#" data-id="${esc(p.manifest_id)}" data-name="${esc(p.display_name || ('Box #' + p.pallet_number))}">View Manifest →</a>${window.nslCheckoutEnabled ? `<a class="view" href="#" data-buy="${esc(p.manifest_id)}" style="display:block;margin-top:6px;font-weight:700;">Buy now →</a>` : ''}</td>
-          </tr>`;
-      }).join('');
-
-      tbody.querySelectorAll('a[data-buy]').forEach(a => a.addEventListener('click', e => {
-        e.preventDefault();
-        window.nslBuyBox(a.getAttribute('data-buy'), a);
-      }));
-
-      tbody.querySelectorAll('a.view[data-id]').forEach(a => a.addEventListener('click', e => {
-        e.preventDefault();
-        window.showManifest(a.getAttribute('data-id'), a.getAttribute('data-name'));
-      }));
-
-      const countLine = document.getElementById('pallet-count-line');
-      if (countLine) countLine.textContent =
-        `Showing ${live.length} live item${live.length === 1 ? '' : 's'} · updated continuously`;
-    }
-
-    // ── RECENTLY SOLD — ghost (social proof) + real sold pallets, shown as SOLD ──
-    const sold = all.filter(p => p.publish_state === 'ghost' || p.publish_state === 'sold');
-    const soldSection = document.getElementById('sold-section');
-    const soldGrid = document.getElementById('sold-grid');
-    if (sold.length > 0 && soldGrid) {
-      soldGrid.innerHTML = sold.slice(0, 8).map(p => {
-        const photo = p.photo_url
-          ? `style="background-image:url('${esc(p.photo_url)}');background-size:cover;background-position:center;"`
-          : '';
-        return `
-          <div class="sold-card">
-            <div class="sold-photo" ${photo}><span class="sold-stamp">SOLD</span></div>
-            <div class="sold-meta">
-              <h3>${esc(p.display_name || ('Box #' + p.pallet_number))}</h3>
-              <div class="sold-sub">${p.unit_count || 0} items · ${money(p.total_msrp)} retail</div>
-            </div>
-          </div>`;
-      }).join('');
-      if (soldSection) soldSection.hidden = false;
-    }
-  } catch (e) { /* offline / API down — leave the static demo rows in place */ }
-})();
-</script>
-
-<!-- Manifest modal: clicking "View Manifest" on a live pallet fetches its
-     customer-safe item list from /api/public/pallets/{id}/items (no cost or
-     wholesale exposed) and shows it here. -->
-<div id="manifest-modal" class="mf-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="mf-title">
-  <div class="mf-box">
-    <button class="mf-close" type="button" aria-label="Close">&times;</button>
-    <div class="mf-head">
-      <h3 id="mf-title">Manifest</h3>
-      <p class="mf-sub" id="mf-sub"></p>
-    </div>
-    <div class="mf-body" id="mf-body"></div>
-    <div class="mf-foot">
-      <span class="note">Raleigh pickup or Southeast freight. Call to claim this lot.</span>
-      <a class="btn btn-primary" href="tel:+19195260112">Call (919) 526-0112</a>
-    </div>
-  </div>
-</div>
-<script>
-(function () {
-  const overlay = document.getElementById('manifest-modal');
-  const titleEl = document.getElementById('mf-title');
-  const subEl   = document.getElementById('mf-sub');
-  const bodyEl  = document.getElementById('mf-body');
-  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const money = n => (n === null || n === undefined || n === '') ? '—'
-      : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
-  const condClass = c => {
-    const k = String(c || '').toLowerCase();
-    if (k.includes('new')) return 'new';
-    if (k.includes('return')) return 'returns';
-    if (k.includes('shelf') || k.includes('open')) return 'shelf';
-    return '';
-  };
-  function close() { overlay.hidden = true; document.body.style.overflow = ''; }
-  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-  overlay.querySelector('.mf-close').addEventListener('click', close);
-  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !overlay.hidden) close(); });
-
-  window.showManifest = async function (id, name) {
-    titleEl.textContent = name || 'Manifest';
-    subEl.textContent = '';
-    bodyEl.innerHTML = '<p class="mf-loading">Loading manifest…</p>';
-    overlay.hidden = false;
-    document.body.style.overflow = 'hidden';
-    try {
-      const r = await fetch(`/api/public/pallets/${encodeURIComponent(id)}/items`, { credentials: 'omit' });
-      if (!r.ok) throw new Error('http ' + r.status);
-      const data = await r.json();
-      const p = data.pallet || {};
-      const items = data.items || [];
-      const units = p.unit_count || items.length;
-      subEl.textContent = `${units} item${units === 1 ? '' : 's'} · Est. retail ${money(p.total_msrp)} · Ask ${money(p.ask_price)}`;
-      const blurb = (p.public_description
-        ? `<p style="font-style:italic;color:#555;margin:0 0 14px;line-height:1.5;">${esc(p.public_description)}</p>`
-        : '') + (window.nslCheckoutEnabled && p.publish_state === 'live'
-        ? `<p style="margin:0 0 16px;"><a href="#" data-buy-modal="${esc(p.manifest_id)}" style="display:inline-block;background:#002868;color:#fff;font-weight:700;padding:12px 26px;text-decoration:none;">Buy this box — ${money(p.ask_price)}</a></p>`
-        : '');
-      const dlLink = items.length
-        ? `<p style="margin:0 0 14px;font-size:14px;"><a class="view" href="/api/public/pallets/${encodeURIComponent(id)}/manifest">⬇ Download this manifest (Excel)</a></p>`
-        : '';
-      const bindBuy = () => bodyEl.querySelector('a[data-buy-modal]')?.addEventListener('click', e => {
-        e.preventDefault();
-        window.nslBuyBox(e.currentTarget.getAttribute('data-buy-modal'), e.currentTarget);
-      });
-      if (items.length === 0) {
-        bodyEl.innerHTML = blurb + '<p class="mf-empty">No itemized manifest available for this lot yet — give us a call for details.</p>';
-        bindBuy();
-        return;
-      }
-      bodyEl.innerHTML = blurb + dlLink + `
-        <table class="mf-table">
-          <thead><tr><th>Item</th><th>Condition</th><th>Qty</th><th>Est. Retail</th><th></th></tr></thead>
-          <tbody>
-            ${items.map(it => `
-              <tr>
-                <td>${it.photo_blob_url ? `<span class="mf-thumb" style="background-image:url('${esc(it.photo_blob_url)}')"></span>` : ''}<span class="mf-item"><strong>${esc(it.title || 'Item')}</strong>${it.brand ? `<small>${esc(it.brand)}</small>` : ''}</span></td>
-                <td><span class="cond ${condClass(it.condition)}">${esc(it.condition || '—')}</span></td>
-                <td>${it.qty || 1}</td>
-                <td>${money(it.est_msrp)}</td>
-                <td>${it.title ? `<a class="view" style="white-space:nowrap;font-size:12px;" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent([it.brand, it.title].filter(Boolean).join(' '))}">Price&nbsp;check&nbsp;→</a>` : ''}</td>
-              </tr>`).join('')}
-          </tbody>
-        </table>`;
-      bindBuy();
-    } catch (e) {
-      bodyEl.innerHTML = '<p class="mf-empty">Couldn\'t load the manifest right now — please call (919) 526-0112.</p>';
-    }
-  };
-})();
+  NSL.initPage({ joinTrigger: '#join-open' });
+  NSL.renderJustDropped({ mount: '#just-dropped-grid', limit: 8, countLine: '#pallet-count-line' });
+  NSL.renderRecentlySold({ mount: '#sold-grid', section: '#sold-section', limit: 8 });
 </script>
 
 </body>

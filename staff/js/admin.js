@@ -1,4 +1,4 @@
-import { apiClient, toast, fmtMoney, NSL_CATEGORIES } from './api.js';
+import { apiClient, toast, fmtMoney, NSL_CATEGORIES, NSL_BOX_SIZES } from './api.js';
 
 const $ = sel => document.querySelector(sel);
 const meEl = $('#me');
@@ -10,11 +10,26 @@ let current = null;
 let currentItems = [];
 let showArchived = false;
 let selectedItemIds = new Set();   // bulk-delete selection state for the open pallet
+let historyLoadedFor = null;       // manifest_id whose History panel has been fetched
 let selectedBoxIds = new Set();    // table-view selection feeding the multi-box manifest export
 
 // Matches MaxBatchBoxes in ExportFunction.cs. Also keeps the ?ids= query string
 // well under the ~8KB a server will accept: 100 GUIDs is about 3.7KB.
 const MAX_BATCH_BOXES = 100;
+
+// 'mega_box' → 'Mega Box'; unknown/empty → ''
+const sizeLabel = v => NSL_BOX_SIZES.find(s => s.value === v)?.label || '';
+const sizeOptions = (selected = '') =>
+  `<option value="">—</option>` +
+  NSL_BOX_SIZES.map(s => `<option value="${s.value}"${s.value === selected ? ' selected' : ''}>${s.label}</option>`).join('');
+
+// Status pill: a "Sold → inventory" original (fake sale, clone carries the stock)
+// gets its own pill instead of the plain sold one.
+function statusPill(p) {
+  if (p.sold_to_inventory_at) return `<span class="pill sold-inv">sold → inventory</span>`;
+  const state = p.publish_state || 'draft';
+  return `<span class="pill ${state}">${state}</span>`;
+}
 
 init();
 async function init() {
@@ -81,12 +96,13 @@ function renderCards() {
           ${p.unit_count || 0} items<br>
           MSRP: <b>${fmtMoney(p.total_msrp)}</b>${priceLine ? ` · ask: ${priceLine}` : ''}<br>
           Cost: <b>${fmtMoney(p.total_cost ?? p.total_cost_units)}</b><br>
-          <span style="color:${(p.items_with_cost ?? 0) < (p.item_count ?? 0) ? '#c60' : '#999'};">${p.items_with_cost ?? 0}/${p.item_count ?? 0} items have costs</span>
+          <span style="color:${(p.units_with_cost ?? 0) < (p.unit_count ?? 0) ? '#c60' : '#999'};">${p.units_with_cost ?? 0}/${p.unit_count ?? 0} units have costs</span>
           ${ghost ? `<br><span style="color:#c00;font-weight:700;">FICTITIOUS — display only, not real stock</span>` : ''}
           ${p.category ? `<br><span style="color:#0a5;">${escape(p.category)}</span>` : ''}
         </div>
-        <span class="pill ${state}">${state}</span>
+        ${statusPill(p)}
         <span class="pill ${p.sell_mode || 'undecided'}" style="margin-left:6px;">${p.sell_mode || 'undecided'}</span>
+        ${p.box_size ? `<span class="pill size" style="margin-left:6px;">${sizeLabel(p.box_size) || escape(p.box_size)}</span>` : ''}
       </div>
     </a>
   `;}).join('') || '<p style="color:#666;">No pallets yet — create one above.</p>';
@@ -99,9 +115,11 @@ const TABLE_COLS = [
   { key: 'unit_count',      label: 'Items' },
   { key: 'total_msrp',      label: 'MSRP' },
   { key: '_cost',           label: 'Cost' },
-  { key: 'items_with_cost', label: 'Have costs' },
+  { key: 'units_with_cost', label: 'Have costs' },
   { key: 'list_price',      label: 'Box price' },
   { key: 'sale_price',      label: 'Sale price' },
+  { key: 'box_size',        label: 'Size' },
+  { key: 'weight_lbs',      label: 'Lb' },
   { key: 'category',        label: 'Category' },
 ];
 
@@ -135,20 +153,22 @@ function renderTable() {
   body.innerHTML = rows.map(p => {
     const ghost = (p.publish_state === 'ghost') || !!p.is_ghost;
     const cost = p.total_cost ?? p.total_cost_units;
-    const partial = (p.items_with_cost ?? 0) < (p.item_count ?? 0);
+    const partial = (p.units_with_cost ?? 0) < (p.unit_count ?? 0);
     const picked = selectedBoxIds.has(p.manifest_id);
     return `
     <tr class="${p.archived_at ? 'archived' : ''}${picked ? ' picked' : ''}">
       <td class="sel"><input type="checkbox" class="box-select" data-id="${escape(p.manifest_id)}"${picked ? ' checked' : ''} title="Include this box in the manifest export"></td>
       <td><a class="box-link" href="#/pallet/${p.manifest_id}">#${p.pallet_number ?? '—'}</a></td>
       <td><input type="text" data-id="${p.manifest_id}" data-f="displayName" value="${escape(p.display_name || '')}"></td>
-      <td><span class="pill ${p.publish_state || 'draft'}">${p.publish_state || 'draft'}</span>${ghost ? ' <span class="ghost-flag">FICTITIOUS</span>' : ''}</td>
+      <td>${statusPill(p)}${ghost ? ' <span class="ghost-flag">FICTITIOUS</span>' : ''}</td>
       <td>${p.unit_count || 0}</td>
       <td>${fmtMoney(p.total_msrp)}</td>
       <td>${fmtMoney(cost)}</td>
-      <td style="color:${partial ? '#c60' : '#999'};">${p.items_with_cost ?? 0}/${p.item_count ?? 0}</td>
+      <td style="color:${partial ? '#c60' : '#999'};">${p.units_with_cost ?? 0}/${p.unit_count ?? 0}</td>
       <td><input type="number" step="0.01" min="0" data-id="${p.manifest_id}" data-f="listPrice" value="${p.list_price ?? ''}" placeholder="auto"></td>
       <td><input type="number" step="0.01" min="0" data-id="${p.manifest_id}" data-f="salePrice" value="${p.sale_price ?? ''}" placeholder="—"></td>
+      <td><select data-id="${p.manifest_id}" data-f="boxSize">${sizeOptions(p.box_size || '')}</select></td>
+      <td><input type="number" step="0.1" min="0" data-id="${p.manifest_id}" data-f="weightLbs" value="${p.weight_lbs ?? ''}" placeholder="—" style="width:70px;"></td>
       <td>${escape(p.category || '—')}</td>
     </tr>`;
   }).join('') || `<tr><td colspan="${TABLE_COLS.length + 1}" style="color:#666;">No pallets yet.</td></tr>`;
@@ -157,10 +177,10 @@ function renderTable() {
   head.querySelectorAll('th[data-key]').forEach(th => th.addEventListener('click', () => {
     const key = th.dataset.key;
     if (sortKey === key) sortDir = -sortDir;
-    else { sortKey = key; sortDir = key === 'display_name' || key === 'category' || key === 'publish_state' ? 1 : -1; }
+    else { sortKey = key; sortDir = ['display_name', 'category', 'publish_state', 'box_size'].includes(key) ? 1 : -1; }
     renderTable();      // selection survives: it lives in selectedBoxIds, not the DOM
   }));
-  body.querySelectorAll('input[data-f]').forEach(inp => inp.addEventListener('change', onTableEdit));
+  body.querySelectorAll('input[data-f], select[data-f]').forEach(inp => inp.addEventListener('change', onTableEdit));
 
   body.querySelectorAll('.box-select').forEach(cb => cb.addEventListener('change', e => {
     const id = e.currentTarget.dataset.id;
@@ -231,7 +251,8 @@ $('#box-select-clear')?.addEventListener('click', () => {
 // Autosave on click-away: 'change' fires when an input loses focus with a new
 // value. Name saves alone; a price edit sends BOTH price keys from the row so
 // the untouched one isn't cleared (the PATCH clears any price key it receives
-// as null). On failure, re-render from the last server-known values.
+// as null). Size and weight save alone. On failure, re-render from the last
+// server-known values.
 async function onTableEdit(e) {
   const inp = e.currentTarget;
   const id = inp.dataset.id;
@@ -244,6 +265,17 @@ async function onTableEdit(e) {
       if (name === row.display_name) return;
       await apiClient.patchPallet(id, { displayName: name });
       row.display_name = name;
+    } else if (inp.dataset.f === 'boxSize') {
+      const size = inp.value || '';
+      if (size === (row.box_size || '')) return;
+      await apiClient.setBoxSize(id, size);          // '' clears
+      row.box_size = size || null;
+    } else if (inp.dataset.f === 'weightLbs') {
+      const w = parseFloat(inp.value);
+      const weight = Number.isFinite(w) && w > 0 ? w : null;
+      if (weight === (row.weight_lbs ?? null)) return;
+      await apiClient.setWeight(id, weight);        // null clears
+      row.weight_lbs = weight;
     } else {
       const tr = inp.closest('tr');
       const val = sel => { const v = parseFloat(tr.querySelector(sel)?.value); return Number.isFinite(v) && v > 0 ? v : null; };
@@ -292,6 +324,12 @@ $('#new-pallet').addEventListener('click', async () => {
     NSL_CATEGORIES.map(c => `<option value="${c}">${c}</option>`).join('');
 })();
 
+// Box size dropdown — same blank "—" lead so an unsized box stays unsized on save.
+(function populateBoxSizeDropdown() {
+  const sel = $('#box-size'); if (!sel) return;
+  sel.innerHTML = sizeOptions('');
+})();
+
 // ---- detail view -------------------------------------------------------
 async function showDetail(id) {
   $('#view-list').hidden = true;
@@ -310,7 +348,10 @@ async function showDetail(id) {
   $('#notes').value = current.notes || '';
   $('#pubdesc').value = current.public_description || '';
   $('#cat').value = current.category || '';
+  $('#box-size').value = current.box_size || '';
+  $('#weight-lbs').value = current.weight_lbs ?? '';
   $('#cur-mode').textContent = (current.sell_mode || 'undecided').toUpperCase();
+  prefillPubDesc();
 
   // BOX # (#2) — the number to write on the physical box.
   const boxNo = $('#box-no');
@@ -367,17 +408,34 @@ async function showDetail(id) {
   $('#pallet-photo').style.backgroundImage = photo ? `url('${photo}')` : '';
 
   const isGhost = (current.publish_state === 'ghost') || !!current.is_ghost;
+
+  // Sold → inventory only makes sense on a real Live/Draft box.
+  const stiBtn = $('#sold-to-inventory');
+  if (stiBtn) {
+    const blocked = current.publish_state === 'sold' || isGhost || !!current.archived_at;
+    stiBtn.disabled = blocked;
+    stiBtn.style.opacity = blocked ? '0.45' : '';
+    stiBtn.title = blocked ? 'Only for Live or Draft real boxes' : '';
+  }
+
+  // History panel: collapse + forget so a different box fetches fresh on open.
+  const hist = $('#history');
+  if (hist) { hist.open = false; $('#history-list').innerHTML = ''; historyLoadedFor = null; }
+
   $('#stats').textContent =
     `pallet #     ${current.pallet_number}\n` +
     `box type     ${isGhost ? 'GHOST / FICTITIOUS — website display only, not real stock' : 'REAL inventory box'}\n` +
     `received     ${current.received_date ? new Date(current.received_date).toLocaleString() : '—'}\n` +
     `status       ${current.status}\n` +
     `sell mode    ${current.sell_mode}\n` +
+    `size         ${sizeLabel(current.box_size) || '—'}\n` +
+    `weight       ${current.weight_lbs ? current.weight_lbs + ' lb' : '—'}\n` +
+    `live since   ${current.live_at ? new Date(current.live_at).toLocaleString() : '—'}\n` +
     `items        ${current.unit_count || 0}\n` +
     `MSRP total   ${fmtMoney(current.total_msrp)}\n` +
     `est. resale  ${current.total_est_resale ? fmtMoney(current.total_est_resale) : '— (no sell prices entered yet)'}\n` +
     `cost         ${fmtMoney(current.total_cost ?? current.total_cost_units)}\n` +
-    `have costs   ${current.items_with_cost ?? 0} of ${current.item_count ?? 0} items`;
+    `have costs   ${current.units_with_cost ?? 0} of ${current.unit_count ?? 0} units`;
 
   // mark active sell-mode button
   document.querySelectorAll('.mode-toggle button').forEach(b =>
@@ -387,13 +445,16 @@ async function showDetail(id) {
   // items list — each row is collapsible; click "Edit" to expand inline editor.
   // Per-row checkbox feeds bulk-delete state; clicking the row body opens edit.
   $('#items').innerHTML = currentItems.map(it => `
-    <div class="item-row" data-id="${it.id}">
+    <div class="item-row${it.is_highlight ? ' highlighted' : ''}" data-id="${it.id}">
       <input type="checkbox" class="item-select" data-id="${it.id}" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;align-self:center;margin-right:4px;">
+      <label class="hl-toggle" title="Feature this item on the website under the box">
+        <input type="checkbox" class="item-highlight" data-id="${it.id}" ${it.is_highlight ? 'checked' : ''}> ★
+      </label>
       <div class="thumb"${it.photo_blob_url ? ` style="background-image:url('${escape(it.photo_blob_url)}')"` : ''}></div>
       <div class="body">
         <h4>${escape(it.title || it.lpn || it.upc || '(no title)')}</h4>
         ${it.seller_category ? `<div class="meta" style="color:#0a5;">${escape(it.seller_category)}</div>` : ''}
-        <div class="meta">qty ${it.qty} · ${escape(it.condition || '—')} · ${escape(it.brand || '')} · ${escape(it.lpn || it.upc || '')}</div>
+        <div class="meta">qty ${it.qty} · ${escape(it.condition || '—')} · ${escape(it.brand || '')} · ${escape(it.lpn || it.upc || '')}<span class="hl-flag" style="color:#B7700B;font-weight:700;"${it.is_highlight ? '' : ' hidden'}> · ★ Featured</span></div>
         <div class="meta" style="margin-top:4px;">
           MSRP ${fmtMoney(it.est_msrp)}
           · Cost ${fmtMoney(it.unit_cost)}
@@ -480,7 +541,90 @@ async function showDetail(id) {
     else                          selectedItemIds.delete(id);
     updateBulkDeleteUI();
   }));
+
+  // ★ Feature toggle — saves immediately, no full re-render.
+  document.querySelectorAll('.item-highlight').forEach(cb => cb.addEventListener('change', async e => {
+    const box = e.currentTarget;
+    const id = box.dataset.id;
+    const on = box.checked;
+    const row = box.closest('.item-row');
+    try {
+      await apiClient.patchItem(id, { isHighlight: on });
+      const item = currentItems.find(i => i.id === id);
+      if (item) item.is_highlight = on;
+      row?.classList.toggle('highlighted', on);
+      const flag = row?.querySelector('.hl-flag');
+      if (flag) flag.hidden = !on;
+      toast(on ? 'Featured' : 'Un-featured', 'ok');
+    } catch (err) {
+      box.checked = !on;
+      toast(`Save failed: ${err.message}`, 'err', 4000);
+    }
+  }));
 }
+
+// B4: "XX% of MSRP!" auto-prefill of the website description. Never overwrites
+// existing text; the yellow .auto state means "not saved yet". Runs on every
+// showDetail, so a pricing save re-computes the percent while the box is empty.
+function prefillPubDesc() {
+  const ta = $('#pubdesc'), hint = $('#pubdesc-auto-hint');
+  if (!ta || !current) return;
+  ta.classList.remove('auto');
+  if (hint) hint.hidden = true;
+  if ((current.public_description || '').trim()) return;
+  const askNow = current.sale_price ?? current.list_price ?? current.total_wholesale;
+  const msrp = Number(current.total_msrp);
+  if (!(askNow > 0) || !(msrp > 0)) return;
+  const pct = Math.round(askNow / msrp * 100);
+  ta.value = `${pct}% of MSRP!`;
+  ta.classList.add('auto');
+  if (hint) hint.hidden = false;
+}
+$('#pubdesc')?.addEventListener('input', () => {
+  $('#pubdesc').classList.remove('auto');
+  const hint = $('#pubdesc-auto-hint');
+  if (hint) hint.hidden = true;
+});
+
+// B7: History panel — fetched the first time it's opened for this box.
+const HISTORY_FIELDS = {
+  publish_state:     'Status',
+  list_price:        'Price',
+  sale_price:        'Sale price',
+  box_size:          'Size',
+  sell_mode:         'Sell as',
+  sold_to_inventory: 'Sold → inventory',
+};
+const HISTORY_MONEY = new Set(['list_price', 'sale_price']);
+function historyWho(s) {
+  if (!s) return '—';
+  if (s === 'square') return 'Square';
+  const base = String(s).split('@')[0];
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+function historyVal(field, v) {
+  if (v == null || v === '') return '—';
+  return HISTORY_MONEY.has(field) ? fmtMoney(v) : String(v);
+}
+$('#history')?.addEventListener('toggle', async e => {
+  const det = e.currentTarget;
+  if (!det.open || !current || historyLoadedFor === current.manifest_id) return;
+  const list = $('#history-list');
+  list.innerHTML = '<li style="color:#888;">Loading…</li>';
+  try {
+    const rows = await apiClient.palletHistory(current.manifest_id);
+    historyLoadedFor = current.manifest_id;
+    list.innerHTML = (rows || []).map(r => {
+      const when = r.changed_at
+        ? new Date(r.changed_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+        : '—';
+      const label = HISTORY_FIELDS[r.field] || r.field;
+      return `<li>${escape(when)} · ${escape(historyWho(r.changed_by))} · ${escape(label)} ${escape(historyVal(r.field, r.old_value))} → ${escape(historyVal(r.field, r.new_value))}</li>`;
+    }).join('') || '<li style="color:#888;">No changes recorded yet.</li>';
+  } catch (err) {
+    list.innerHTML = `<li style="color:#b00;">Couldn't load history: ${escape(err.message)}</li>`;
+  }
+});
 
 function updateBulkDeleteUI() {
   const btn = $('#bulk-delete');
@@ -514,16 +658,37 @@ document.querySelectorAll('.mode-toggle button').forEach(b => {
 
 $('#save-meta').addEventListener('click', async () => {
   if (!current) return;
+  const w = parseFloat($('#weight-lbs').value);
   try {
     await apiClient.patchPallet(current.manifest_id, {
       displayName:       $('#dn').value.trim(),
       notes:             $('#notes').value,
-      publicDescription: $('#pubdesc').value,
-      category:          $('#cat').value   // empty string → server stores '' (treat as unset visually)
+      publicDescription: $('#pubdesc').value,   // an auto "15% of MSRP!" prefill is saved as-is
+      category:          $('#cat').value,       // empty string → server stores '' (treat as unset visually)
+      boxSize:           $('#box-size').value,  // '' clears
+      weightLbs:         Number.isFinite(w) && w > 0 ? w : null   // null clears
     });
     toast('Saved', 'ok');
     await showDetail(current.manifest_id);
-  } catch (e) { toast(`Save failed: ${e.message}`, 'err', 4000); }
+  } catch (e) { toast(`Save failed: ${e.data?.error || e.message}`, 'err', 4000); }
+});
+
+// Sold → inventory (B2/B6): the box shows SOLD on the website for 48 h, then
+// drops off; a Draft clone with a new BOX # and the same items appears now.
+$('#sold-to-inventory')?.addEventListener('click', async () => {
+  if (!current) return;
+  const n = current.pallet_number ?? '—';
+  if (!confirm(`Mark BOX #${n} as SOLD on the website and create a Draft copy with a new box number?\n\nThe SOLD box stays on the site for 48 hours, then disappears. This does not count as a real sale.`)) return;
+  const btn = $('#sold-to-inventory');
+  btn.disabled = true;
+  btn.textContent = 'Working…';
+  try {
+    const r = await apiClient.soldToInventory(current.manifest_id);
+    toast(`Sold → inventory: BOX #${r.originalPalletNumber} shows SOLD · new Draft BOX #${r.clonePalletNumber}`, 'ok', 4000);
+    await loadList();
+    location.hash = '#/pallet/' + r.cloneId;   // jump to the Draft copy
+  } catch (e) { toast(`Sold → inventory failed: ${e.data?.error || e.message}`, 'err', 5000); }
+  finally { btn.disabled = false; btn.textContent = 'Sold → inventory'; }
 });
 
 // Listing status (#6): Live / Draft / Ghost / Sold.

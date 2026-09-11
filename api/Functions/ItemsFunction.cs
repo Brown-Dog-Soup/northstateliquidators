@@ -27,7 +27,8 @@ public sealed class ItemsFunction
         string? title,
         string? brand,
         string? notes,
-        string? description);
+        string? description,
+        bool? isHighlight);   // B8: feature this item under the box on the website
 
     public ItemsFunction(SqlService sql, ILogger<ItemsFunction> log)
     {
@@ -61,6 +62,7 @@ public sealed class ItemsFunction
         if (body.brand != null)              { sets.Add("brand = @b");         p.Add("b", body.brand); }
         if (body.notes != null)              { sets.Add("notes = @n");         p.Add("n", body.notes); }
         if (body.description != null)        { sets.Add("description = @d");   p.Add("d", body.description); }
+        if (body.isHighlight.HasValue)       { sets.Add("is_highlight = @h");  p.Add("h", body.isHighlight.Value); }
 
         if (sets.Count == 0) return new BadRequestObjectResult(new { error = "no fields to update" });
 
@@ -72,7 +74,7 @@ public sealed class ItemsFunction
         var updated = await conn.QueryFirstOrDefaultAsync(@"
 SELECT id, manifest_id, lpn, upc, asin, qty, condition, title, description, brand, category,
        est_msrp, est_resale, unit_cost, wholesale_price,
-       photo_blob_url, enrich_status, notes, created_at
+       photo_blob_url, enrich_status, notes, created_at, is_highlight
 FROM dbo.line_items WHERE id = @id", new { id });
         _log.LogInformation("PatchItem {Id}: {N} fields updated", id, sets.Count);
         return new OkObjectResult(updated);

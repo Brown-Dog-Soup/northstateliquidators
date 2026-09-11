@@ -165,6 +165,10 @@ button:disabled, .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: n
 .pill.mixed       { background: #FDF0E0; color: var(--warn); }
 .pill.undecided   { background: #EFE9D8; color: #555; }
 .pill.sold        { background: #ddd; color: #666; }
+/* box size badge (mega_box / mini_pallet / full_pallet / individual) */
+.pill.size        { background: #FFF3C4; color: #7a5a00; }
+/* "Sold → inventory" original: looks sold on the site for 48 h, a Draft clone carries the stock */
+.pill.sold-inv    { background: #FDE7E7; color: #8a1f1f; }
 
 /* === ITEMS LIST === */
 .items-list { display: flex; flex-direction: column; gap: 8px; }
@@ -184,6 +188,13 @@ button:disabled, .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: n
 .item-row .body h4 { margin: 0; font-size: 14px; font-weight: 700; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .item-row .body .meta { font-size: 11px; color: #777; font-family: 'JetBrains Mono', monospace; margin-top: 4px; }
 .item-row .price { font-family: 'Anton', sans-serif; font-size: 22px; color: var(--nc-red); }
+/* ★ "Feature this item" toggle — the highlighted item shows under the box on the public card */
+.hl-toggle { display: flex; align-items: center; gap: 3px; font-size: 14px; color: #B7700B; cursor: pointer; flex-shrink: 0; }
+.hl-toggle input { width: 16px; height: 16px; cursor: pointer; margin: 0; }
+.item-row.highlighted { border-left: 4px solid var(--warehouse-yellow); }
+
+/* Website description auto-prefilled ("15% of MSRP!") — yellow until the user edits or saves */
+textarea.auto { background: #fffbe6; }
 
 /* === MODE TOGGLE (3 buttons row) === */
 .mode-toggle { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }

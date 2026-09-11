@@ -34,14 +34,25 @@ async function loadSummary() {
   }
   const margin = s.sales.reduce((a, x) => a + (x.margin_cents ?? 0), 0);
   const marginKnown = s.sales.some(x => x.margin_cents != null);
-  $('#tiles').innerHTML = `
+  // gross = what Square collected (web + floor). Boxes marked SOLD in admin are
+  // listed separately and NOT added in: a floor sale rung up on the terminal is
+  // already in Floor / other, and marking that box SOLD afterwards is normal —
+  // adding admin on top would count it twice.
+  const adminCount = s.admin_count ?? s.sales.filter(x => x.source === 'admin').length;
+  const squareNote = s.square_error
+    ? `<div class="tile" style="grid-column:1 / -1;background:#FFF3C4;color:#7a5a00;"><div class="lbl">Square unavailable</div>
+        <div class="sub" style="color:#7a5a00;">${esc(s.square_error)}</div></div>`
+    : '';
+  $('#tiles').innerHTML = squareNote + `
     <div class="tile"><div class="lbl">Gross · ${s.days}d</div><div class="val">${money(s.gross_cents)}</div>
-      <div class="sub">${s.sale_count} sale${s.sale_count === 1 ? '' : 's'}</div></div>
+      <div class="sub">${s.sale_count} Square sale${s.sale_count === 1 ? '' : 's'} · web + floor</div></div>
     <div class="tile"><div class="lbl">Website</div><div class="val">${money(s.web_cents)}</div></div>
     <div class="tile"><div class="lbl">Floor / other</div><div class="val">${money(s.floor_cents)}</div></div>
-    <div class="tile"><div class="lbl">Web margin</div>
+    <div class="tile"><div class="lbl">Marked sold (admin)</div><div class="val">${money(s.admin_cents)}</div>
+      <div class="sub">${adminCount} box${adminCount === 1 ? '' : 'es'} marked SOLD in admin — not in Gross; may already be a floor sale</div></div>
+    <div class="tile"><div class="lbl">Margin</div>
       <div class="val ${margin >= 0 ? 'pos' : 'neg'}">${marginKnown ? money(margin) : '—'}</div>
-      <div class="sub">sale − our cost, matched boxes</div></div>
+      <div class="sub">sale − our cost, boxes with a cost</div></div>
     <div class="tile"><div class="lbl">Refunded</div><div class="val">${money(s.refunded_cents)}</div></div>`;
 
   $('#sales-table').innerHTML =
@@ -49,9 +60,11 @@ async function loadSummary() {
     (s.sales.map(x => `
       <tr>
         <td>${x.created_at ? new Date(x.created_at).toLocaleString() : '—'}</td>
-        <td><span class="chan ${x.channel}">${x.channel}</span></td>
-        <td>${x.pallet_number ? `#${x.pallet_number} ${esc(x.display_name || '')}` : '<span style="color:#999;">in-person sale</span>'}</td>
-        <td class="money">${money(x.amount_cents)}${x.refunded_cents ? ` <span class="neg">(−${money(x.refunded_cents)})</span>` : ''}</td>
+        <td><span class="chan ${esc(x.channel)}">${esc(x.channel)}</span></td>
+        <td>${x.pallet_number ? `#${x.pallet_number} ${esc(x.display_name || '')}` : '<span style="color:#999;">in-person sale</span>'}${x.note ? `<div style="font-size:11px;color:#888;">${esc(x.note)}</div>` : ''}</td>
+        <td class="money">${x.amount_cents === 0 && x.source === 'admin'
+            ? '<span title="No price set on this box">—</span>'
+            : money(x.amount_cents)}${x.refunded_cents ? ` <span class="neg">(−${money(x.refunded_cents)})</span>` : ''}</td>
         <td class="money">${x.cost != null ? fmtMoney(x.cost) : '—'}</td>
         <td class="money ${x.margin_cents != null ? (x.margin_cents >= 0 ? 'pos' : 'neg') : ''}">${x.margin_cents != null ? money(x.margin_cents) : '—'}</td>
       </tr>`).join('') || '<tr><td colspan="6" style="color:#666;">No sales in this window.</td></tr>');

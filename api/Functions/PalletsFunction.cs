@@ -17,6 +17,8 @@ namespace NSL.Api.Functions;
 ///   GET    /api/pallets/{id}         — pallet detail incl. line_items
 ///   PATCH  /api/pallets/{id}         — update display_name, sell_mode, photo_url, etc.
 ///   GET    /api/pallets/{id}/items   — line_items for a pallet
+///   GET    /api/pallets/{id}/history — audit trail (manifest_history, B7)
+///   POST   /api/pallets/{id}/sold-to-inventory — fake sale + Draft clone (B2/B6)
 ///
 /// Photo URLs in the result rows are SAS-signed before being returned, so the
 /// browser can fetch them from the private scan-photos blob container without
@@ -26,8 +28,14 @@ public sealed class PalletsFunction
 {
     private readonly SqlService _sql;
     private readonly BlobService _blob;
+    private readonly SquareService _square;
     private readonly string _storageAccount;
     private readonly ILogger<PalletsFunction> _log;
+
+    /// <summary>B9: a live box is "Just Dropped" for this many hours after it went live.</summary>
+    internal const int JustDroppedHours = 48;
+
+    private static readonly string[] BoxSizes = { "mega_box", "mini_pallet", "full_pallet", "individual" };
 
     public sealed record CreatePalletRequest(string? displayName, string? source, string? palletReference, string? notes);
     public sealed record UpdatePalletRequest(
@@ -38,15 +46,57 @@ public sealed class PalletsFunction
         bool?   isGhost,       // legacy: true = ghost backstock, false = real, null = no change
         string? publishState,  // draft | live | ghost | sold  (#6 — routes through sp_SetPublishState)
         decimal? listPrice,    // #3 published ask override; send the key with null to clear
-        decimal? salePrice);   // #3 sale price (strike-through on the site); send key with null to clear
+        decimal? salePrice,    // #3 sale price (strike-through on the site); send key with null to clear
+        string? boxSize,       // mega_box | mini_pallet | full_pallet | individual; "" (or key present + null) clears
+        decimal? weightLbs);   // B3 box weight for shipping quotes; send the key with null (or <= 0) to clear
 
-    public PalletsFunction(SqlService sql, BlobService blob, IConfiguration config, ILogger<PalletsFunction> log)
+    /// <summary>The audited fields (B7) as read straight off dbo.manifests.</summary>
+    private sealed record AuditSnapshot(string? publish_state, decimal? list_price, decimal? sale_price, string? box_size, string? sell_mode);
+
+    public PalletsFunction(SqlService sql, BlobService blob, SquareService square, IConfiguration config, ILogger<PalletsFunction> log)
     {
         _sql = sql;
         _blob = blob;
+        _square = square;
         _storageAccount = config["StorageAccountName"] ?? "";
         _log = log;
     }
+
+    private const string AuditSnapshotSql =
+        "SELECT publish_state, list_price, sale_price, box_size, sell_mode FROM dbo.manifests WHERE id = @id";
+
+    /// <summary>
+    /// B7 audit trail: one dbo.manifest_history row per field that differs
+    /// between two snapshots. Values are stored as plain strings ("180.00",
+    /// "live", NULL). Shared by PATCH, Sold → inventory and the Square paths.
+    /// </summary>
+    private static async Task WriteHistoryAsync(
+        System.Data.IDbConnection conn, Guid id, AuditSnapshot? before, AuditSnapshot? after, string? who,
+        System.Data.IDbTransaction? tx = null)
+    {
+        if (before == null || after == null) return;
+        var changes = new List<(string field, string? oldV, string? newV)>();
+        void Diff(string field, string? a, string? b) { if (!string.Equals(a, b, StringComparison.Ordinal)) changes.Add((field, a, b)); }
+        static string? Money(decimal? v) => v?.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+
+        Diff("publish_state", before.publish_state, after.publish_state);
+        Diff("list_price",    Money(before.list_price), Money(after.list_price));
+        Diff("sale_price",    Money(before.sale_price), Money(after.sale_price));
+        Diff("box_size",      before.box_size, after.box_size);
+        Diff("sell_mode",     before.sell_mode, after.sell_mode);
+
+        foreach (var (field, oldV, newV) in changes)
+            await InsertHistoryAsync(conn, id, field, oldV, newV, who, tx);
+    }
+
+    /// <summary>One explicit dbo.manifest_history row (used where the change is known, not diffed).</summary>
+    internal static Task InsertHistoryAsync(
+        System.Data.IDbConnection conn, Guid id, string field, string? oldValue, string? newValue, string? who,
+        System.Data.IDbTransaction? tx = null)
+        => conn.ExecuteAsync(@"
+INSERT INTO dbo.manifest_history (manifest_id, changed_by, field, old_value, new_value)
+VALUES (@id, @who, @field, @oldV, @newV)",
+            new { id, who, field, oldV = oldValue, newV = newValue }, transaction: tx);
 
     /// <summary>
     /// If the URL is a bare blob URL pointing at our scan-photos container,
@@ -74,6 +124,7 @@ public sealed class PalletsFunction
         if (row is not IDictionary<string, object?> dict) return;
         if (dict.ContainsKey("photo_url"))      dict["photo_url"]      = SignBlobUrl(dict["photo_url"] as string);
         if (dict.ContainsKey("photo_blob_url")) dict["photo_blob_url"] = SignBlobUrl(dict["photo_blob_url"] as string);
+        if (dict.ContainsKey("highlight_photo")) dict["highlight_photo"] = SignBlobUrl(dict["highlight_photo"] as string);
     }
 
     [Function("ListPallets")]
@@ -157,7 +208,8 @@ SELECT li.id, li.lpn, li.upc, li.asin, li.qty, li.condition, li.title, li.descri
        li.est_msrp, li.est_resale,
        COALESCE(li.unit_cost, cat.unit_cost)             AS unit_cost,
        COALESCE(li.wholesale_price, cat.wholesale_price) AS wholesale_price,
-       li.photo_blob_url, li.enrich_status, li.enrich_source, li.notes, li.created_at
+       li.photo_blob_url, li.enrich_status, li.enrich_source, li.notes, li.created_at,
+       li.is_highlight
 FROM dbo.line_items li
 OUTER APPLY (
     SELECT TOP 1 c.seller_category, c.unit_cost, c.wholesale_price
@@ -197,7 +249,19 @@ WHERE li.manifest_id = @id ORDER BY li.created_at DESC";
             doc.RootElement.EnumerateObject().Any(prop =>
                 string.Equals(prop.Name, name, StringComparison.OrdinalIgnoreCase));
 
+        // Box size is a fixed list (drives the Shop pages on the website).
+        // "" or a present-but-null key clears it; anything else must match.
+        string? boxSize = body?.boxSize?.Trim();
+        if (!string.IsNullOrEmpty(boxSize) && !BoxSizes.Contains(boxSize))
+        {
+            doc?.Dispose();
+            return new BadRequestObjectResult(new { error = "boxSize must be one of mega_box | mini_pallet | full_pallet | individual" });
+        }
+
         await using var conn = await _sql.OpenAsync(ct);
+
+        // B7 audit: snapshot the audited fields before anything changes.
+        var before = await conn.QueryFirstOrDefaultAsync<AuditSnapshot>(AuditSnapshotSql, new { id });
 
         if (!string.IsNullOrWhiteSpace(body?.sellMode))
         {
@@ -242,6 +306,17 @@ WHERE li.manifest_id = @id ORDER BY li.created_at DESC";
             sets.Add("sale_price = @sp2");
             p.Add("sp2", body?.salePrice is > 0 ? body?.salePrice : (decimal?)null);
         }
+        // Box size / weight (Wishlist 4): same key-present rule as the prices.
+        if (HasKey("boxSize"))
+        {
+            sets.Add("box_size = @bs");
+            p.Add("bs", string.IsNullOrEmpty(boxSize) ? null : boxSize);
+        }
+        if (HasKey("weightLbs"))
+        {
+            sets.Add("weight_lbs = @wl");
+            p.Add("wl", body?.weightLbs is > 0 ? body?.weightLbs : (decimal?)null);
+        }
         doc?.Dispose();
 
         if (sets.Count > 0)
@@ -250,6 +325,10 @@ WHERE li.manifest_id = @id ORDER BY li.created_at DESC";
             await conn.ExecuteAsync(
                 $"UPDATE dbo.manifests SET {string.Join(", ", sets)} WHERE id = @id", p);
         }
+
+        // B7 audit: one history row per audited field that actually changed.
+        var after = await conn.QueryFirstOrDefaultAsync<AuditSnapshot>(AuditSnapshotSql, new { id });
+        await WriteHistoryAsync(conn, id, before, after, ClientPrincipal.UserDetails(req));
 
         var updated = await conn.QueryFirstOrDefaultAsync(
             "SELECT * FROM dbo.v_pallets WHERE manifest_id = @id", new { id });
@@ -310,7 +389,7 @@ WHERE li.manifest_id = @id ORDER BY li.created_at DESC";
         await using var conn = await _sql.OpenAsync(ct);
 
         var src = await conn.QueryFirstOrDefaultAsync(
-            "SELECT display_name, source, notes, category FROM dbo.manifests WHERE id = @id", new { id });
+            "SELECT display_name, source, notes, category, box_size, weight_lbs FROM dbo.manifests WHERE id = @id", new { id });
         if (src == null) return new NotFoundResult();
 
         var newName = (((string?)src.display_name) ?? "Pallet") + " (copy)";
@@ -327,11 +406,12 @@ EXEC dbo.sp_CreateManifest
 
         Guid newId = (Guid)created.id;
 
-        // sp_CreateManifest doesn't take category — copy it over explicitly.
-        if (src.category != null)
+        // sp_CreateManifest doesn't take category / box_size / weight_lbs —
+        // copy them over explicitly.
+        if (src.category != null || src.box_size != null || src.weight_lbs != null)
             await conn.ExecuteAsync(
-                "UPDATE dbo.manifests SET category = @cat WHERE id = @nid",
-                new { cat = (string)src.category, nid = newId });
+                "UPDATE dbo.manifests SET category = @cat, box_size = @bs, weight_lbs = @wl WHERE id = @nid",
+                new { cat = (string?)src.category, bs = (string?)src.box_size, wl = (decimal?)src.weight_lbs, nid = newId });
 
         // Copy line items. New ids + manifest_id + created_at; sold_at is left
         // off (NEWID()-only insert), so the copy is unsold even if the source
@@ -342,13 +422,13 @@ INSERT INTO dbo.line_items
      photo_blob_url, enrich_status, enrich_source,
      title, description, brand, category,
      est_msrp, est_resale, unit_cost, wholesale_price, notes,
-     created_at, enriched_at)
+     is_highlight, created_at, enriched_at)
 SELECT
      NEWID(), @nid, upc, lpn, asin, qty, condition,
      photo_blob_url, enrich_status, enrich_source,
      title, description, brand, category,
      est_msrp, est_resale, unit_cost, wholesale_price, notes,
-     SYSUTCDATETIME(), enriched_at
+     is_highlight, SYSUTCDATETIME(), enriched_at
 FROM dbo.line_items WHERE manifest_id = @sid",
             new { nid = newId, sid = id });
 
@@ -378,6 +458,10 @@ FROM dbo.line_items WHERE manifest_id = @sid",
         using var tx = conn.BeginTransaction();
         try
         {
+            // manifest_history has an FK to manifests — clear the audit rows first.
+            await conn.ExecuteAsync(
+                "DELETE FROM dbo.manifest_history WHERE manifest_id = @id",
+                new { id }, transaction: tx);
             var itemRows = await conn.ExecuteAsync(
                 "DELETE FROM dbo.line_items WHERE manifest_id = @id",
                 new { id }, transaction: tx);
@@ -395,6 +479,113 @@ FROM dbo.line_items WHERE manifest_id = @sid",
             tx.Rollback();
             throw;
         }
+    }
+
+    /// <summary>
+    /// POST /api/pallets/{id}/sold-to-inventory (Wishlist 4 B2/B6) — ONE button.
+    /// The original shows SOLD on the website for 48 h (v_public_pallets drops
+    /// it after that; no scheduler), and a clone with a new BOX # and the same
+    /// items lands in Draft right away so staff can put it back on the site.
+    /// All the data work is in sp_SoldToInventory; this route retires any open
+    /// Square link on the original and writes the audit rows.
+    /// </summary>
+    [Function("SoldToInventory")]
+    public async Task<IActionResult> SoldToInventory(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "pallets/{id}/sold-to-inventory")] HttpRequest req,
+        Guid id,
+        CancellationToken ct)
+    {
+        await using var conn = await _sql.OpenAsync(ct);
+
+        // What the original looked like BEFORE — the proc validates the rest.
+        var orig = await conn.QueryFirstOrDefaultAsync(
+            "SELECT publish_state, checkout_link_id FROM dbo.manifests WHERE id = @id", new { id });
+        if (orig == null) return new NotFoundResult();
+        string? prevState = (string?)orig.publish_state;
+        string? linkId = (string?)orig.checkout_link_id;
+
+        // Retire the public Buy link on the original FIRST (same as
+        // SquareReconcile's "pulled box" branch) so nobody can pay for a box
+        // that reads SOLD. Done before the proc so a Square failure leaves the
+        // box untouched — there is nothing to undo and staff simply retry.
+        // (Once the box is sold, the invoice route refuses it and Reconcile
+        // only sweeps fake-sold rows, so this is the one reliable moment.)
+        if (linkId != null && _square.Configured)
+        {
+            try
+            {
+                await _square.DeletePaymentLinkAsync(linkId, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogError(ex, "SoldToInventory: could not retire Square link {Link} on BOX {Id} — box left as-is", linkId, id);
+                return new ObjectResult(new { error = "Could not retire the Square Buy link on this box — try again in a moment." }) { StatusCode = 502 };
+            }
+            await conn.ExecuteAsync(@"
+UPDATE dbo.manifests SET checkout_link_id = NULL, checkout_order_id = NULL,
+       checkout_url = NULL, checkout_created_at = NULL WHERE id = @id", new { id });
+            _log.LogInformation("SoldToInventory: retired Square link {Link} on BOX {Id}", linkId, id);
+        }
+
+        dynamic? row;
+        try
+        {
+            row = await conn.QueryFirstOrDefaultAsync(
+                "EXEC dbo.sp_SoldToInventory @manifest_id = @id", new { id });
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 50000)
+        {
+            // RAISERROR from the proc: ghost / already sold / archived / not found.
+            return new ConflictObjectResult(new { error = ex.Message });
+        }
+        if (row == null) return new ObjectResult(new { error = "sp_SoldToInventory returned no rows" }) { StatusCode = 500 };
+
+        Guid originalId = (Guid)row.original_id;
+        Guid cloneId    = (Guid)row.clone_id;
+        int  originalNo = (int)row.original_pallet_number;
+        int  cloneNo    = (int)row.clone_pallet_number;
+
+        // B7 audit rows: two on the original, one on the clone.
+        var who = ClientPrincipal.UserDetails(req);
+        await InsertHistoryAsync(conn, originalId, "publish_state", prevState, "sold", who);
+        await InsertHistoryAsync(conn, originalId, "sold_to_inventory", null, $"BOX #{cloneNo}", who);
+        await InsertHistoryAsync(conn, cloneId, "publish_state", null, $"draft (cloned from BOX #{originalNo})", who);
+
+        _log.LogInformation("SoldToInventory: BOX #{Orig} -> SOLD (fake), clone BOX #{Clone} in draft ({N} items)",
+            originalNo, cloneNo, (object?)row.items_copied);
+        return new OkObjectResult(new
+        {
+            originalId,
+            originalPalletNumber = originalNo,
+            cloneId,
+            clonePalletNumber = cloneNo,
+            cloneDisplayName = (string?)row.clone_display_name,
+            itemsCopied = (int)row.items_copied
+        });
+    }
+
+    /// <summary>
+    /// GET /api/pallets/{id}/history (Wishlist 4 B7) — newest first, capped at
+    /// 200. Rows come from dbo.manifest_history (status + price + size + sell
+    /// mode changes, plus Sold → inventory).
+    /// </summary>
+    [Function("PalletHistory")]
+    public async Task<IActionResult> History(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "pallets/{id}/history")] HttpRequest req,
+        Guid id,
+        CancellationToken ct)
+    {
+        await using var conn = await _sql.OpenAsync(ct);
+        var exists = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(1) FROM dbo.manifests WHERE id = @id", new { id });
+        if (exists == 0) return new NotFoundResult();
+
+        var rows = (await conn.QueryAsync(@"
+SELECT TOP 200 id, changed_at, changed_by, field, old_value, new_value
+FROM dbo.manifest_history
+WHERE manifest_id = @id
+ORDER BY changed_at DESC, id DESC", new { id })).ToList();
+        return new OkObjectResult(rows);
     }
 
     [Function("ListPalletItems")]
@@ -419,14 +610,20 @@ FROM dbo.line_items WHERE manifest_id = @sid",
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "public/pallets")] HttpRequest req,
         CancellationToken ct)
     {
+        // Customer-safe column list — NO cost / wholesale / margin / notes, and
+        // never sold_to_inventory_at (it would reveal a fake sale).
         await using var conn = await _sql.OpenAsync(ct);
         var rows = (await conn.QueryAsync(@"
 SELECT manifest_id, pallet_number, display_name, category, publish_state,
-       received_date, sold_at, photo_url, public_description, item_count,
-       unit_count, total_msrp, list_price, sale_price, is_sold, is_on_sale, ask_price
+       received_date, sold_at, live_at, photo_url, public_description,
+       box_size, weight_lbs, item_count, unit_count, total_msrp, list_price, sale_price,
+       condition_mix, highlight_title, highlight_msrp, highlight_photo,
+       is_sold, is_on_sale, ask_price,
+       CAST(CASE WHEN publish_state = 'live' AND live_at >= DATEADD(HOUR, -@hrs, SYSUTCDATETIME())
+                 THEN 1 ELSE 0 END AS BIT) AS is_just_dropped
 FROM dbo.v_public_pallets
 ORDER BY CASE WHEN publish_state = 'live' THEN 0 ELSE 1 END,
-         COALESCE(sold_at, received_date) DESC")).ToList();
+         COALESCE(live_at, sold_at, received_date) DESC", new { hrs = JustDroppedHours })).ToList();
         SignRowPhotos(rows);
         return new OkObjectResult(rows);
     }
@@ -453,14 +650,15 @@ ORDER BY CASE WHEN publish_state = 'live' THEN 0 ELSE 1 END,
         var pallet = await conn.QueryFirstOrDefaultAsync(@"
 SELECT manifest_id, pallet_number, display_name, category, publish_state,
        item_count, unit_count, total_msrp, ask_price, list_price, sale_price,
-       is_sold, is_on_sale, photo_url, public_description
+       is_sold, is_on_sale, photo_url, public_description,
+       box_size, weight_lbs, condition_mix, highlight_title, highlight_msrp, highlight_photo, live_at
 FROM dbo.v_public_pallets WHERE manifest_id = @id", new { id });
         if (pallet == null) return new NotFoundResult();   // not public → don't leak it
         SignRowPhotos((object)pallet);
 
-        // Margin-safe column list — NO unit_cost / wholesale_price.
+        // Margin-safe column list — NO unit_cost / wholesale_price / notes / lpn.
         var items = (await conn.QueryAsync(@"
-SELECT title, brand, category, condition, qty, est_msrp, photo_blob_url
+SELECT title, brand, category, condition, qty, est_msrp, photo_blob_url, is_highlight
 FROM dbo.line_items
 WHERE manifest_id = @id
 ORDER BY CASE WHEN est_msrp IS NULL THEN 1 ELSE 0 END, est_msrp DESC, created_at DESC",

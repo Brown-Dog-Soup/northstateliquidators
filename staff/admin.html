@@ -111,7 +111,8 @@
           .ptab input[type=text]   { width:200px; padding:4px 6px; font-size:13px; border:1px solid #ccc; }
           .ptab input[type=number] { width:90px;  padding:4px 6px; font-size:13px; border:1px solid #ccc;
                                      font-family:'JetBrains Mono',monospace; }
-          .ptab input:focus { outline:2px solid #002868; }
+          .ptab select { width:auto; padding:4px 6px; font-size:13px; border:1px solid #ccc; background:#fff; }
+          .ptab input:focus, .ptab select:focus { outline:2px solid #002868; }
           .ptab .box-link { font-family:'JetBrains Mono',monospace; font-weight:700; color:#002868; text-decoration:none; }
           .ptab .box-link:hover { text-decoration:underline; }
           .ptab .ghost-flag { color:#c00; font-weight:700; font-size:11px; }
@@ -151,10 +152,16 @@
               <button data-ps="ghost" class="btn">Ghost</button>
               <button data-ps="sold"  class="btn">Sold</button>
             </div>
+            <button id="sold-to-inventory" class="btn btn-yellow" style="width:100%;margin-top:8px;">Sold → inventory</button>
+            <p id="sold-to-inventory-note" style="margin:6px 0 0;font-size:12px;color:#666;line-height:1.5;">
+              Shows this box as SOLD on the website for 48 hours, then it disappears. A copy with a new BOX # and the same items
+              is created in Draft right away so you can put it back on the site later.
+            </p>
             <p style="margin:12px 0 0;font-size:12px;color:#666;line-height:1.5;">
               <b>Live</b> = on the website · <b>Draft</b> = hidden (default) ·
               <b>Ghost</b> = shows as sold, inventory untouched ·
-              <b>Sold</b> = sold elsewhere (Facebook, Whatnot…), removes from stock.
+              <b>Sold</b> = sold elsewhere (Facebook, Whatnot…), removes from stock
+              · <b>Sold → inventory</b> = looks sold for 48 h, then a Draft copy takes its place.
             </p>
           </div>
 
@@ -209,8 +216,17 @@
               <select id="cat"></select>
             </div>
             <div class="field">
+              <label for="box-size">Box size <span style="font-weight:400;color:#666;font-size:10px;letter-spacing:0;text-transform:none;">— drives the Shop pages on the website</span></label>
+              <select id="box-size"></select>
+            </div>
+            <div class="field">
+              <label for="weight-lbs">Box weight (lb) <span style="font-weight:400;color:#666;font-size:10px;letter-spacing:0;text-transform:none;">— for shipping quotes</span></label>
+              <input type="number" step="0.1" min="0" id="weight-lbs" placeholder="e.g. 42.5"/>
+            </div>
+            <div class="field">
               <label for="pubdesc">Website description <span style="font-weight:400;color:#666;font-size:10px;letter-spacing:0;text-transform:none;">— PUBLIC, shows under the box on the site</span></label>
               <textarea id="pubdesc" rows="3" placeholder="Witty commentary for shoppers…"></textarea>
+              <span id="pubdesc-auto-hint" hidden style="font-size:11px;color:#7a5a00;font-family:'JetBrains Mono',monospace;">auto — edit or Save to keep</span>
             </div>
             <div class="field">
               <label for="notes">Notes <span style="font-weight:400;color:#666;font-size:10px;letter-spacing:0;text-transform:none;">— internal only</span></label>
@@ -225,6 +241,15 @@
             <button id="set-active" class="btn btn-yellow" style="width:100%;margin-top:8px;">Make this the active pallet for receiving</button>
             <button id="duplicate-pallet" class="btn btn-secondary" style="width:100%;margin-top:8px;">Duplicate this pallet</button>
             <p style="margin:6px 0 0;font-size:12px;color:#666;">Creates a new pallet with a copy of every item on this one.</p>
+          </div>
+
+          <!-- Audit trail: status + price changes, written by the API (manifest_history).
+               Loaded the first time the panel is opened. -->
+          <div class="card" style="margin-top:16px;">
+            <details id="history">
+              <summary style="cursor:pointer;font-family:Anton;letter-spacing:0.02em;text-transform:uppercase;font-size:16px;">History</summary>
+              <ul id="history-list" style="list-style:none;margin:10px 0 0;padding:0;font-size:13px;line-height:1.7;"></ul>
+            </details>
           </div>
 
           <div class="card" style="margin-top:16px;">

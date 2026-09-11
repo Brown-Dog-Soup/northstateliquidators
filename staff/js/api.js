@@ -34,6 +34,16 @@ export const NSL_CATEGORIES = [
   'Mixed Goods'
 ];
 
+// Box sizes — stored in manifests.box_size. Drives the per-size Shop pages on
+// the public site (shop.html?view=mega_box etc.), so a live box with no size
+// only shows under Shop All / Just Dropped / Hot Deals.
+export const NSL_BOX_SIZES = [
+  { value: 'mega_box',    label: 'Mega Box' },
+  { value: 'mini_pallet', label: 'Mini Pallet' },
+  { value: 'full_pallet', label: 'Full Pallet' },
+  { value: 'individual',  label: 'Individual' },
+];
+
 export const apiClient = {
   health:           () => api('GET',  '/api/health'),
   lookup:    (code) => api('GET',  `/api/lookup/${encodeURIComponent(code)}`),
@@ -61,6 +71,14 @@ export const apiClient = {
   addPalletItem: (id, item) => api('POST', `/api/pallets/${id}/items`, item),
   // public-site read of live + recently-sold pallets
   publicPallets: () => api('GET', '/api/public/pallets'),
+
+  // Wishlist 4: "Sold → inventory" (box shows SOLD publicly for 48 h, a Draft
+  // clone with a new BOX # takes its place), audit trail, size/weight, members.
+  soldToInventory: (id)      => api('POST', `/api/pallets/${id}/sold-to-inventory`),
+  palletHistory:   (id)      => api('GET',  `/api/pallets/${id}/history`),
+  setBoxSize:      (id, boxSize)   => api('PATCH', `/api/pallets/${id}`, { boxSize }),
+  setWeight:       (id, weightLbs) => api('PATCH', `/api/pallets/${id}`, { weightLbs }),
+  members:         ()        => api('GET',  '/api/members'),
 
   // Square: sales dashboard, payment audit, refunds, reconcile, wholesale invoices
   salesSummary:     (days = 30) => api('GET', `/api/sales-summary?days=${days}`),

@@ -8,6 +8,17 @@
 |---|---|---|
 | `/api/health` | GET | Liveness probe — returns SQL connectivity status |
 | `/api/import-manifest` | POST | Body = XLSX bytes. Headers: `x-filename`, `x-imported-by`. Parses an Amazon B-Stock manifest, upserts into `lpn_catalog`, audits into `manifest_imports`. Idempotent on SHA-256. |
+| `/api/pallets` | GET / POST | List (`v_pallets`) / create a box. Rows include `box_size`, `weight_lbs`, `live_at`, `sold_to_inventory_at`, `units_with_cost`, `condition_mix`, `highlight_*`. |
+| `/api/pallets/{id}` | GET / PATCH / DELETE | Detail + items; PATCH takes `displayName`, `sellMode`, `publishState`, `listPrice`, `salePrice`, `boxSize`, `weightLbs`, …; changes to status/price/size/sell-mode are written to `manifest_history`. |
+| `/api/pallets/{id}/history` | GET | Audit trail (newest first, 200 max) — `changed_at`, `changed_by`, `field`, `old_value`, `new_value`. |
+| `/api/pallets/{id}/sold-to-inventory` | POST | "Sold → inventory": original reads SOLD on the site for 48 h, a Draft clone with a new BOX # and the same items is created. Returns `originalId`, `originalPalletNumber`, `cloneId`, `clonePalletNumber`, `cloneDisplayName`, `itemsCopied`. |
+| `/api/items/{id}` | PATCH | Edit a line item; `isHighlight: true` features it under the box on the website. |
+| `/api/public/pallets` | GET | Anonymous. Live + recently-sold boxes; adds `is_just_dropped` (live within `PalletsFunction.JustDroppedHours` = 48 h), `box_size`, `weight_lbs`, `condition_mix`, `highlight_title/msrp/photo`. Never exposes cost/wholesale/margin/notes or `sold_to_inventory_at`. |
+| `/api/public/pallets/{id}/items` | GET | Anonymous manifest for the modal (cost-free; items carry `is_highlight`). |
+| `/api/public/register` | POST | Anonymous member signup: `{firstName,lastName,email,phone,city,state,zip,howHeard,website}` (`website` is a honeypot). 5/min per IP. Returns `{memberNumber, alreadyRegistered}`. |
+| `/api/members` | GET | Staff list of members, newest first. |
+| `/api/members/export.csv` | GET | Staff CSV download (UTF-8 BOM, RFC-4180). |
+| `/api/sales-summary?days=N` | GET | Square payments + boxes marked SOLD in admin (`channel: admin`, `source: admin`); `gross_cents = square_cents + admin_cents`. |
 
 ## Local development
 

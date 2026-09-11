@@ -59,29 +59,29 @@ status table at merge time.
 
 | Item | What | Stream | Also touches (task listed in that stream) | Status |
 |---|---|---|---|---|
-| B1 | Admin-marked SOLD boxes show in Sales | db-api | admin (`sales.js` render) | TODO |
-| B2/B6 | "Sold → inventory" button (clone + 48 h public SOLD) | db-api | admin (button + pill), public (view exclusion is DB) | TODO |
-| B3 | Box weight field | db-api | admin (field), public-pages (modal "Ships at ~N lb") | TODO |
-| B4 | "XX% of MSRP!" auto-prefill of Website description | admin | — | TODO |
-| B5 | Have Costs counts units not rows | db-api | admin (render `units_with_cost / unit_count`) | TODO |
-| B7 | Audit trail (status + price changes) | db-api | admin (History panel) | TODO |
-| B8 | Highlight item checkbox → "Featured" line on public card | db-api | admin (checkbox), public-pages (card line) | TODO |
-| B9 | Just Dropped = live within last 48 h (`live_at`) | db-api | public-index / public-pages (`is_just_dropped`) | TODO |
+| B1 | Admin-marked SOLD boxes show in Sales | db-api | admin (`sales.js` render) | done — compile + syntax verified; not smoke-tested against a running API |
+| B2/B6 | "Sold → inventory" button (clone + 48 h public SOLD) | db-api | admin (button + pill), public (view exclusion is DB) | done — §2.10 SQL checks NOT run (no DB access from worktree); Jeff runs `db/wishlist4.sql` + §2.10 before the API deploys |
+| B3 | Box weight field | db-api | admin (field), public-pages (modal "Ships at ~N lb") | done |
+| B4 | "XX% of MSRP!" auto-prefill of Website description | admin | — | done (front-end only) |
+| B5 | Have Costs counts units not rows | db-api | admin (render `units_with_cost / unit_count`) | done |
+| B7 | Audit trail (status + price changes) | db-api | admin (History panel) | done — not smoke-tested |
+| B8 | Highlight item checkbox → "Featured" line on public card | db-api | admin (checkbox), public-pages (card line) | done |
+| B9 | Just Dropped = live within last 48 h (`live_at`) | db-api | public-index / public-pages (`is_just_dropped`) | done — `live_at` backfill runs with the migration |
 | B10 | Pallet grouping | — | OUT OF SCOPE | — |
-| F1 | FAQ page from `docs/FAQ.md` | public-pages | public-index (nav + footer link) | TODO |
-| F2 | Condition ⓘ tooltips | public-pages | — (index consumes via site.js) | TODO |
-| F3 | Registration box + modal, member number | db-api | public-pages (modal in site.js), public-index (trigger), admin (`members.html`) | TODO |
-| F4 | "🔥 Hot Deals" hero button | public-index | public-pages (`shop.html?view=hot`) | TODO |
-| F5 | Bigger SOLD stamp on Recently Sold | public-index | — | TODO |
-| F6 | "Ask" → "Price", MSRP same size | public-pages | public-index (removes the old table) | TODO |
-| F7 | Just Dropped as cards, 8 max (4×2), "See all" | public-index | public-pages (renderer) | TODO |
-| F8 | Shop Inventory → full live inventory as cards | public-pages | public-index (links) | TODO |
-| F9 | Shop Your Way tiles → per-size pages | public-pages | public-index (links) | TODO |
-| F10 | Raleigh pickup → Wake Forest | public-index | public-pages (`thanks.html`, modal footer) | TODO |
-| F11 | Flea-market Friday delivery + $10 / 20 mi | public-index | public-pages (modal footer, faq) | TODO |
-| F12 | Owner avatars | public-index | — | TODO |
-| — | `db/wishlist4.sql` applied to prod (Jeff, before merge) | integrator | — | TODO |
-| — | Verify + PR | integrator | — | TODO |
+| F1 | FAQ page from `docs/FAQ.md` | public-pages | public-index (nav + footer link) | done — Returns text is a placeholder; 3 NSL condition definitions need Rob's OK (§8) |
+| F2 | Condition ⓘ tooltips | public-pages | — (index consumes via site.js) | done |
+| F3 | Registration box + modal, member number | db-api | public-pages (modal in site.js), public-index (trigger), admin (`members.html`) | done — public pages tested against a mock of `/api/public/register`, not the real API |
+| F4 | "🔥 Hot Deals" hero button | public-index | public-pages (`shop.html?view=hot`) | done |
+| F5 | Bigger SOLD stamp on Recently Sold | public-index | — | done |
+| F6 | "Ask" → "Price", MSRP same size | public-pages | public-index (removes the old table) | done |
+| F7 | Just Dropped as cards, 8 max (4×2), "See all" | public-index | public-pages (renderer) | done — no live browser check at 400 px yet (PR preview) |
+| F8 | Shop Inventory → full live inventory as cards | public-pages | public-index (links) | done |
+| F9 | Shop Your Way tiles → per-size pages | public-pages | public-index (links) | done — size pages only show boxes with `box_size` set in admin (§8.5) |
+| F10 | Raleigh pickup → Wake Forest | public-index | public-pages (`thanks.html`, modal footer) | done — `<title>`/meta keep Raleigh on purpose (§8.11) |
+| F11 | Flea-market Friday delivery + $10 / 20 mi | public-index | public-pages (modal footer, faq) | done — no delivery fee at checkout (§8.1) |
+| F12 | Owner avatars | public-index | — | done — figcaption corners clip inside the circle on narrow phones; cosmetic |
+| — | `db/wishlist4.sql` applied to prod (Jeff, before merge) | integrator | — | not done — Jeff applies to `sqldb-nsl-prod` and runs the §2.10 checks |
+| — | Verify + PR | integrator | — | gap — merged 4 branches with no conflicts; `dotnet build` 0 errors; `node --check` clean; grep gate clean; seams cross-checked, no mismatches. PR not opened (no push from this session); no SWA preview smoke yet (§10.3) |
 
 Box size (`box_size`) is not a wishlist item but F7/F8/F9 are impossible
 without it (no size field exists today). It rides with db-api + admin.

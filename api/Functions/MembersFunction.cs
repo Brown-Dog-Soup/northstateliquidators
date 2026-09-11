@@ -33,9 +33,18 @@ public sealed class MembersFunction
 
     // Soft per-IP rate limit: 5 signups per 60 s window, in-memory (per
     // Functions instance — scale-out resets it; fine for a signup form).
+    // x-forwarded-for is caller-controlled (the edge APPENDS the real address
+    // to whatever the client sent), so a spoofer can dodge the per-IP bucket.
+    // Two backstops: a global cap per window that no header value can dodge,
+    // and a hard cap on the dictionary so junk keys can't grow it unbounded.
     private const int RateLimitPerWindow = 5;
+    private const int GlobalLimitPerWindow = 30;      // all signups, all IPs, per instance
+    private const int MaxTrackedIps = 5000;
     private static readonly TimeSpan RateWindow = TimeSpan.FromSeconds(60);
     private static readonly ConcurrentDictionary<string, (int count, DateTime windowStart)> _hits = new();
+    private static readonly object _globalLock = new();
+    private static int _globalCount;
+    private static DateTime _globalWindowStart = DateTime.MinValue;
 
     private static readonly Regex EmailRx = new(@"^[^@\s]+@[^@\s]+\.[^@\s]+$", RegexOptions.Compiled);
     private static readonly Regex StateRx = new(@"^[A-Za-z]{2}$", RegexOptions.Compiled);
@@ -46,28 +55,60 @@ public sealed class MembersFunction
         _log = log;
     }
 
+    /// <summary>
+    /// Best-effort client address for the per-IP bucket: the first
+    /// x-forwarded-for entry (per the contract) but only when it parses as a
+    /// real IP (":port" suffix stripped); anything else falls back to the socket
+    /// address. Never trusted for anything but rate limiting.
+    /// </summary>
     private static string ClientIp(HttpRequest req)
     {
         var fwd = req.Headers["x-forwarded-for"].FirstOrDefault();
         if (!string.IsNullOrWhiteSpace(fwd))
         {
             var first = fwd.Split(',')[0].Trim();
-            if (first.Length > 0) return first;
+            if (first.Length > 0 && first.Length <= 64)
+            {
+                // "1.2.3.4:5678" → "1.2.3.4"; "[::1]:5678" → "[::1]" (IPAddress.TryParse accepts the brackets)
+                if (!first.StartsWith('[') && first.Count(c => c == ':') == 1) first = first[..first.IndexOf(':')];
+                else if (first.StartsWith('[') && first.Contains("]:")) first = first[..(first.IndexOf("]:") + 1)];
+                if (System.Net.IPAddress.TryParse(first, out var parsed)) return parsed.ToString();
+            }
         }
         return req.HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
     }
 
-    /// <summary>True when this IP is over the limit for the current window.</summary>
+    /// <summary>
+    /// True when this IP is over the limit for the current window, or when the
+    /// whole instance is (global cap — a spoofed x-forwarded-for can't dodge that).
+    /// </summary>
     private static bool OverRateLimit(string ip)
     {
         var now = DateTime.UtcNow;
+
+        bool globalOver;
+        lock (_globalLock)
+        {
+            if (now - _globalWindowStart >= RateWindow) { _globalWindowStart = now; _globalCount = 0; }
+            _globalCount++;
+            globalOver = _globalCount > GlobalLimitPerWindow;
+        }
+        if (globalOver) return true;
+
         var entry = _hits.AddOrUpdate(ip,
             _ => (1, now),
             (_, cur) => now - cur.windowStart >= RateWindow ? (1, now) : (cur.count + 1, cur.windowStart));
-        // Opportunistic cleanup so the dictionary never grows unbounded.
-        if (_hits.Count > 5000)
+        // Cleanup so the dictionary never grows unbounded: drop expired windows
+        // first; if it is still oversized (a flood of junk keys inside one
+        // window) drop everything but the current key rather than keep growing.
+        if (_hits.Count > MaxTrackedIps)
+        {
             foreach (var kv in _hits)
                 if (now - kv.Value.windowStart >= RateWindow) _hits.TryRemove(kv.Key, out _);
+            if (_hits.Count > MaxTrackedIps)
+                foreach (var kv in _hits)
+                    if (kv.Key != ip) _hits.TryRemove(kv.Key, out _);
+        }
         return entry.count > RateLimitPerWindow;
     }
 
@@ -121,27 +162,41 @@ public sealed class MembersFunction
 
         // 4. Register (proc lower-cases email, upper-cases state, dedupes by email).
         await using var conn = await _sql.OpenAsync(ct);
-        var row = await conn.QueryFirstOrDefaultAsync(@"
+        dynamic? row;
+        try
+        {
+            row = await conn.QueryFirstOrDefaultAsync(@"
 EXEC dbo.sp_RegisterMember
   @first_name = @First, @last_name = @Last, @email = @Email, @phone = @Phone,
   @city = @City, @state = @State, @zip = @Zip, @how_heard = @How, @source = 'web'",
-            new
-            {
-                First = first, Last = last, Email = email,
-                Phone = string.IsNullOrEmpty(phone) ? null : phone,
-                City  = string.IsNullOrEmpty(city)  ? null : city,
-                State = string.IsNullOrEmpty(state) ? null : state,
-                Zip   = string.IsNullOrEmpty(zip)   ? null : zip,
-                How   = string.IsNullOrEmpty(how)   ? null : how
-            });
+                new
+                {
+                    First = first, Last = last, Email = email,
+                    Phone = string.IsNullOrEmpty(phone) ? null : phone,
+                    City  = string.IsNullOrEmpty(city)  ? null : city,
+                    State = string.IsNullOrEmpty(state) ? null : state,
+                    Zip   = string.IsNullOrEmpty(zip)   ? null : zip,
+                    How   = string.IsNullOrEmpty(how)   ? null : how
+                });
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 50000)
+        {
+            // RAISERROR from the proc — the member-number app lock timed out
+            // under a burst. Nothing was stored; the form can simply retry.
+            _log.LogWarning(ex, "RegisterMember: proc refused ({Message})", ex.Message);
+            return new ObjectResult(new { error = ex.Message }) { StatusCode = 503 };
+        }
         if (row == null) return new ObjectResult(new { error = "sp_RegisterMember returned no rows" }) { StatusCode = 500 };
 
         string memberNumber = ((string)row.member_number).Trim();
         bool already = (bool)row.already_registered;
         _log.LogInformation("RegisterMember: {Number} ({Status})", memberNumber, already ? "existing" : "new");
 
-        // 5.
-        return new OkObjectResult(new { memberNumber, alreadyRegistered = already });
+        // 5. A returning email gets alreadyRegistered but NOT the number: the
+        // number is what people give at the register, so echoing it back to
+        // anyone who types someone else's email would hand it out for free
+        // (and turn this route into a "is X signed up?" oracle).
+        return new OkObjectResult(new { memberNumber = already ? null : memberNumber, alreadyRegistered = already });
     }
 
     private const string ListSql = @"
@@ -200,11 +255,19 @@ FROM dbo.members ORDER BY created_at DESC";
         return new FileContentResult(bytes, "text/csv; charset=utf-8") { FileDownloadName = fileName };
     }
 
-    /// <summary>RFC-4180: quote when the value has a comma, quote or newline; double embedded quotes.</summary>
+    /// <summary>
+    /// RFC-4180: quote when the value has a comma, quote or newline; double
+    /// embedded quotes. Every text column here was typed by an anonymous
+    /// visitor and the file is opened in Excel, so a value that starts with
+    /// = + - @ or a tab/CR (what Excel treats as a formula) gets a leading
+    /// apostrophe and is force-quoted — Excel then shows it as plain text.
+    /// </summary>
     private static string CsvField(string? value)
     {
         if (string.IsNullOrEmpty(value)) return "";
-        if (value.IndexOfAny(new[] { ',', '"', '\r', '\n' }) < 0) return value;
+        var formulaLike = "=+-@\t\r".IndexOf(value[0]) >= 0;
+        if (formulaLike) value = "'" + value;
+        if (!formulaLike && value.IndexOfAny(new[] { ',', '"', '\r', '\n' }) < 0) return value;
         return "\"" + value.Replace("\"", "\"\"") + "\"";
     }
 }

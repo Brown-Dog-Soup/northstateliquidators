@@ -370,14 +370,31 @@ ORDER BY p.needs_refund DESC, p.created_at DESC")).ToList();
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "sales-summary")] HttpRequest req,
         CancellationToken ct)
     {
-        if (!_square.Configured)
-            return new ObjectResult(new { error = "Square is not configured." }) { StatusCode = 503 };
-
         var days = int.TryParse(req.Query["days"], out var d) ? Math.Clamp(d, 1, 365) : 30;
         var begin = DateTime.UtcNow.AddDays(-days);
 
-        var squarePayments = await _square.ListPaymentsAsync(begin, ct);
-        var payouts = await _square.ListPayoutsAsync(begin, ct);
+        // The Square half is optional: admin-marked sales (B1) are DB-only and
+        // must show even when Square is unconfigured (PR preview slot) or down.
+        // square_error tells sales.js to show a one-line notice instead of the
+        // whole page erroring out.
+        var squarePayments = new List<JsonElement>();
+        var payouts = new List<JsonElement>();
+        string? squareError = null;
+        if (!_square.Configured)
+            squareError = "Square is not configured — showing admin-marked sales only.";
+        else
+        {
+            try
+            {
+                squarePayments = await _square.ListPaymentsAsync(begin, ct);
+                payouts = await _square.ListPayoutsAsync(begin, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogError(ex, "SalesSummary: Square list failed — returning admin-marked sales only");
+                squareError = "Square didn't answer — showing admin-marked sales only. " + ex.Message;
+            }
+        }
 
         await using var conn = await _sql.OpenAsync(ct);
         var webRows = (await conn.QueryAsync(@"
@@ -425,9 +442,16 @@ WHERE p.created_at >= @begin", new { begin })).ToList();
                 note: null));
         }
 
-        // B1: boxes marked SOLD in admin with no Square payment on file. Fake
-        // sales (Sold → inventory) are not revenue; anything with a payments
-        // row is already counted above.
+        // B1: boxes marked SOLD in admin with no live Square payment on file.
+        // Fake sales (Sold → inventory) are not revenue. Only a COMPLETED*
+        // payments row counts as "already in the Square list" — a refunded or
+        // refund-flagged row must not hide a later real re-sale of the same box.
+        //
+        // These rows are listed but NOT added to gross_cents: a floor sale rung
+        // up on the Square terminal has no order link, so it is already in the
+        // Square loop above as channel 'floor' with no box; when staff then mark
+        // that box SOLD in admin (the normal counter workflow) the box shows up
+        // here too. Folding admin_cents into gross would count that sale twice.
         var adminRows = (await conn.QueryAsync(@"
 SELECT m.id AS manifest_id, m.pallet_number, m.display_name, m.sold_at,
        COALESCE(v.sale_price, v.list_price, v.total_wholesale) AS ask_price,
@@ -438,7 +462,10 @@ WHERE m.publish_state = 'sold'
   AND m.is_ghost = 0
   AND m.sold_to_inventory_at IS NULL
   AND m.sold_at >= @begin
-  AND NOT EXISTS (SELECT 1 FROM dbo.payments p WHERE p.manifest_id = m.id)
+  AND NOT EXISTS (SELECT 1 FROM dbo.payments p
+                  WHERE p.manifest_id = m.id
+                    AND p.needs_refund = 0
+                    AND p.status LIKE 'COMPLETED%')
 ORDER BY m.sold_at DESC", new { begin })).ToList();
 
         long adminCents = 0;
@@ -459,8 +486,9 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
                 display_name: (string?)a.display_name,
                 cost: cost,
                 margin_cents: cost.HasValue && amt > 0 ? (long?)(amt - (long)Math.Round(cost.Value * 100)) : null,
-                note: "Marked sold in admin — no Square payment on file"));
+                note: "Marked sold in admin — no Square payment linked to this box; if it was rung up on the terminal it is already in Floor / other"));
         }
+        var squareCount = sales.Count - adminRows.Count;
 
         // Newest first across both sources (Square gives RFC 3339 strings).
         sales.Sort((x, y) => ParseWhen(y.created_at).CompareTo(ParseWhen(x.created_at)));
@@ -477,13 +505,15 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
         return new OkObjectResult(new
         {
             days,
-            gross_cents = squareCents + adminCents,   // Square + admin-marked
+            gross_cents = squareCents,          // what Square actually collected (web + floor)
             square_cents = squareCents,
             web_cents = webCents,
             floor_cents = floorCents,
-            admin_cents = adminCents,
+            admin_cents = adminCents,           // listed separately — may overlap floor_cents (see above)
             refunded_cents = refundedCents,
-            sale_count = sales.Count,
+            sale_count = squareCount,           // Square sales only, matches gross_cents
+            admin_count = adminRows.Count,
+            square_error = squareError,         // null when Square answered
             sales,
             payouts = payoutList
         });
@@ -514,10 +544,14 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
             return new ObjectResult(new { error = "Square is not configured." }) { StatusCode = 503 };
 
         await using var conn = await _sql.OpenAsync(ct);
+        // Fake-sold boxes (Sold → inventory) are included so a Buy link that
+        // could not be retired at the time (Square unconfigured / hiccup) is
+        // swept here instead of staying payable forever.
         var open = (await conn.QueryAsync(@"
 SELECT TOP 50 id, pallet_number, publish_state, archived_at, checkout_link_id, checkout_order_id, invoice_id
 FROM dbo.manifests
-WHERE checkout_order_id IS NOT NULL AND publish_state <> 'sold'
+WHERE checkout_order_id IS NOT NULL
+  AND (publish_state <> 'sold' OR sold_to_inventory_at IS NOT NULL)
 ORDER BY checkout_created_at ASC")).ToList();
 
         int healed = 0, retired = 0, stillOpen = 0;

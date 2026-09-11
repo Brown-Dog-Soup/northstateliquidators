@@ -391,7 +391,7 @@
   // ── join / member sign-up modal (§6.6) ───────────────────────────────────
   const MEMBER_KEY = 'nsl.member';
   const JOIN_SUB_DEFAULT = "We'll email you first when new boxes drop. Write it down or screenshot this — give your number at the warehouse.";
-  const JOIN_SUB_BACK = 'Welcome back — that email is already registered.';
+  const JOIN_SUB_BACK = "Welcome back — that email is already registered. We don't show the number again here; ask at the register and we'll look it up.";
   const JOIN_SUB_STORED = 'You already signed up on this device — give this number at the warehouse.';
   const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
   let join = null;
@@ -465,6 +465,7 @@
       form.hidden = true;
       result.hidden = false;
       numberEl.textContent = n ? `#${n}` : '—';
+      numberEl.parentElement.hidden = !n;   // no "You're member —" when there is no number to show
       subEl.textContent = sub;
     };
     const showForm = () => { result.hidden = true; form.hidden = false; clearError(); };
@@ -520,7 +521,11 @@
         if (n) {
           rememberMember(n);
           relabelTriggers();
-          showResult(n, j.alreadyRegistered ? JOIN_SUB_BACK : JOIN_SUB_DEFAULT);
+          showResult(n, JOIN_SUB_DEFAULT);
+        } else if (j.alreadyRegistered) {
+          // The API never echoes an existing number back (anyone could type
+          // someone else's email) — say so instead of showing a blank number.
+          showResult(null, JOIN_SUB_BACK);
         } else {
           showResult(null, "Thanks — you're on the list.");
         }

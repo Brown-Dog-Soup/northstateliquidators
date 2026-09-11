@@ -41,9 +41,15 @@ IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_manifests_bo
 GO
 
 -- B9 backfill, once: boxes that are already live count as "went live" at their
--- last update. Only rows still NULL are touched, so re-runs are no-ops.
+-- last update. updated_at is bumped by ANY edit (price, notes, photo…), so a
+-- long-live box that staff touched in the last 48 h would otherwise land in
+-- "Just Dropped" on launch day — those get pushed just outside the window.
+-- Only rows still NULL are touched, so re-runs are no-ops.
 UPDATE dbo.manifests
-SET    live_at = COALESCE(live_at, updated_at)
+SET    live_at = COALESCE(live_at,
+                          CASE WHEN updated_at >= DATEADD(HOUR, -48, SYSUTCDATETIME())
+                               THEN DATEADD(HOUR, -49, SYSUTCDATETIME())
+                               ELSE updated_at END)
 WHERE  publish_state = 'live' AND live_at IS NULL;
 GO
 
@@ -251,9 +257,19 @@ BEGIN
     SET @state = UPPER(NULLIF(LTRIM(RTRIM(@state)), ''));
 
     BEGIN TRAN;
-    -- serialize number generation: two signups in the same second must not collide
-    EXEC sp_getapplock @Resource = 'nsl_member_number', @LockMode = 'Exclusive',
-                       @LockOwner = 'Transaction', @LockTimeout = 5000;
+    -- serialize number generation: two signups in the same second must not collide.
+    -- sp_getapplock does NOT raise on timeout — it returns <0 and execution
+    -- continues — so check the return code or a slow burst runs unserialized
+    -- and the second INSERT dies on UQ_members_member_number instead.
+    DECLARE @lock INT;
+    EXEC @lock = sp_getapplock @Resource = 'nsl_member_number', @LockMode = 'Exclusive',
+                               @LockOwner = 'Transaction', @LockTimeout = 5000;
+    IF @lock < 0
+    BEGIN
+        ROLLBACK TRAN;
+        RAISERROR('Could not reserve a member number right now — please try again.', 16, 1);
+        RETURN;
+    END;
 
     DECLARE @existing CHAR(7) = (SELECT member_number FROM dbo.members WHERE email = @email);
     IF @existing IS NOT NULL

@@ -504,6 +504,29 @@ FROM dbo.line_items WHERE manifest_id = @sid",
         string? prevState = (string?)orig.publish_state;
         string? linkId = (string?)orig.checkout_link_id;
 
+        // Retire the public Buy link on the original FIRST (same as
+        // SquareReconcile's "pulled box" branch) so nobody can pay for a box
+        // that reads SOLD. Done before the proc so a Square failure leaves the
+        // box untouched — there is nothing to undo and staff simply retry.
+        // (Once the box is sold, the invoice route refuses it and Reconcile
+        // only sweeps fake-sold rows, so this is the one reliable moment.)
+        if (linkId != null && _square.Configured)
+        {
+            try
+            {
+                await _square.DeletePaymentLinkAsync(linkId, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogError(ex, "SoldToInventory: could not retire Square link {Link} on BOX {Id} — box left as-is", linkId, id);
+                return new ObjectResult(new { error = "Could not retire the Square Buy link on this box — try again in a moment." }) { StatusCode = 502 };
+            }
+            await conn.ExecuteAsync(@"
+UPDATE dbo.manifests SET checkout_link_id = NULL, checkout_order_id = NULL,
+       checkout_url = NULL, checkout_created_at = NULL WHERE id = @id", new { id });
+            _log.LogInformation("SoldToInventory: retired Square link {Link} on BOX {Id}", linkId, id);
+        }
+
         dynamic? row;
         try
         {
@@ -521,25 +544,6 @@ FROM dbo.line_items WHERE manifest_id = @sid",
         Guid cloneId    = (Guid)row.clone_id;
         int  originalNo = (int)row.original_pallet_number;
         int  cloneNo    = (int)row.clone_pallet_number;
-
-        // Retire the public Buy link on the original (same as SquareReconcile's
-        // "pulled box" branch) so nobody can pay for a box that reads SOLD.
-        // The sale is already committed, so a Square hiccup is logged, not fatal.
-        if (linkId != null && _square.Configured)
-        {
-            try
-            {
-                await _square.DeletePaymentLinkAsync(linkId, ct);
-                await conn.ExecuteAsync(@"
-UPDATE dbo.manifests SET checkout_link_id = NULL, checkout_order_id = NULL,
-       checkout_url = NULL, checkout_created_at = NULL WHERE id = @id", new { id });
-                _log.LogInformation("SoldToInventory: retired Square link {Link} on BOX #{Num}", linkId, originalNo);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex, "SoldToInventory: could not retire Square link {Link} on BOX #{Num} — run Reconcile", linkId, originalNo);
-            }
-        }
 
         // B7 audit rows: two on the original, one on the clone.
         var who = ClientPrincipal.UserDetails(req);

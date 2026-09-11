@@ -102,7 +102,7 @@ bottom (§9). Order inside the file: columns → tables → procs → views → 
 |---|---|---|---|
 | `box_size` | `VARCHAR(20) NULL` | — | `CONSTRAINT CK_manifests_box_size CHECK (box_size IN ('mega_box','mini_pallet','full_pallet','individual'))` — add the CHECK with its own `IF NOT EXISTS (sys.check_constraints WHERE name=...)` guard |
 | `weight_lbs` | `DECIMAL(8,2) NULL` | — | B3 |
-| `live_at` | `DATETIME2 NULL` | — | B9. Stamped by `sp_SetPublishState`. Backfill once: `UPDATE dbo.manifests SET live_at = COALESCE(live_at, updated_at) WHERE publish_state='live' AND live_at IS NULL;` |
+| `live_at` | `DATETIME2 NULL` | — | B9. Stamped by `sp_SetPublishState`. Backfill once from `updated_at`, but a live box edited in the last 48 h gets `now − 49 h` instead (any PATCH bumps `updated_at`, so a plain copy would put long-live boxes in "Just Dropped" on launch day): `UPDATE dbo.manifests SET live_at = COALESCE(live_at, CASE WHEN updated_at >= DATEADD(HOUR,-48,SYSUTCDATETIME()) THEN DATEADD(HOUR,-49,SYSUTCDATETIME()) ELSE updated_at END) WHERE publish_state='live' AND live_at IS NULL;` |
 | `sold_to_inventory_at` | `DATETIME2 NULL` | — | B2. Set only by `sp_SoldToInventory`; cleared by `sp_SetPublishState` on live/draft |
 
 ### 2.2 `dbo.line_items` — new column
@@ -271,9 +271,18 @@ BEGIN
     SET @state = UPPER(NULLIF(LTRIM(RTRIM(@state)), ''));
 
     BEGIN TRAN;
-    -- serialize number generation: two signups in the same second must not collide
-    EXEC sp_getapplock @Resource = 'nsl_member_number', @LockMode = 'Exclusive',
-                       @LockOwner = 'Transaction', @LockTimeout = 5000;
+    -- serialize number generation: two signups in the same second must not collide.
+    -- sp_getapplock returns <0 on timeout instead of raising — check it, or a
+    -- slow burst runs unserialized and dies on UQ_members_member_number.
+    DECLARE @lock INT;
+    EXEC @lock = sp_getapplock @Resource = 'nsl_member_number', @LockMode = 'Exclusive',
+                               @LockOwner = 'Transaction', @LockTimeout = 5000;
+    IF @lock < 0
+    BEGIN
+        ROLLBACK TRAN;
+        RAISERROR('Could not reserve a member number right now — please try again.', 16, 1);
+        RETURN;
+    END;
 
     DECLARE @existing CHAR(7) = (SELECT member_number FROM dbo.members WHERE email = @email);
     IF @existing IS NOT NULL
@@ -557,8 +566,11 @@ The returned row adds `is_highlight`. Nothing else changes.
   `changed_by = 'square'` (`prev` is already in hand in both places). Same for
   `InvoiceBox` (live → draft, `changed_by = ClientPrincipal.UserDetails(req)`).
 
-- **`SalesSummary` — `GET /api/sales-summary?days=N` (B1).** After building the
-  Square list, add admin-marked sales:
+- **`SalesSummary` — `GET /api/sales-summary?days=N` (B1).** The Square half is
+  optional: when Square is unconfigured or its list calls throw, the route still
+  returns the admin-marked rows (they only need the DB) with `square_error` set
+  and empty `payouts`; `sales.js` shows a one-line notice instead of the error
+  tile. After building the Square list, add admin-marked sales:
 
 ```sql
 SELECT m.id AS manifest_id, m.pallet_number, m.display_name, m.sold_at,
@@ -570,25 +582,40 @@ WHERE m.publish_state = 'sold'
   AND m.is_ghost = 0
   AND m.sold_to_inventory_at IS NULL                       -- fake sales are not revenue
   AND m.sold_at >= @begin
-  AND NOT EXISTS (SELECT 1 FROM dbo.payments p WHERE p.manifest_id = m.id)   -- never double count a Square sale
+  AND NOT EXISTS (SELECT 1 FROM dbo.payments p                                -- never double count a WEB sale,
+                  WHERE p.manifest_id = m.id                                   -- but a refunded / refund-flagged
+                    AND p.needs_refund = 0 AND p.status LIKE 'COMPLETED%')    -- row must not hide a later re-sale
 ORDER BY m.sold_at DESC
 ```
 
 Each becomes a sale row with `amount_cents = round(ask_price*100)` (0 when
 `ask_price` is NULL — still listed so Rob sees the box), `cost = total_cost ??
 total_cost_units`, `margin_cents` when cost known. Merge with the Square rows,
-sort by `created_at` DESC. Response shape (snake_case, additions marked):
+sort by `created_at` DESC.
+
+**Deviation (review fix): `admin_cents` is NOT folded into `gross_cents`.** A
+floor sale rung up on the Square terminal has no order link, so it already sits
+in the Square list as `channel: floor` (no box). When staff then mark that box
+SOLD in admin — the normal counter workflow — the box also matches this query.
+Adding `admin_cents` on top would count every floor sale twice. So
+`gross_cents = square_cents`, `sale_count` counts Square rows only, and the
+admin rows are listed with their own `admin_count`/`admin_cents` and a note that
+they may already be a floor sale. If Rob wants admin-marked boxes in gross, add
+a real link (e.g. a "no Square payment" flag on the box) for the `NOT EXISTS`
+to key on. Response shape (snake_case, additions marked):
 
 ```json
 {
   "days": 30,
-  "gross_cents": 123400,          // CHANGED: square_cents + admin_cents
-  "square_cents": 100000,         // NEW: what gross_cents used to be
+  "gross_cents": 100000,          // = square_cents (what Square collected, web + floor)
+  "square_cents": 100000,         // NEW
   "web_cents": 60000,
   "floor_cents": 40000,
-  "admin_cents": 23400,           // NEW
+  "admin_cents": 23400,           // NEW — listed separately, may overlap floor_cents
   "refunded_cents": 0,
-  "sale_count": 7,                // includes admin rows
+  "sale_count": 5,                // Square rows only (matches gross_cents)
+  "admin_count": 2,               // NEW
+  "square_error": null,           // NEW — message when Square was unconfigured / failed
   "sales": [
     { "payment_id": "abc", "created_at": "...", "amount_cents": 18000, "refunded_cents": 0,
       "channel": "web", "source": "square",                       // source NEW
@@ -596,7 +623,7 @@ sort by `created_at` DESC. Response shape (snake_case, additions marked):
     { "payment_id": null, "created_at": "2026-09-08T15:10:00Z", "amount_cents": 23400, "refunded_cents": 0,
       "channel": "admin", "source": "admin",
       "pallet_number": 83, "display_name": "...", "cost": 90.00, "margin_cents": 14400,
-      "note": "Marked sold in admin — no Square payment on file" }
+      "note": "Marked sold in admin — no Square payment linked to this box; if it was rung up on the terminal it is already in Floor / other" }
   ],
   "payouts": [ ... unchanged ... ]
 }
@@ -624,15 +651,25 @@ Rules, in order:
 1. Honeypot: `website` non-empty → log at Information, return **200**
    `{ "memberNumber": null, "alreadyRegistered": false }` (nothing stored).
 2. Soft per-IP rate limit, in-memory: `static ConcurrentDictionary<string,(int count, DateTime windowStart)>`;
-   window 60 s, limit 5. IP = first value of `x-forwarded-for`, else
-   `req.HttpContext.Connection.RemoteIpAddress`. Over limit → **429**
+   window 60 s, limit 5. IP = first value of `x-forwarded-for` **only if it
+   parses as an IP** (`:port` stripped), else
+   `req.HttpContext.Connection.RemoteIpAddress`. Because the header is
+   caller-controlled, two backstops: a **global cap of 30 signups per 60 s per
+   instance** (any IP), and the dictionary is hard-capped at 5000 keys. Over
+   either limit → **429**
    `{ "error": "Too many signups from this connection — try again in a minute." }`.
 3. Validation → 400 `{ "error": "<message>" }`: `firstName`/`lastName` required
    (trimmed, ≤100); `email` required, ≤320, must match
    `^[^@\s]+@[^@\s]+\.[^@\s]+$`; `state` if present must be 2 letters; `zip` ≤10;
    `phone` ≤30; `howHeard` ≤200.
-4. `EXEC dbo.sp_RegisterMember ...` with `@source='web'`.
+4. `EXEC dbo.sp_RegisterMember ...` with `@source='web'`. A `RAISERROR`
+   (50000) from the proc — the member-number lock timed out — → **503**
+   `{ "error": "<proc message>" }`; nothing stored, the form retries.
 5. **200** `{ "memberNumber": "2600001", "alreadyRegistered": false }`.
+   **Returning email → `{ "memberNumber": null, "alreadyRegistered": true }`**
+   — the number is never echoed back for an existing email (anyone could type
+   someone else's address and get their number); the UI tells them to ask at
+   the register.
 
 **`GET /api/members`** → JSON array of `SELECT id, member_number, first_name, last_name, email, phone, city, state, zip, how_heard, source, created_at FROM dbo.members ORDER BY created_at DESC` (snake_case rows).
 
@@ -641,6 +678,9 @@ Rules, in order:
 row `member_number,first_name,last_name,email,phone,city,state,zip,how_heard,source,created_at`,
 same order as the list, RFC-4180 quoting (double any `"`; quote fields
 containing `,` `"` or newline), UTF-8 BOM prefix so Excel opens it cleanly.
+Formula-injection guard: a field starting with `=` `+` `-` `@` tab or CR gets a
+leading `'` and is force-quoted (every text column was typed by an anonymous
+visitor and the file is opened in Excel).
 
 ### 3.6 `staticwebapp.config.json`
 
@@ -753,7 +793,7 @@ one `<li>` per row formatted `Sep 11 2:14 PM · Rob · Price $180.00 → $150.00
 
 ### 4.4 `staff/sales.html` + `staff/js/sales.js` (B1 render)
 
-- Tiles: rename `Gross · Nd` sub to `${sale_count} sales · ${money(square_cents)} Square + ${money(admin_cents)} admin`; add tile `<div class="tile"><div class="lbl">Marked sold (admin)</div><div class="val">${money(s.admin_cents)}</div><div class="sub">boxes marked SOLD in admin, no Square payment</div></div>`; rename "Web margin" → "Margin" with sub `sale − our cost, boxes with a cost`.
+- Tiles: `Gross · Nd` sub reads `${sale_count} Square sales · web + floor`; add tile `<div class="tile"><div class="lbl">Marked sold (admin)</div><div class="val">${money(s.admin_cents)}</div><div class="sub">${admin_count} boxes marked SOLD in admin — not in Gross; may already be a floor sale</div></div>`; rename "Web margin" → "Margin" with sub `sale − our cost, boxes with a cost`. When `square_error` is set, a full-width yellow tile `Square unavailable` + the message goes first (admin rows still render).
 - Table: Channel cell `<span class="chan ${x.channel}">${x.channel}</span>`; add CSS `.chan.admin { background:#FDE7E7; color:#8a1f1f; }`. When `x.note` is set, render it under the box name as `<div style="font-size:11px;color:#888;">${esc(x.note)}</div>`. Amount `—` when `amount_cents === 0 && x.source === 'admin'` with title `No price set on this box`.
 - Nothing else changes.
 
@@ -1044,9 +1084,10 @@ SAME ids/classes as today (`mf-overlay`, `mf-box`, `mf-close`, `mf-head`,
 ```
 
 Submit: client checks required + email regex → `POST /api/public/register`
-(JSON, `credentials:'omit'`). 200 → hide form, show result; if
-`alreadyRegistered` the sub line reads `Welcome back — that email is already registered.`
-Store `localStorage['nsl.member'] = memberNumber` (try/catch) and relabel every
+(JSON, `credentials:'omit'`). 200 with a `memberNumber` → hide form, show result;
+if `alreadyRegistered` (`memberNumber` is null) the number line is hidden and the
+sub line reads `Welcome back — that email is already registered. We don't show the number again here; ask at the register and we'll look it up.`
+For a new number store `localStorage['nsl.member'] = memberNumber` (try/catch) and relabel every
 `#join-open` on the page to `★ Member #<n>`. 400/429 → show `error` in
 `#join-error`. Network failure → `Couldn't sign you up right now — call (919) 526-0112.`
 The trigger `#join-open` may exist on any page; the modal mounts on all three public pages.
@@ -1080,7 +1121,7 @@ as `shop.html`. `<title>FAQ — North State Liquidators</title>`.
 **DB columns**: `manifests.box_size`, `manifests.weight_lbs`, `manifests.live_at`, `manifests.sold_to_inventory_at`, `line_items.is_highlight`; tables `dbo.manifest_history`, `dbo.members`.
 **View columns (new)**: `units_with_cost`, `condition_mix`, `highlight_title`, `highlight_msrp`, `highlight_photo`, `box_size`, `weight_lbs`, `live_at`, `sold_to_inventory_at` (v_pallets only).
 **Procs**: `sp_SetPublishState` (re-declared), `sp_SoldToInventory(@manifest_id)`, `sp_RegisterMember(@first_name,@last_name,@email,@phone,@city,@state,@zip,@how_heard,@source)`.
-**Routes**: `POST /api/pallets/{id}/sold-to-inventory`, `GET /api/pallets/{id}/history`, `POST /api/public/register`, `GET /api/members`, `GET /api/members/export.csv`; changed: `PATCH /api/pallets/{id}` (+`boxSize`,`weightLbs`), `PATCH /api/items/{id}` (+`isHighlight`), `GET /api/public/pallets` (+fields, `is_just_dropped`), `GET /api/sales-summary` (+`source`,`note`,`admin_cents`,`square_cents`, channel `admin`).
+**Routes**: `POST /api/pallets/{id}/sold-to-inventory`, `GET /api/pallets/{id}/history`, `POST /api/public/register`, `GET /api/members`, `GET /api/members/export.csv`; changed: `PATCH /api/pallets/{id}` (+`boxSize`,`weightLbs`), `PATCH /api/items/{id}` (+`isHighlight`), `GET /api/public/pallets` (+fields, `is_just_dropped`), `GET /api/sales-summary` (+`source`,`note`,`admin_cents`,`square_cents`,`admin_count`,`square_error`, channel `admin`; `gross_cents` = `square_cents`).
 **Request JSON**: `boxSize`, `weightLbs`, `isHighlight`, `firstName`, `lastName`, `email`, `phone`, `city`, `state`, `zip`, `howHeard`, `website`.
 **Response JSON (camelCase)**: `originalId`, `originalPalletNumber`, `cloneId`, `clonePalletNumber`, `cloneDisplayName`, `itemsCopied`, `memberNumber`, `alreadyRegistered`, `error`.
 **Constants**: C# `PalletsFunction.JustDroppedHours = 48`; SQL 48 h literal in `v_public_pallets`; JS `NSL_BOX_SIZES` (api.js), `NSL.SIZE_LABELS`, `NSL.VIEW_DEFS`, `NSL.CONDITION_DEFS`.
@@ -1102,10 +1143,11 @@ Design tokens shared by `site.css` (copy from index): `--nc-red #CC0000`, `--nc-
 3. **Three condition definitions are ours, not the FAQ's**: Customer Return, Untested, Damaged/Salvage (§6.4). Rob to approve wording.
 4. **Sold → inventory and the catalog pool.** Availability on the Inventory page is `qty_in_manifest − SUM(line_items.qty)` (box-quantities.sql). The clone's copied line items count against that pool a second time (the original's consumed items still count too), so such items can read as over-allocated. Existing "Duplicate pallet" and ghost generation have the same effect today, so this is not new — but flag it. Precise fix if wanted later: exclude `line_items` whose manifest has `sold_to_inventory_at IS NOT NULL` from the three pool sums in `sp_AllocateCatalogToBox`, `sp_CreatePalletFromCatalog`, and `v_inventory`.
 5. **Just Dropped needs `box_size` set to appear on the size pages.** Boxes with no size show under Shop All / Just Dropped / Hot Deals only. Staff must pick a size in admin for each live box (one-time chore; the table view makes it fast).
-6. **Fake-sold boxes and Square links.** The API retires an open payment link when Sold → inventory runs; if Square is not configured the link stays until the next "Reconcile with Square". A payment on a fake-sold box would land as REFUND_FLAGGED (existing behaviour).
+6. **Fake-sold boxes and Square links.** The API retires an open payment link BEFORE Sold → inventory runs; if Square refuses, the route returns 502 and the box is untouched (just retry). If Square is not configured the link stays until the next "Reconcile with Square", which now also sweeps fake-sold boxes (`sold_to_inventory_at IS NOT NULL`). A payment on a fake-sold box would land as REFUND_FLAGGED (existing behaviour).
 7. **Sales: admin-marked boxes with no price** appear with `—` amount (still listed so nothing is invisible). Set a Box price to get revenue + margin.
 8. **Counts strip on the homepage** (`14 / 2,410 / $14.3K / 76%`) stays hardcoded — not on the list. Cheap follow-on: compute from live rows in `renderJustDropped`.
-9. **Registration is capture only** — no confirmation email (no outbound mail exists; see reseller design §8), no login, no dedupe by phone. Duplicates by email return the existing number.
+9. **Registration is capture only** — no confirmation email (no outbound mail exists; see reseller design §8), no login, no dedupe by phone. Duplicates by email get "already registered" but NOT the existing number (staff look it up on the Members page); the route still reveals whether an email is signed up.
+12. **Sales: admin-marked boxes are not in Gross.** A box rung up on the Square terminal and then marked SOLD in admin would otherwise count twice, so the "Marked sold (admin)" tile is informational. Ask Rob whether a "no Square payment taken" checkbox on the box is worth adding so those can join Gross.
 10. **Rate limit is per Functions instance** (in-memory); scale-out resets it. Acceptable for a signup form.
 11. **SEO copy still says Raleigh** in `<title>`/meta (the market), while pickup/warehouse copy says Wake Forest. Intentional; say so if asked.
 

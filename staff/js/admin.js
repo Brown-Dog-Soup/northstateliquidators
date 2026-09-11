@@ -11,6 +11,11 @@ let currentItems = [];
 let showArchived = false;
 let selectedItemIds = new Set();   // bulk-delete selection state for the open pallet
 let historyLoadedFor = null;       // manifest_id whose History panel has been fetched
+let selectedBoxIds = new Set();    // table-view selection feeding the multi-box manifest export
+
+// Matches MaxBatchBoxes in ExportFunction.cs. Also keeps the ?ids= query string
+// well under the ~8KB a server will accept: 100 GUIDs is about 3.7KB.
+const MAX_BATCH_BOXES = 100;
 
 // 'mega_box' → 'Mega Box'; unknown/empty → ''
 const sizeLabel = v => NSL_BOX_SIZES.find(s => s.value === v)?.label || '';
@@ -127,9 +132,12 @@ function renderTable() {
   const head = $('#ptab-head'), body = $('#ptab-body');
   if (!head || !body) return;
 
-  head.innerHTML = '<tr>' + TABLE_COLS.map(c =>
-    `<th data-key="${c.key}" class="${sortKey === c.key ? 'sorted' : ''}">${c.label}${sortKey === c.key ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`
-  ).join('') + '</tr>';
+  head.innerHTML = '<tr>'
+    + '<th class="sel"><input type="checkbox" id="select-all-boxes" title="Select every box in this list"></th>'
+    + TABLE_COLS.map(c =>
+        `<th data-key="${c.key}" class="${sortKey === c.key ? 'sorted' : ''}">${c.label}${sortKey === c.key ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`
+      ).join('')
+    + '</tr>';
 
   const rows = [...pallets].sort((a, b) => {
     const av = sortVal(a, sortKey), bv = sortVal(b, sortKey);
@@ -146,8 +154,10 @@ function renderTable() {
     const ghost = (p.publish_state === 'ghost') || !!p.is_ghost;
     const cost = p.total_cost ?? p.total_cost_units;
     const partial = (p.units_with_cost ?? 0) < (p.unit_count ?? 0);
+    const picked = selectedBoxIds.has(p.manifest_id);
     return `
-    <tr class="${p.archived_at ? 'archived' : ''}">
+    <tr class="${p.archived_at ? 'archived' : ''}${picked ? ' picked' : ''}">
+      <td class="sel"><input type="checkbox" class="box-select" data-id="${escape(p.manifest_id)}"${picked ? ' checked' : ''} title="Include this box in the manifest export"></td>
       <td><a class="box-link" href="#/pallet/${p.manifest_id}">#${p.pallet_number ?? '—'}</a></td>
       <td><input type="text" data-id="${p.manifest_id}" data-f="displayName" value="${escape(p.display_name || '')}"></td>
       <td>${statusPill(p)}${ghost ? ' <span class="ghost-flag">FICTITIOUS</span>' : ''}</td>
@@ -161,16 +171,82 @@ function renderTable() {
       <td><input type="number" step="0.1" min="0" data-id="${p.manifest_id}" data-f="weightLbs" value="${p.weight_lbs ?? ''}" placeholder="—" style="width:70px;"></td>
       <td>${escape(p.category || '—')}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="12" style="color:#666;">No pallets yet.</td></tr>';
+  }).join('') || `<tr><td colspan="${TABLE_COLS.length + 1}" style="color:#666;">No pallets yet.</td></tr>`;
 
-  head.querySelectorAll('th').forEach(th => th.addEventListener('click', () => {
+  // Only the data headers sort; the checkbox column has no data-key.
+  head.querySelectorAll('th[data-key]').forEach(th => th.addEventListener('click', () => {
     const key = th.dataset.key;
     if (sortKey === key) sortDir = -sortDir;
     else { sortKey = key; sortDir = ['display_name', 'category', 'publish_state', 'box_size'].includes(key) ? 1 : -1; }
-    renderTable();
+    renderTable();      // selection survives: it lives in selectedBoxIds, not the DOM
   }));
   body.querySelectorAll('input[data-f], select[data-f]').forEach(inp => inp.addEventListener('change', onTableEdit));
+
+  body.querySelectorAll('.box-select').forEach(cb => cb.addEventListener('change', e => {
+    const id = e.currentTarget.dataset.id;
+    if (e.currentTarget.checked) selectedBoxIds.add(id);
+    else                         selectedBoxIds.delete(id);
+    e.currentTarget.closest('tr')?.classList.toggle('picked', e.currentTarget.checked);
+    updateBoxSelectUI();
+  }));
+
+  $('#select-all-boxes')?.addEventListener('change', e => {
+    const on = e.currentTarget.checked;
+    // Acts on the rows currently listed, which is what "select all" means when
+    // the archived filter is on or a search has narrowed the list.
+    body.querySelectorAll('.box-select').forEach(cb => {
+      cb.checked = on;
+      if (on) selectedBoxIds.add(cb.dataset.id);
+      else    selectedBoxIds.delete(cb.dataset.id);
+      cb.closest('tr')?.classList.toggle('picked', on);
+    });
+    updateBoxSelectUI();
+  });
+
+  updateBoxSelectUI();
 }
+
+// Selection can outlive a re-render (sorting, reload), and a box can vanish from
+// the list when the archived filter flips — so prune to what is actually shown
+// before counting, or the bar would offer to export rows the user cannot see.
+function updateBoxSelectUI() {
+  const bar = $('#box-select-bar');
+  if (!bar) return;
+  const visible = new Set(pallets.map(p => p.manifest_id));
+  for (const id of [...selectedBoxIds]) if (!visible.has(id)) selectedBoxIds.delete(id);
+
+  const ids = [...selectedBoxIds];
+  const n = ids.length;
+  bar.hidden = n === 0;
+  $('#box-select-count').textContent = String(n);
+
+  const tooMany = n > MAX_BATCH_BOXES;
+  const qs = ids.slice(0, MAX_BATCH_BOXES).map(encodeURIComponent).join(',');
+  const staffLink = $('#dl-batch-staff'), buyerLink = $('#dl-batch-buyer');
+  if (staffLink) staffLink.href = `/api/pallets/manifests?ids=${qs}`;
+  if (buyerLink) buyerLink.href = `/api/pallets/manifests?ids=${qs}&view=buyer`;
+  [staffLink, buyerLink].forEach(a => {
+    if (!a) return;
+    a.style.opacity = tooMany ? '0.45' : '';
+    a.style.pointerEvents = tooMany ? 'none' : '';
+  });
+  $('#box-select-note').textContent = tooMany
+    ? `Too many — ${MAX_BATCH_BOXES} boxes max per file.`
+    : 'One tab per box, named Manifest###.';
+
+  const selAll = $('#select-all-boxes');
+  if (selAll) {
+    const shown = document.querySelectorAll('.box-select').length;
+    if (n === 0)           { selAll.checked = false; selAll.indeterminate = false; }
+    else if (n >= shown)   { selAll.checked = true;  selAll.indeterminate = false; }
+    else                   { selAll.checked = false; selAll.indeterminate = true; }
+  }
+}
+
+$('#box-select-clear')?.addEventListener('click', () => {
+  selectedBoxIds.clear();
+  renderTable();
+});
 
 // Autosave on click-away: 'change' fires when an input loses focus with a new
 // value. Name saves alone; a price edit sends BOTH price keys from the row so
@@ -307,11 +383,21 @@ async function showDetail(id) {
   const dl = $('#dl-manifest'), dlPub = $('#dl-manifest-public');
   if (dl) dl.href = `/api/pallets/${current.manifest_id}/manifest`;
   if (dlPub) {
-    const isPublic = ['live', 'sold', 'ghost'].includes(current.publish_state) && !current.archived_at;
-    dlPub.href = `/api/public/pallets/${current.manifest_id}/manifest`;
-    dlPub.style.opacity = isPublic ? '' : '0.45';
-    dlPub.style.pointerEvents = isPublic ? '' : 'none';
-    dlPub.title = isPublic ? '' : 'Put the box Live first — buyer copies only exist for public boxes';
+    // Always the staff route, never /api/public/. It renders the identical
+    // buyer-safe sheet but reads v_pallets, so it works on a draft too — the
+    // public view only holds live/ghost/sold boxes and 404s for one. Staff pull
+    // the file and email it; the box itself stays unlisted until it goes live.
+    dlPub.href = `/api/pallets/${current.manifest_id}/manifest/buyer`;
+    const draft = current.publish_state === 'draft';
+    dlPub.title = draft
+      ? 'Buyer-safe copy of this draft — marked PRELIMINARY, no cost or wholesale'
+      : 'Buyer-safe copy — no cost or wholesale';
+    const note = $('#dl-manifest-public-note');
+    if (note) {
+      note.textContent = draft
+        ? 'Title, brand, condition, qty, est. retail only — no cost or wholesale. Draft boxes are stamped PRELIMINARY so a buyer knows contents may still change.'
+        : 'Title, brand, condition, qty, est. retail only. Same file the public site offers.';
+    }
   }
 
   // Archive button label flips between Archive / Restore

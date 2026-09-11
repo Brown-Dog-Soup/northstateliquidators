@@ -191,6 +191,7 @@ WHERE NOT EXISTS (SELECT 1 FROM dbo.payments WHERE square_payment_id = @pid)",
             new { mid = manifestId, pid = paymentId });
         await conn.ExecuteAsync("EXEC dbo.sp_SetPublishState @manifest_id = @mid, @publish_state = 'sold'",
             new { mid = manifestId });
+        await PalletsFunction.InsertHistoryAsync(conn, manifestId, "publish_state", (string?)box.publish_state, "sold", "square");
 
         _log.LogInformation("SquareWebhook: BOX #{Num} SOLD via payment {PaymentId}",
             (object?)box.pallet_number, paymentId);
@@ -260,7 +261,10 @@ UPDATE dbo.manifests SET
 WHERE id = @id", new { id, iid = inv.InvoiceId, iurl = inv.PublicUrl, oid = inv.OrderId });
         // Reserved for the buyer: off the public site while the invoice is out.
         if ((string)box.publish_state == "live")
+        {
             await conn.ExecuteAsync("EXEC dbo.sp_SetPublishState @manifest_id = @id, @publish_state = 'draft'", new { id });
+            await PalletsFunction.InsertHistoryAsync(conn, id, "publish_state", "live", "draft", ClientPrincipal.UserDetails(req));
+        }
 
         _log.LogInformation("InvoiceBox: BOX #{Num} invoiced to {Email} for {Price} (invoice {Inv})",
             (object?)box.pallet_number, body.email, price, inv.InvoiceId);
@@ -387,8 +391,8 @@ WHERE p.created_at >= @begin", new { begin })).ToList();
             .GroupBy(r => (string)r.square_payment_id)
             .ToDictionary(g => g.Key, g => g.First());
 
-        var sales = new List<object>();
-        long grossCents = 0, webCents = 0, floorCents = 0, refundedCents = 0;
+        var sales = new List<SaleRow>();
+        long squareCents = 0, webCents = 0, floorCents = 0, refundedCents = 0;
         foreach (var p in squarePayments)
         {
             var status = p.TryGetProperty("status", out var st) ? st.GetString() : null;
@@ -401,25 +405,65 @@ WHERE p.created_at >= @begin", new { begin })).ToList();
             var created = p.TryGetProperty("created_at", out var ca) ? ca.GetString() : null;
             var isWeb = webByPaymentId.TryGetValue(pid, out var web);
 
-            grossCents += amt;
+            squareCents += amt;
             refundedCents += refunded;
             if (isWeb) webCents += amt; else floorCents += amt;
 
             decimal? cost = null;
             if (isWeb) cost = (decimal?)(web!.total_cost ?? web.total_cost_units);
-            sales.Add(new
-            {
-                payment_id = pid,
-                created_at = created,
-                amount_cents = amt,
-                refunded_cents = refunded,
-                channel = isWeb ? "web" : "floor",
-                pallet_number = isWeb ? (int?)web!.pallet_number : null,
-                display_name = isWeb ? (string?)web!.display_name : null,
-                cost = cost,
-                margin_cents = isWeb && cost.HasValue ? (long?)(amt - (long)Math.Round(cost.Value * 100)) : null
-            });
+            sales.Add(new SaleRow(
+                payment_id: pid,
+                created_at: created,
+                amount_cents: amt,
+                refunded_cents: refunded,
+                channel: isWeb ? "web" : "floor",
+                source: "square",
+                pallet_number: isWeb ? (int?)web!.pallet_number : null,
+                display_name: isWeb ? (string?)web!.display_name : null,
+                cost: cost,
+                margin_cents: isWeb && cost.HasValue ? (long?)(amt - (long)Math.Round(cost.Value * 100)) : null,
+                note: null));
         }
+
+        // B1: boxes marked SOLD in admin with no Square payment on file. Fake
+        // sales (Sold → inventory) are not revenue; anything with a payments
+        // row is already counted above.
+        var adminRows = (await conn.QueryAsync(@"
+SELECT m.id AS manifest_id, m.pallet_number, m.display_name, m.sold_at,
+       COALESCE(v.sale_price, v.list_price, v.total_wholesale) AS ask_price,
+       v.total_cost, v.total_cost_units
+FROM dbo.manifests m
+JOIN dbo.v_pallets v ON v.manifest_id = m.id
+WHERE m.publish_state = 'sold'
+  AND m.is_ghost = 0
+  AND m.sold_to_inventory_at IS NULL
+  AND m.sold_at >= @begin
+  AND NOT EXISTS (SELECT 1 FROM dbo.payments p WHERE p.manifest_id = m.id)
+ORDER BY m.sold_at DESC", new { begin })).ToList();
+
+        long adminCents = 0;
+        foreach (var a in adminRows)
+        {
+            decimal? ask = (decimal?)a.ask_price;
+            long amt = ask is > 0 ? (long)Math.Round(ask.Value * 100) : 0;   // 0 = no price yet, still listed
+            decimal? cost = (decimal?)(a.total_cost ?? a.total_cost_units);
+            adminCents += amt;
+            sales.Add(new SaleRow(
+                payment_id: null,
+                created_at: ((DateTime)a.sold_at).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+                amount_cents: amt,
+                refunded_cents: 0,
+                channel: "admin",
+                source: "admin",
+                pallet_number: (int?)a.pallet_number,
+                display_name: (string?)a.display_name,
+                cost: cost,
+                margin_cents: cost.HasValue && amt > 0 ? (long?)(amt - (long)Math.Round(cost.Value * 100)) : null,
+                note: "Marked sold in admin — no Square payment on file"));
+        }
+
+        // Newest first across both sources (Square gives RFC 3339 strings).
+        sales.Sort((x, y) => ParseWhen(y.created_at).CompareTo(ParseWhen(x.created_at)));
 
         var payoutList = payouts.Select(p => new
         {
@@ -433,15 +477,27 @@ WHERE p.created_at >= @begin", new { begin })).ToList();
         return new OkObjectResult(new
         {
             days,
-            gross_cents = grossCents,
+            gross_cents = squareCents + adminCents,   // Square + admin-marked
+            square_cents = squareCents,
             web_cents = webCents,
             floor_cents = floorCents,
+            admin_cents = adminCents,
             refunded_cents = refundedCents,
             sale_count = sales.Count,
             sales,
             payouts = payoutList
         });
     }
+
+    /// <summary>One row of the sales list; property names ARE the JSON keys (snake_case, like the Dapper rows).</summary>
+    private sealed record SaleRow(
+        string? payment_id, string? created_at, long amount_cents, long refunded_cents,
+        string channel, string source, int? pallet_number, string? display_name,
+        decimal? cost, long? margin_cents, string? note);
+
+    private static DateTimeOffset ParseWhen(string? iso) =>
+        DateTimeOffset.TryParse(iso, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal, out var dt) ? dt : DateTimeOffset.MinValue;
 
     /// <summary>
     /// Reconciliation sweep — SWA-managed Functions are HTTP-only (no timers),
@@ -476,6 +532,7 @@ ORDER BY checkout_created_at ASC")).ToList();
                 // Paid but never marked sold — the webhook we missed.
                 await conn.ExecuteAsync("EXEC dbo.sp_SetPublishState @manifest_id = @mid, @publish_state = 'sold'",
                     new { mid = (Guid)b.id });
+                await PalletsFunction.InsertHistoryAsync(conn, (Guid)b.id, "publish_state", (string?)b.publish_state, "sold", "square");
                 var tenderPayment = el.TryGetProperty("tenders", out var tenders) && tenders.GetArrayLength() > 0 &&
                                     tenders[0].TryGetProperty("payment_id", out var tp) ? tp.GetString() : $"reconciled-{b.checkout_order_id}";
                 await conn.ExecuteAsync(@"

@@ -23,7 +23,7 @@ async function loadMembers() {
   $('#members-count').textContent = `${rows.length} member${rows.length === 1 ? '' : 's'}`;
 
   $('#members-table').innerHTML =
-    `<tr><th>Member #</th><th>Name</th><th>Email</th><th>Phone</th><th>City/State</th><th>Zip</th><th>Heard from</th><th>Joined</th></tr>` +
+    `<tr><th>Member #</th><th>Name</th><th>Email</th><th>Phone</th><th>City/State</th><th>Zip</th><th>Heard from</th><th>Joined</th><th>Welcome email</th></tr>` +
     (rows.map(m => {
       const cityState = [m.city, m.state].filter(Boolean).join(', ');
       return `
@@ -36,6 +36,21 @@ async function loadMembers() {
         <td>${esc(m.zip || '—')}</td>
         <td>${esc(m.how_heard || '—')}</td>
         <td>${m.created_at ? new Date(m.created_at).toLocaleDateString() : '—'}</td>
+        <td>${m.welcome_sent_at
+          ? new Date(m.welcome_sent_at).toLocaleDateString()
+          : `<button type="button" class="btn btn-secondary resend-welcome" data-num="${esc(m.member_number)}" style="padding:4px 10px;font-size:11px;">Send welcome</button>`}</td>
       </tr>`;
-    }).join('') || '<tr><td colspan="8" style="color:#666;">No members yet — the signup form is on the public site.</td></tr>');
+    }).join('') || '<tr><td colspan="9" style="color:#666;">No members yet — the signup form is on the public site.</td></tr>');
+
+  document.querySelectorAll('.resend-welcome').forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = 'Sending…';
+    try {
+      const r = await apiClient.resendWelcome(b.dataset.num);
+      toast(r.sent ? `Welcome email sent to member ${b.dataset.num}` : 'Email not sent — check MAIL settings / logs', r.sent ? 'ok' : 'err', 3500);
+      await loadMembers();
+    } catch (e) {
+      toast(`Send failed: ${e.message}`, 'err', 4000);
+      b.disabled = false; b.textContent = 'Send welcome';
+    }
+  }));
 }

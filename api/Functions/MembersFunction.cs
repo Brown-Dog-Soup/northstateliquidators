@@ -20,10 +20,12 @@ namespace NSL.Api.Functions;
 ///   POST /api/public/register      — anonymous (honeypot + soft per-IP rate limit)
 ///   GET  /api/members              — staff list, newest first
 ///   GET  /api/members/export.csv   — staff CSV download for email blasts
+///   POST /api/members/{memberNumber}/resend-welcome — staff: resend the welcome email
 /// </summary>
 public sealed class MembersFunction
 {
     private readonly SqlService _sql;
+    private readonly MailService _mail;
     private readonly ILogger<MembersFunction> _log;
 
     public sealed record RegisterRequest(
@@ -49,9 +51,10 @@ public sealed class MembersFunction
     private static readonly Regex EmailRx = new(@"^[^@\s]+@[^@\s]+\.[^@\s]+$", RegexOptions.Compiled);
     private static readonly Regex StateRx = new(@"^[A-Za-z]{2}$", RegexOptions.Compiled);
 
-    public MembersFunction(SqlService sql, ILogger<MembersFunction> log)
+    public MembersFunction(SqlService sql, MailService mail, ILogger<MembersFunction> log)
     {
         _sql = sql;
+        _mail = mail;
         _log = log;
     }
 
@@ -196,11 +199,29 @@ EXEC dbo.sp_RegisterMember
         // number is what people give at the register, so echoing it back to
         // anyone who types someone else's email would hand it out for free
         // (and turn this route into a "is X signed up?" oracle).
-        return new OkObjectResult(new { memberNumber = already ? null : memberNumber, alreadyRegistered = already });
+        // Built BEFORE the mail attempt — the signup has already succeeded.
+        var result = new OkObjectResult(new { memberNumber = already ? null : memberNumber, alreadyRegistered = already });
+
+        // 6. Welcome email, new members only (v1). Best effort: nothing in this
+        // block may change what the visitor sees. CancellationToken.None so a
+        // closed tab cannot cancel a send already in flight.
+        if (!already)
+        {
+            try
+            {
+                if (await _mail.SendMemberWelcomeAsync(new MemberMail(memberNumber, first, email), CancellationToken.None))
+                    await conn.ExecuteAsync("EXEC dbo.sp_StampMemberWelcomeSent @member_number = @Num", new { Num = memberNumber });
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "RegisterMember: welcome-mail path threw for {Number} (signup still succeeded)", memberNumber);
+            }
+        }
+        return result;
     }
 
     private const string ListSql = @"
-SELECT id, member_number, first_name, last_name, email, phone, city, state, zip, how_heard, source, created_at
+SELECT id, member_number, first_name, last_name, email, phone, city, state, zip, how_heard, source, created_at, welcome_sent_at
 FROM dbo.members ORDER BY created_at DESC";
 
     [Function("ListMembers")]
@@ -227,11 +248,12 @@ FROM dbo.members ORDER BY created_at DESC";
 
         var sb = new StringBuilder();
         sb.Append((char)0xFEFF);   // UTF-8 BOM — Excel needs it to read UTF-8 correctly
-        sb.Append("member_number,first_name,last_name,email,phone,city,state,zip,how_heard,source,created_at\r\n");
+        sb.Append("member_number,first_name,last_name,email,phone,city,state,zip,how_heard,source,created_at,welcome_sent_at\r\n");
         foreach (var r in rows)
         {
             var d = (IDictionary<string, object?>)r;
             var createdAt = d["created_at"] is DateTime dt ? dt.ToString("yyyy-MM-ddTHH:mm:ssZ") : (d["created_at"]?.ToString() ?? "");
+            var welcomeAt = d.TryGetValue("welcome_sent_at", out var w) && w is DateTime wt ? wt.ToString("yyyy-MM-ddTHH:mm:ssZ") : "";
             sb.Append(string.Join(",", new[]
             {
                 CsvField(d["member_number"]?.ToString()?.Trim()),
@@ -244,7 +266,8 @@ FROM dbo.members ORDER BY created_at DESC";
                 CsvField(d["zip"]?.ToString()),
                 CsvField(d["how_heard"]?.ToString()),
                 CsvField(d["source"]?.ToString()),
-                CsvField(createdAt)
+                CsvField(createdAt),
+                CsvField(welcomeAt)
             }));
             sb.Append("\r\n");
         }
@@ -253,6 +276,41 @@ FROM dbo.members ORDER BY created_at DESC";
         var fileName = $"nsl-members-{DateTime.UtcNow:yyyyMMdd}.csv";
         _log.LogInformation("ExportMembersCsv: {N} member(s) -> {File}", rows.Count, fileName);
         return new FileContentResult(bytes, "text/csv; charset=utf-8") { FileDownloadName = fileName };
+    }
+
+    /// <summary>
+    /// POST /api/members/{memberNumber}/resend-welcome — staff-only by routing
+    /// (staticwebapp.config.json gates /api/*). Sends the welcome template again
+    /// and stamps welcome_sent_at. Who asked is logged for the audit trail.
+    /// </summary>
+    [Function("ResendMemberWelcome")]
+    public async Task<IActionResult> ResendWelcome(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "members/{memberNumber}/resend-welcome")] HttpRequest req,
+        string memberNumber,
+        CancellationToken ct)
+    {
+        if (!_mail.Configured)
+            return new ConflictObjectResult(new { error = "Email sending is turned off (MAIL_ENABLED)." });
+        var num = (memberNumber ?? "").Trim();
+        if (num.Length != 7 || !num.All(char.IsDigit))
+            return new BadRequestObjectResult(new { error = "memberNumber must be 7 digits." });
+
+        await using var conn = await _sql.OpenAsync(ct);
+        var m = await conn.QueryFirstOrDefaultAsync(
+            "SELECT member_number, first_name, email FROM dbo.members WHERE member_number = @num", new { num });
+        if (m == null) return new NotFoundResult();
+
+        var who = ClientPrincipal.UserDetails(req);
+        var sent = await _mail.SendMemberWelcomeAsync(
+            new MemberMail(((string)m.member_number).Trim(), (string)m.first_name, (string)m.email), CancellationToken.None);
+        DateTime? stampedAt = null;
+        if (sent)
+        {
+            await conn.ExecuteAsync("EXEC dbo.sp_StampMemberWelcomeSent @member_number = @num", new { num });
+            stampedAt = DateTime.UtcNow;
+        }
+        _log.LogInformation("ResendMemberWelcome: {Number} by {Who} -> sent={Sent}", num, who, sent);
+        return new OkObjectResult(new { sent, memberNumber = num, welcomeSentAt = stampedAt });
     }
 
     /// <summary>

@@ -79,6 +79,7 @@ export const apiClient = {
   setBoxSize:      (id, boxSize)   => api('PATCH', `/api/pallets/${id}`, { boxSize }),
   setWeight:       (id, weightLbs) => api('PATCH', `/api/pallets/${id}`, { weightLbs }),
   members:         ()        => api('GET',  '/api/members'),
+  resendWelcome:   (num)     => api('POST', `/api/members/${encodeURIComponent(num)}/resend-welcome`),
 
   // Square: sales dashboard, payment audit, refunds, reconcile, wholesale invoices
   salesSummary:     (days = 30) => api('GET', `/api/sales-summary?days=${days}`),

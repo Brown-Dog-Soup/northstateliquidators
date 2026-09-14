@@ -273,6 +273,42 @@
     if (section) section.hidden = false;
   }
 
+  // ── stats bar (live inventory counts, §Rob-1 — never show a stale number) ─
+  const fmtCountPrice = n => n >= 1000 ? ('$' + (n / 1000).toFixed(1) + 'K') : ('$' + Math.round(n).toLocaleString('en-US'));
+
+  async function renderCounts(opts) {
+    const o = opts || {};
+    const bar = $(o.bar || '#counts-bar');
+    if (!bar) return;
+    let rows;
+    try { rows = await fetchPublicPallets(); }
+    catch { bar.hidden = true; return; }
+    const live = (rows || []).filter(isLive);
+    if (live.length === 0) { bar.hidden = true; return; }
+
+    const boxes = live.length;
+    const units = live.reduce((sum, r) => sum + (num(r.unit_count) || 0), 0);
+    const price = live.reduce((sum, r) => sum + (num(r.ask_price) || 0), 0);
+
+    let sumAsk = 0, sumMsrp = 0;
+    live.forEach(r => {
+      const ask = num(r.ask_price), msrp = num(r.total_msrp);
+      if (ask > 0 && msrp > 0) { sumAsk += ask; sumMsrp += msrp; }
+    });
+
+    const boxesEl = $(o.boxes || '#count-boxes');
+    const unitsEl = $(o.units || '#count-units');
+    const priceEl = $(o.price || '#count-price');
+    const pctEl = $(o.pct || '#count-pct');
+
+    if (boxesEl) boxesEl.textContent = boxes.toLocaleString('en-US');
+    if (unitsEl) unitsEl.textContent = units.toLocaleString('en-US');
+    if (priceEl) priceEl.textContent = fmtCountPrice(price);
+    if (pctEl) pctEl.textContent = sumMsrp > 0 ? (Math.round((1 - sumAsk / sumMsrp) * 100) + '%') : '—';
+
+    bar.hidden = false;
+  }
+
   // ── checkout (same behaviour index.html had inline) ──────────────────────
   window.nslCheckoutEnabled = window.nslCheckoutEnabled || false;
 
@@ -590,7 +626,7 @@
     // data
     fetchPublicPallets, filterByView, VIEW_DEFS, SIZE_LABELS, CONDITION_DEFS, normalizeCondition,
     // rendering
-    boxCardHtml, renderBoxCards, renderJustDropped, renderRecentlySold, condPill, condMixHtml,
+    boxCardHtml, renderBoxCards, renderJustDropped, renderRecentlySold, renderCounts, condPill, condMixHtml,
     // modal + checkout
     showManifest, buyBox, initPage, openJoin, checkoutReady,
     // helpers

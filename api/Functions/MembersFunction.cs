@@ -30,6 +30,7 @@ public sealed class MembersFunction
 
     public sealed record RegisterRequest(
         string? firstName, string? lastName, string? email, string? phone,
+        string? address1, string? address2,
         string? city, string? state, string? zip, string? howHeard,
         string? website);   // honeypot — humans never see it; bots fill it
 
@@ -145,6 +146,8 @@ public sealed class MembersFunction
         var last  = body?.lastName?.Trim() ?? "";
         var email = body?.email?.Trim() ?? "";
         var phone = body?.phone?.Trim();
+        var address1 = body?.address1?.Trim();
+        var address2 = body?.address2?.Trim();
         var city  = body?.city?.Trim();
         var state = body?.state?.Trim();
         var zip   = body?.zip?.Trim();
@@ -161,6 +164,8 @@ public sealed class MembersFunction
             return new BadRequestObjectResult(new { error = "State must be 2 letters (e.g. NC)." });
         if (zip   is { Length: > 10 })  return new BadRequestObjectResult(new { error = "Zip is too long (10 max)." });
         if (phone is { Length: > 30 })  return new BadRequestObjectResult(new { error = "Phone is too long (30 max)." });
+        if (address1 is { Length: > 200 }) return new BadRequestObjectResult(new { error = "Street address is too long (200 max)." });
+        if (address2 is { Length: > 100 }) return new BadRequestObjectResult(new { error = "Apt/suite is too long (100 max)." });
         if (how   is { Length: > 200 }) return new BadRequestObjectResult(new { error = "\"How did you hear about us\" is too long (200 max)." });
 
         // 4. Register (proc lower-cases email, upper-cases state, dedupes by email).
@@ -171,11 +176,14 @@ public sealed class MembersFunction
             row = await conn.QueryFirstOrDefaultAsync(@"
 EXEC dbo.sp_RegisterMember
   @first_name = @First, @last_name = @Last, @email = @Email, @phone = @Phone,
+  @address1 = @Address1, @address2 = @Address2,
   @city = @City, @state = @State, @zip = @Zip, @how_heard = @How, @source = 'web'",
                 new
                 {
                     First = first, Last = last, Email = email,
                     Phone = string.IsNullOrEmpty(phone) ? null : phone,
+                    Address1 = string.IsNullOrEmpty(address1) ? null : address1,
+                    Address2 = string.IsNullOrEmpty(address2) ? null : address2,
                     City  = string.IsNullOrEmpty(city)  ? null : city,
                     State = string.IsNullOrEmpty(state) ? null : state,
                     Zip   = string.IsNullOrEmpty(zip)   ? null : zip,
@@ -221,7 +229,7 @@ EXEC dbo.sp_RegisterMember
     }
 
     private const string ListSql = @"
-SELECT id, member_number, first_name, last_name, email, phone, city, state, zip, how_heard, source, created_at, welcome_sent_at
+SELECT id, member_number, first_name, last_name, email, phone, address1, address2, city, state, zip, how_heard, source, created_at, welcome_sent_at
 FROM dbo.members ORDER BY created_at DESC";
 
     [Function("ListMembers")]
@@ -248,7 +256,7 @@ FROM dbo.members ORDER BY created_at DESC";
 
         var sb = new StringBuilder();
         sb.Append((char)0xFEFF);   // UTF-8 BOM — Excel needs it to read UTF-8 correctly
-        sb.Append("member_number,first_name,last_name,email,phone,city,state,zip,how_heard,source,created_at,welcome_sent_at\r\n");
+        sb.Append("member_number,first_name,last_name,email,phone,address1,address2,city,state,zip,how_heard,source,created_at,welcome_sent_at\r\n");
         foreach (var r in rows)
         {
             var d = (IDictionary<string, object?>)r;
@@ -261,6 +269,8 @@ FROM dbo.members ORDER BY created_at DESC";
                 CsvField(d["last_name"]?.ToString()),
                 CsvField(d["email"]?.ToString()),
                 CsvField(d["phone"]?.ToString()),
+                CsvField(d["address1"]?.ToString()),
+                CsvField(d["address2"]?.ToString()),
                 CsvField(d["city"]?.ToString()),
                 CsvField(d["state"]?.ToString()),
                 CsvField(d["zip"]?.ToString()),

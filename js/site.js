@@ -273,6 +273,42 @@
     if (section) section.hidden = false;
   }
 
+  // ── stats bar (live inventory counts, §Rob-1 — never show a stale number) ─
+  const fmtCountPrice = n => n >= 1000 ? ('$' + (n / 1000).toFixed(1) + 'K') : ('$' + Math.round(n).toLocaleString('en-US'));
+
+  async function renderCounts(opts) {
+    const o = opts || {};
+    const bar = $(o.bar || '#counts-bar');
+    if (!bar) return;
+    let rows;
+    try { rows = await fetchPublicPallets(); }
+    catch { bar.hidden = true; return; }
+    const live = (rows || []).filter(isLive);
+    if (live.length === 0) { bar.hidden = true; return; }
+
+    const boxes = live.length;
+    const units = live.reduce((sum, r) => sum + (num(r.unit_count) || 0), 0);
+    const price = live.reduce((sum, r) => sum + (num(r.ask_price) || 0), 0);
+
+    let sumAsk = 0, sumMsrp = 0;
+    live.forEach(r => {
+      const ask = num(r.ask_price), msrp = num(r.total_msrp);
+      if (ask > 0 && msrp > 0) { sumAsk += ask; sumMsrp += msrp; }
+    });
+
+    const boxesEl = $(o.boxes || '#count-boxes');
+    const unitsEl = $(o.units || '#count-units');
+    const priceEl = $(o.price || '#count-price');
+    const pctEl = $(o.pct || '#count-pct');
+
+    if (boxesEl) boxesEl.textContent = boxes.toLocaleString('en-US');
+    if (unitsEl) unitsEl.textContent = units.toLocaleString('en-US');
+    if (priceEl) priceEl.textContent = fmtCountPrice(price);
+    if (pctEl) pctEl.textContent = sumMsrp > 0 ? (Math.round((1 - sumAsk / sumMsrp) * 100) + '%') : '—';
+
+    bar.hidden = false;
+  }
+
   // ── checkout (same behaviour index.html had inline) ──────────────────────
   window.nslCheckoutEnabled = window.nslCheckoutEnabled || false;
 
@@ -434,6 +470,8 @@
                             <label>Last name <input id="join-last" name="lastName" required maxlength="100" autocomplete="family-name"></label></div>
       <label>Email <input id="join-email" name="email" type="email" required maxlength="320" autocomplete="email" inputmode="email"></label>
       <label>Phone <span style="text-transform:none;letter-spacing:0;color:#999;">(optional)</span> <input id="join-phone" name="phone" type="tel" maxlength="30" autocomplete="tel" inputmode="tel"></label>
+      <label>Street address <span style="text-transform:none;letter-spacing:0;color:#999;">(optional — helps us tell if you're within 20 miles for delivery)</span> <input id="join-address1" name="address1" maxlength="200" autocomplete="address-line1"></label>
+      <label>Apt / Suite <span style="text-transform:none;letter-spacing:0;color:#999;">(optional)</span> <input id="join-address2" name="address2" maxlength="100" autocomplete="address-line2"></label>
       <div class="join-row three"><label>City <input id="join-city" name="city" maxlength="120" autocomplete="address-level2"></label>
                                   <label>State <input id="join-state" name="state" maxlength="2" value="NC" autocomplete="address-level1"></label>
                                   <label>Zip <input id="join-zip" name="zip" maxlength="10" autocomplete="postal-code" inputmode="numeric"></label></div>
@@ -492,6 +530,7 @@
       const v = id => (overlay.querySelector('#' + id).value || '').trim();
       const body = {
         firstName: v('join-first'), lastName: v('join-last'), email: v('join-email'), phone: v('join-phone'),
+        address1: v('join-address1'), address2: v('join-address2'),
         city: v('join-city'), state: v('join-state').toUpperCase(), zip: v('join-zip'), howHeard: v('join-how'),
         website: v('join-website'),
       };
@@ -590,7 +629,7 @@
     // data
     fetchPublicPallets, filterByView, VIEW_DEFS, SIZE_LABELS, CONDITION_DEFS, normalizeCondition,
     // rendering
-    boxCardHtml, renderBoxCards, renderJustDropped, renderRecentlySold, condPill, condMixHtml,
+    boxCardHtml, renderBoxCards, renderJustDropped, renderRecentlySold, renderCounts, condPill, condMixHtml,
     // modal + checkout
     showManifest, buyBox, initPage, openJoin, checkoutReady,
     // helpers

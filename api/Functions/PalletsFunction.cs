@@ -499,8 +499,10 @@ FROM dbo.line_items WHERE manifest_id = @sid",
 
         // What the original looked like BEFORE — the proc validates the rest.
         var orig = await conn.QueryFirstOrDefaultAsync(
-            "SELECT publish_state, checkout_link_id FROM dbo.manifests WHERE id = @id", new { id });
+            "SELECT publish_state, checkout_link_id, invoice_id FROM dbo.manifests WHERE id = @id", new { id });
         if (orig == null) return new NotFoundResult();
+        if (orig.invoice_id != null)
+            return new ConflictObjectResult(new { error = "This box has an outstanding Square invoice — cancel the invoice first, or wait for it to be paid." });
         string? prevState = (string?)orig.publish_state;
         string? linkId = (string?)orig.checkout_link_id;
 

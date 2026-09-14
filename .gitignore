@@ -47,3 +47,7 @@ api/bin/
 api/obj/
 api/local.settings.json
 Square/
+
+# .NET build output
+**/bin/
+**/obj/

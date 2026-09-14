@@ -76,6 +76,7 @@ settings in the Azure portal, or reset it and re-set MAIL_CLIENT_SECRET):
   `$SECRET = Read-Host -AsSecureString 'MAIL_CLIENT_SECRET' | ConvertFrom-SecureString -AsPlainText
   `$t = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$TENANT/oauth2/v2.0/token" -Body @{ grant_type='client_credentials'; client_id='$APPID'; client_secret=`$SECRET; scope='https://graph.microsoft.com/.default' }
   `$p = @{ message = @{ subject='NSL mail smoke test'; body=@{ contentType='HTML'; content='<p>NSL-Website-Mail works.</p>' }; toRecipients = ,@{ emailAddress=@{ address='$JEFF' } } } } | ConvertTo-Json -Depth 8 -Compress
-  Invoke-RestMethod -Method Post -Uri 'https://graph.microsoft.com/v1.0/users/$HELLO/sendMail' -Headers @{ Authorization="Bearer `$(`$t.access_token)" } -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes(`$p))   # expect 202 (no output)
+  # Same percent-encoded form the site's code uses (Uri.EscapeDataString): hello%40…
+  Invoke-RestMethod -Method Post -Uri 'https://graph.microsoft.com/v1.0/users/$($HELLO -replace '@','%40')/sendMail' -Headers @{ Authorization="Bearer `$(`$t.access_token)" } -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes(`$p))   # expect 202 (no output)
   Invoke-RestMethod -Method Post -Uri 'https://graph.microsoft.com/v1.0/users/$JEFF/sendMail'  -Headers @{ Authorization="Bearer `$(`$t.access_token)" } -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes(`$p))   # expect 403 ErrorAccessDenied
 "@

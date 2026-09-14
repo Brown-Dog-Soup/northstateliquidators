@@ -809,8 +809,12 @@ Do NOT run `az ad app permission add` / `admin-consent` (RBAC 5A union rule).
 
 - [ ] **Step 3: Smoke test from Jeff's machine** — design §4 step 7: token with `$APPID/$SECRET`, `sendMail` as hello@ → 202; as Jeff's own mailbox → 403. Check hello@ Sent Items.
 
-- [ ] **Step 4: PR** — push `feature/member-welcome-email`, `gh pr create` (base `main`; note it stacks on #14 until that merges), wait for `API unit tests` + `Build and Deploy` green. Merge is Jeff's call.
+- [ ] **Step 3b: Smoke test uses the percent-encoded mailbox** — the code posts to `/users/hello%40northstateliquidators.com/sendMail` (`Uri.EscapeDataString`); the runbook's smoke test uses that exact spelling so the URL form is proven before go-live.
 
-- [ ] **Step 5: Go live** — apply `db/member-welcome-mail.sql` to prod (Invoke-Sqlcmd with Entra token); after deploy, sign up with a personal address with `MAIL_ENABLED=false` (row appears, no mail), flip `MAIL_ENABLED=true`, sign up with a second address → email arrives, `welcome_sent_at` set, staff page shows the date; click "Send welcome" for the first address → arrives. Rollback at any time: `MAIL_ENABLED=false`.
+- [ ] **Step 4: PR** — push `feature/member-welcome-email`, `gh pr create` (base `main`; note it stacks on #14 until that merges), wait for `API unit tests` + `Build and Deploy` green. **Do not merge yet.**
+
+- [ ] **Step 5: Apply the migration BEFORE merging** — `db/member-welcome-mail.sql` to prod (Invoke-Sqlcmd with Entra token). `MembersFunction.ListSql` and the CSV export select `welcome_sent_at`; if the code deploys first, the staff members page and CSV return 500 (`Invalid column name`). The migration is additive and harmless to the old code, so it is safe to apply early.
+
+- [ ] **Step 6: Merge (Jeff) → deploy → go live** — with `MAIL_ENABLED=false` sign up with a personal address (row appears, no mail); flip `MAIL_ENABLED=true` (only after the Exchange scope has propagated ~30 min and the smoke test passed); sign up with a second address → email arrives, `welcome_sent_at` set, staff page shows the date; click "Send welcome" for the first address → arrives. Open that email in Outlook desktop, Outlook web, Gmail web and iOS Mail once (spec §5 #7) — the 560px div is the likeliest thing Word-rendered Outlook ignores. Rollback at any time: `MAIL_ENABLED=false`.
 
 - [ ] **Step 6: Docs** — in the design's Status line append `— configured <date>, live <date>`; add a calendar note: secret expires 24 months from Step 1 (rotate with `az ad app credential reset` + re-set `MAIL_CLIENT_SECRET`).

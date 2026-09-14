@@ -470,6 +470,8 @@
                             <label>Last name <input id="join-last" name="lastName" required maxlength="100" autocomplete="family-name"></label></div>
       <label>Email <input id="join-email" name="email" type="email" required maxlength="320" autocomplete="email" inputmode="email"></label>
       <label>Phone <span style="text-transform:none;letter-spacing:0;color:#999;">(optional)</span> <input id="join-phone" name="phone" type="tel" maxlength="30" autocomplete="tel" inputmode="tel"></label>
+      <label>Street address <span style="text-transform:none;letter-spacing:0;color:#999;">(optional — helps us tell if you're within 20 miles for delivery)</span> <input id="join-address1" name="address1" maxlength="200" autocomplete="address-line1"></label>
+      <label>Apt / Suite <span style="text-transform:none;letter-spacing:0;color:#999;">(optional)</span> <input id="join-address2" name="address2" maxlength="100" autocomplete="address-line2"></label>
       <div class="join-row three"><label>City <input id="join-city" name="city" maxlength="120" autocomplete="address-level2"></label>
                                   <label>State <input id="join-state" name="state" maxlength="2" value="NC" autocomplete="address-level1"></label>
                                   <label>Zip <input id="join-zip" name="zip" maxlength="10" autocomplete="postal-code" inputmode="numeric"></label></div>
@@ -528,6 +530,7 @@
       const v = id => (overlay.querySelector('#' + id).value || '').trim();
       const body = {
         firstName: v('join-first'), lastName: v('join-last'), email: v('join-email'), phone: v('join-phone'),
+        address1: v('join-address1'), address2: v('join-address2'),
         city: v('join-city'), state: v('join-state').toUpperCase(), zip: v('join-zip'), howHeard: v('join-how'),
         website: v('join-website'),
       };

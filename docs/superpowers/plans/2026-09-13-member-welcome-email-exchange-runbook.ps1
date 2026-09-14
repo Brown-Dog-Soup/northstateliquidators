@@ -25,7 +25,9 @@ $HELLO  = 'hello@northstateliquidators.com'
 $JEFF   = 'jeffrey.blanchard@tenantiqpro.com'
 
 Import-Module ExchangeOnlineManagement
-Connect-ExchangeOnline -ShowBanner:$false
+# -Device: device-code sign-in (prints a code + URL). The default WAM broker
+# needs a console window handle and fails under Claude Code's `!` prompt.
+Connect-ExchangeOnline -Device -ShowBanner:$false
 
 # --- 0. preflight: hello@ must be a shared mailbox ---------------------------
 $mbx = Get-Mailbox -Identity $HELLO
@@ -51,9 +53,30 @@ if (-not (Get-ServicePrincipal -Identity $APPID -ErrorAction SilentlyContinue)) 
 "Exchange service principal: ok"
 
 # --- 3. scope + role assignment -----------------------------------------------
+# One-time tenant prerequisite: custom management scopes/role assignments need
+# the org "hydrated". Irreversible, benign, standard. Can take a few minutes to
+# take effect — if New-ManagementScope still errors right after, re-run this script.
+if ((Get-OrganizationConfig).IsDehydrated) {
+    "Running Enable-OrganizationCustomization (one-time)…"
+    Enable-OrganizationCustomization
+    Start-Sleep -Seconds 60
+}
 if (-not (Get-ManagementScope -Identity 'NSL Mail Senders Scope' -ErrorAction SilentlyContinue)) {
     New-ManagementScope -Name 'NSL Mail Senders Scope' `
         -RecipientRestrictionFilter "MemberOfGroup -eq '$($grp.DistinguishedName)'" | Out-Null
+}
+# Exchange only lets you assign a role to an app if your own role group holds a
+# DELEGATING assignment for that role. Organization Management gets those for
+# the classic roles but not always for the newer "Application …" roles.
+$who = Get-RoleGroupMember 'Organization Management' | Select-Object -ExpandProperty PrimarySmtpAddress
+"Organization Management members: $($who -join ', ')"
+$deleg = Get-ManagementRoleAssignment -Role 'Application Mail.Send' -Delegating:$true -ErrorAction SilentlyContinue |
+         Where-Object { $_.RoleAssigneeName -eq 'Organization Management' }
+if (-not $deleg) {
+    "Adding delegating assignment of 'Application Mail.Send' to Organization Management…"
+    New-ManagementRoleAssignment -Name 'Application Mail.Send-Organization Management-Delegating' `
+        -Role 'Application Mail.Send' -SecurityGroup 'Organization Management' -Delegating | Out-Null
+    Start-Sleep -Seconds 30
 }
 if (-not (Get-ManagementRoleAssignment -Identity 'NSL-Website-Mail to NSL Mail Senders' -ErrorAction SilentlyContinue)) {
     New-ManagementRoleAssignment -Name 'NSL-Website-Mail to NSL Mail Senders' `

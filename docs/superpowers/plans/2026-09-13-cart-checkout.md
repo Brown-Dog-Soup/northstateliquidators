@@ -2,20 +2,30 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Shoppers add any mix of live boxes to a cart and pay for all of them in one Square hosted checkout; every box on a paid order flips SOLD, with overlap between shoppers resolved by DB-first link cancellation and partial-refund flagging.
+**Goal:** Shoppers add any mix of live boxes to a cart, choose how they want them (warehouse pickup, $10 local delivery, or the free Friday flea-market drop), and pay for all of them — plus 7.25% NC sales tax — in one Square hosted checkout; every box on a paid order flips SOLD, with overlap between shoppers resolved by DB-first link cancellation and partial-refund flagging.
 
-**Architecture:** Two new tables (`checkout_orders`, `checkout_order_boxes`) replace the per-box `manifests.checkout_*` columns as the correlation between a Square order and N boxes. A new `CheckoutFulfillment` service owns the one transactional routine that sells every box on a paid order, records per-box outcomes, and cancels competing links; the webhook and Reconcile both call it. The browser keeps an ids-only cart in localStorage and re-prices it from the public pallets feed. Square's hosted page is unchanged; the create call switches from `quick_pay` to a full `order`.
+**Architecture:** Two new tables (`checkout_orders`, `checkout_order_boxes`) replace the per-box `manifests.checkout_*` columns as the correlation between a Square order and N boxes. A new `CheckoutFulfillment` service owns the one transactional routine that sells every box on a paid order, records per-box outcomes, and cancels competing links; the webhook and Reconcile both call it. The browser keeps an ids-only cart in localStorage and re-prices it from the public pallets feed. Square's hosted page is unchanged; the create call switches from `quick_pay` to a full `order` — which is also what lets us attach `order.taxes[]` (one 7.25% ADDITIVE LINE_ITEM-scope tax, applied to every box line) and, for delivery orders only, one `order.service_charges[]` entry carrying that same tax. The delivery choice is collected in **our** cart drawer, never by Square (`ask_for_shipping_address` stays off), and the 20-mile radius is a zip allow-list in `dbo.delivery_zips`.
+
+**2026-09-14 revision:** this plan was rewritten alongside spec v3 to absorb Rob's tax / delivery / member-address requests. Task numbering is unchanged; Task 16 is appended. No card surcharge is built — spec §7.1 records why.
 
 **Tech Stack:** .NET 8 isolated Azure Functions, Dapper + Microsoft.Data.SqlClient (explicit `SqlTransaction`), System.Text.Json, xUnit (`api.Tests`, created in the Phase 0 plan), vanilla JS/CSS (`js/site.js`, `css/site.css`), T-SQL, Square Checkout/Orders/Refunds APIs, GitHub Actions cron.
 
-**Spec:** `docs/superpowers/specs/2026-09-13-cart-checkout-design.md` (§1–§7). The Phase 0 hotfix plan (`docs/superpowers/plans/2026-09-13-square-hotfix.md`) must be merged first — this plan assumes `SquareEvents` and `api.Tests` exist.
+**Spec:** `docs/superpowers/specs/2026-09-13-cart-checkout-design.md` (§1–§8; tax and delivery are **§8**). The Phase 0 hotfix plan (`docs/superpowers/plans/2026-09-13-square-hotfix.md`) must be merged first — this plan assumes `SquareEvents` and `api.Tests` exist.
+
+**Concurrent work — do not fight it.** A separate agent is adding street-address lines to `dbo.members`, the join modal and `POST /api/public/register`. This plan depends on the result (spec §8.5) but must not edit the join modal's form markup or `sp_RegisterMember`; Task 16 touches only the *success handler* in `js/site.js`. Rebase before starting Task 16 and re-read `js/site.js` around the join section.
 
 ## Global Constraints
 
 - Branch: `feature/cart-checkout` (already exists with the spec committed). Rebase on `main` after the hotfix PR merges.
 - Cart cap: **20** boxes. Kill switch `SQUARE_CHECKOUT_ENABLED` gates every cart control and the checkout endpoint (503).
 - localStorage key: `nsl.cart` (JSON array of manifest_id strings). Thanks page query: `?boxes=12,14` (legacy `?box=N` still accepted).
-- Square: `checkout_options.enable_coupon=false`, `allow_tipping=false`, `ask_for_shipping_address` omitted; line item `uid` = manifest_id (max 60), `name` ≤ 512, `payment_note` ≤ 500; refund `idempotency_key` ≤ **45 chars**; `DeletePaymentLink` only counts as confirmed when the response has `cancelled_order_id`.
+- Square: `checkout_options.enable_coupon=false`, `allow_tipping=false`, `ask_for_shipping_address` omitted, **`shipping_fee` never sent**; line item `uid` = manifest_id (max 60), `name` ≤ 512, `payment_note` ≤ 500; refund `idempotency_key` ≤ **45 chars**; `DeletePaymentLink` only counts as confirmed when the response has `cancelled_order_id`.
+- **Tax:** one `order.taxes[]` entry, `uid = "NC-SALES-725"`, `name = "NC sales tax (7.25%)"`, `percentage = "7.25"` (a *string*), `type = "ADDITIVE"`, `scope = "LINE_ITEM"`. Every line item gets `applied_taxes: [{ tax_uid: "NC-SALES-725" }]`. LINE_ITEM scope — not ORDER — because an ORDER-scope tax does not reach a service charge and NC taxes the delivery fee (spec §8.1).
+- **Delivery:** `DELIVERY_CENTS = 1000`. For `delivery_method='delivery'` only, one `order.service_charges[]` entry `uid = "NSL-DELIVERY"`, `calculation_phase = "SUBTOTAL_PHASE"`, `scope = "ORDER"`, `treatment_type = "LINE_ITEM_TREATMENT"`, `taxable = true`, `applied_taxes: [{ tax_uid: "NC-SALES-725" }]`. Omit the array entirely for `pickup` and `flea`.
+- **Never compute the authoritative tax.** `total_cents` / `tax_cents` / `delivery_cents` and every per-box `tax_cents` come out of the create response's `related_resources.orders[0]` (`total_money`, `total_tax_money`, `total_service_charge_money`, `line_items[].total_tax_money` matched on `uid`). Browser-side tax is display only.
+- **Amount checks compare to `checkout_orders.total_cents`** (Square's `total_money`, tax and delivery included), never to the sum of box prices.
+- `delivery_method` ∈ `pickup` | `delivery` | `flea`, default `pickup`. A `delivery` order must carry a zip that is `active` in `dbo.delivery_zips` and a non-empty address; validated server-side on every checkout, regardless of what the browser sent.
+- **Revenue is goods only.** Tax and the delivery fee never enter `margin_cents` or the sales-summary amount.
 - Availability for a `kind='link'` order: `publish_state='live' AND archived_at IS NULL AND is_ghost=0 AND invoice_id IS NULL`. For `kind='invoice'`: `publish_state <> 'sold'`.
 - Reconcile ages out open link orders after **7 days**.
 - SOLD only via `EXEC dbo.sp_SetPublishState`; history rows via `PalletsFunction.InsertHistoryAsync` with `changed_by='square'`.
@@ -33,7 +43,8 @@
 - Modify: `db/square-payments.sql:1-8` (header note only)
 
 **Interfaces:**
-- Produces tables `dbo.checkout_orders`, `dbo.checkout_order_boxes`; columns `dbo.payments.refund_due_cents BIGINT NULL`, `dbo.payments.refunded_cents BIGINT NOT NULL DEFAULT 0`. All later tasks' SQL depends on these exact names.
+- Produces tables `dbo.checkout_orders`, `dbo.checkout_order_boxes`, `dbo.delivery_zips`; columns `dbo.payments.refund_due_cents BIGINT NULL`, `dbo.payments.refunded_cents BIGINT NOT NULL DEFAULT 0`. All later tasks' SQL depends on these exact names.
+- `checkout_orders` splits the money: `subtotal_cents` (boxes) + `tax_cents` + `delivery_cents` = `total_cents`. `checkout_order_boxes.tax_cents` holds the per-box tax Square computed, so a per-box refund can return it (spec §8.6, §8.8).
 
 - [ ] **Step 1: Write the script**
 
@@ -53,15 +64,41 @@ BEGIN
         square_link_id   VARCHAR(64)   NULL,                      -- links only
         url              NVARCHAR(500) NULL,
         status           VARCHAR(16)   NOT NULL DEFAULT 'open',   -- open | paid | canceled
-        total_cents      BIGINT        NOT NULL,
+        subtotal_cents   BIGINT        NOT NULL CONSTRAINT DF_co_subtotal DEFAULT 0,   -- boxes only
+        tax_cents        BIGINT        NOT NULL CONSTRAINT DF_co_tax      DEFAULT 0,   -- Square total_tax_money
+        delivery_cents   BIGINT        NOT NULL CONSTRAINT DF_co_delivery DEFAULT 0,   -- Square total_service_charge_money
+        total_cents      BIGINT        NOT NULL,                  -- Square total_money (= the three above)
+        delivery_method  VARCHAR(16)   NOT NULL CONSTRAINT DF_co_method   DEFAULT 'pickup',  -- pickup | delivery | flea
+        delivery_zip     VARCHAR(10)   NULL,
+        delivery_address NVARCHAR(300) NULL,
+        member_number    CHAR(7)       NULL,
         created_at       DATETIME2     NOT NULL DEFAULT SYSUTCDATETIME(),
         closed_at        DATETIME2     NULL,
         link_deleted_at  DATETIME2     NULL,                      -- Square confirmed (cancelled_order_id present)
         CONSTRAINT CK_checkout_orders_kind   CHECK (kind IN ('link','invoice')),
-        CONSTRAINT CK_checkout_orders_status CHECK (status IN ('open','paid','canceled'))
+        CONSTRAINT CK_checkout_orders_status CHECK (status IN ('open','paid','canceled')),
+        CONSTRAINT CK_checkout_orders_method CHECK (delivery_method IN ('pickup','delivery','flea'))
     );
     CREATE INDEX IX_co_status ON dbo.checkout_orders (status, kind, created_at);
 END;
+GO
+
+-- Re-runnable column adds, for a database that already has the table from an
+-- earlier apply of this script (spec §8 landed after the first version).
+IF COL_LENGTH('dbo.checkout_orders', 'subtotal_cents') IS NULL
+    ALTER TABLE dbo.checkout_orders ADD subtotal_cents BIGINT NOT NULL CONSTRAINT DF_co_subtotal DEFAULT 0;
+IF COL_LENGTH('dbo.checkout_orders', 'tax_cents') IS NULL
+    ALTER TABLE dbo.checkout_orders ADD tax_cents BIGINT NOT NULL CONSTRAINT DF_co_tax DEFAULT 0;
+IF COL_LENGTH('dbo.checkout_orders', 'delivery_cents') IS NULL
+    ALTER TABLE dbo.checkout_orders ADD delivery_cents BIGINT NOT NULL CONSTRAINT DF_co_delivery DEFAULT 0;
+IF COL_LENGTH('dbo.checkout_orders', 'delivery_method') IS NULL
+    ALTER TABLE dbo.checkout_orders ADD delivery_method VARCHAR(16) NOT NULL CONSTRAINT DF_co_method DEFAULT 'pickup';
+IF COL_LENGTH('dbo.checkout_orders', 'delivery_zip') IS NULL
+    ALTER TABLE dbo.checkout_orders ADD delivery_zip VARCHAR(10) NULL;
+IF COL_LENGTH('dbo.checkout_orders', 'delivery_address') IS NULL
+    ALTER TABLE dbo.checkout_orders ADD delivery_address NVARCHAR(300) NULL;
+IF COL_LENGTH('dbo.checkout_orders', 'member_number') IS NULL
+    ALTER TABLE dbo.checkout_orders ADD member_number CHAR(7) NULL;
 GO
 
 IF OBJECT_ID('dbo.checkout_order_boxes', 'U') IS NULL
@@ -70,13 +107,64 @@ BEGIN
         square_order_id  VARCHAR(64)      NOT NULL
             CONSTRAINT FK_cob_order REFERENCES dbo.checkout_orders (square_order_id),
         manifest_id      UNIQUEIDENTIFIER NOT NULL,   -- no FK on purpose: DeletePallet cleans up explicitly
-        amount_cents     BIGINT           NOT NULL,   -- price at link time
+        amount_cents     BIGINT           NOT NULL,   -- price at link time, EX tax
+        tax_cents        BIGINT           NOT NULL CONSTRAINT DF_cob_tax DEFAULT 0,  -- this line's total_tax_money, from Square
         outcome          VARCHAR(16)      NULL,       -- NULL | 'sold' | 'unavailable'
         fulfilled_at     DATETIME2        NULL,
         CONSTRAINT PK_cob PRIMARY KEY (square_order_id, manifest_id),
         CONSTRAINT CK_cob_outcome CHECK (outcome IS NULL OR outcome IN ('sold','unavailable'))
     );
     CREATE INDEX IX_cob_manifest ON dbo.checkout_order_boxes (manifest_id);
+END;
+GO
+
+IF COL_LENGTH('dbo.checkout_order_boxes', 'tax_cents') IS NULL
+    ALTER TABLE dbo.checkout_order_boxes ADD tax_cents BIGINT NOT NULL CONSTRAINT DF_cob_tax DEFAULT 0;
+GO
+
+-- ----------------------------------------------------------------------------
+-- Delivery radius as a list Rob can edit without a deploy (spec §8.4). A
+-- curated allow-list, not a geocoder: one warehouse, one answer per zip, and
+-- the call on a borderline zip is Rob's judgement, not a haversine.
+-- The 'borderline' rows are seeded active = 0 until he confirms them.
+-- ----------------------------------------------------------------------------
+IF OBJECT_ID('dbo.delivery_zips', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.delivery_zips (
+        zip        VARCHAR(10)   NOT NULL PRIMARY KEY,
+        fee_cents  INT           NOT NULL CONSTRAINT DF_dz_fee     DEFAULT 1000,
+        active     BIT           NOT NULL CONSTRAINT DF_dz_active  DEFAULT 1,
+        note       NVARCHAR(200) NULL,
+        updated_at DATETIME2     NOT NULL CONSTRAINT DF_dz_updated DEFAULT SYSUTCDATETIME()
+    );
+END;
+GO
+
+-- Seed only if empty, so re-running never undoes Rob's edits.
+IF NOT EXISTS (SELECT 1 FROM dbo.delivery_zips)
+BEGIN
+    INSERT INTO dbo.delivery_zips (zip, active, note) VALUES
+        ('27587', 1, 'Wake Forest'),        ('27588', 1, 'Wake Forest PO boxes'),
+        ('27571', 1, 'Rolesville'),         ('27596', 1, 'Youngsville'),
+        ('27525', 1, 'Franklinton'),        ('27522', 1, 'Creedmoor'),
+        ('27614', 1, 'N Raleigh'),          ('27616', 1, 'N Raleigh'),
+        ('27615', 1, 'N Raleigh'),          ('27613', 1, 'N Raleigh'),
+        ('27617', 1, 'N Raleigh'),          ('27609', 1, 'N Raleigh'),
+        ('27604', 1, 'NE Raleigh'),         ('27545', 1, 'Knightdale'),
+        ('27591', 1, 'Wendell'),
+        -- Borderline: inactive until Rob says yes (spec §8.4)
+        ('27601', 0, 'Downtown Raleigh - confirm with Rob'),
+        ('27605', 0, 'Raleigh - confirm with Rob'),
+        ('27606', 0, 'Raleigh - confirm with Rob'),
+        ('27607', 0, 'Raleigh - confirm with Rob'),
+        ('27608', 0, 'Raleigh - confirm with Rob'),
+        ('27610', 0, 'Raleigh - confirm with Rob'),
+        ('27612', 0, 'Raleigh - confirm with Rob'),
+        ('27597', 0, 'Zebulon - confirm with Rob'),
+        ('27549', 0, 'Louisburg - confirm with Rob'),
+        ('27560', 0, 'Morrisville - confirm with Rob'),
+        ('27703', 0, 'Durham - confirm with Rob'),
+        ('27529', 0, 'Garner - confirm with Rob');
 END;
 GO
 
@@ -88,18 +176,23 @@ GO
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.checkout_orders       TO nsl_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.checkout_order_boxes  TO nsl_api;
+GRANT SELECT                          ON dbo.delivery_zips        TO nsl_api;
 GO
 
 -- Copy existing per-box links / invoices (old model) into the new tables.
 -- Amount = current ask price (the old code never stored the link amount).
 IF COL_LENGTH('dbo.manifests', 'checkout_order_id') IS NOT NULL
 BEGIN
-    INSERT INTO dbo.checkout_orders (square_order_id, kind, square_link_id, url, status, total_cents, created_at)
+    -- Legacy links were minted before tax existed: subtotal = total, tax = 0,
+    -- delivery = 0, method = pickup. Their buyers were not charged tax and we
+    -- must not invent it retrospectively.
+    INSERT INTO dbo.checkout_orders (square_order_id, kind, square_link_id, url, status, subtotal_cents, total_cents, created_at)
     SELECT m.checkout_order_id,
            CASE WHEN m.invoice_id IS NOT NULL THEN 'invoice' ELSE 'link' END,
            m.checkout_link_id,
            COALESCE(m.checkout_url, m.invoice_url),
            CASE WHEN m.publish_state = 'sold' AND m.sold_to_inventory_at IS NULL THEN 'paid' ELSE 'open' END,
+           CAST(ROUND(COALESCE(m.sale_price, m.list_price, 0) * 100, 0) AS BIGINT),
            CAST(ROUND(COALESCE(m.sale_price, m.list_price, 0) * 100, 0) AS BIGINT),
            COALESCE(m.checkout_created_at, SYSUTCDATETIME())
     FROM dbo.manifests m
@@ -118,7 +211,7 @@ BEGIN
 END;
 GO
 
-PRINT 'cart-checkout: checkout_orders + checkout_order_boxes + payments.refund columns ready.';
+PRINT 'cart-checkout: checkout_orders + checkout_order_boxes + delivery_zips + payments.refund columns ready.';
 ```
 
 - [ ] **Step 2: Mark the old script superseded**
@@ -135,9 +228,11 @@ At the top of `db/square-payments.sql`, after line 7 (`-- UNIQUE square_payment_
 ```powershell
 $tok = az account get-access-token --resource https://database.windows.net/ --query accessToken -o tsv
 Invoke-Sqlcmd -ServerInstance sql-nsl-prod-nc5h2y.database.windows.net -Database sqldb-nsl-prod -AccessToken $tok -InputFile db/cart-checkout.sql -Verbose
-Invoke-Sqlcmd -ServerInstance sql-nsl-prod-nc5h2y.database.windows.net -Database sqldb-nsl-prod -AccessToken $tok -Query "SELECT kind, status, COUNT(*) n FROM dbo.checkout_orders GROUP BY kind, status; SELECT COUNT(*) boxes FROM dbo.checkout_order_boxes"
+Invoke-Sqlcmd -ServerInstance sql-nsl-prod-nc5h2y.database.windows.net -Database sqldb-nsl-prod -AccessToken $tok -Query "SELECT kind, status, COUNT(*) n FROM dbo.checkout_orders GROUP BY kind, status; SELECT COUNT(*) boxes FROM dbo.checkout_order_boxes; SELECT active, COUNT(*) n FROM dbo.delivery_zips GROUP BY active"
 ```
-Expected: the PRINT line; then rows matching the current `manifests` state (as of 2026-09-13: 2 open links + 1 paid, 3 box rows). Run the script a second time → no errors, same counts (idempotent).
+Expected: the PRINT line; then rows matching the current `manifests` state (as of 2026-09-13: 2 open links + 1 paid, 3 box rows); `delivery_zips` = 15 active + 12 inactive. Run the script a second time → no errors, same counts, and **the zip seed does not re-run** (idempotent).
+
+> **Do not activate the borderline zips yourself.** They stay `active = 0` until Rob answers spec §8.9 Q2. Flipping one is a one-line `UPDATE`, which is the whole point of putting them in a table.
 
 - [ ] **Step 4: Commit**
 
@@ -158,7 +253,10 @@ git commit -m "db: checkout_orders + checkout_order_boxes (additive cart migrati
 **Interfaces:**
 - Produces:
   - `record CartLine(Guid ManifestId, string Name, long AmountCents)`
-  - `static object SquarePayloads.CartLink(IReadOnlyList<CartLine> lines, string locationId, string redirectUrl, string idempotencyKey, string referenceId, string paymentNote, string supportEmail)`
+  - `enum DeliveryMethod { Pickup, Delivery, Flea }` with `static string DeliveryMethods.ToDb(DeliveryMethod)` / `TryParse(string?, out DeliveryMethod)` → `pickup` | `delivery` | `flea`
+  - `static object SquarePayloads.CartLink(IReadOnlyList<CartLine> lines, string locationId, string redirectUrl, string idempotencyKey, string referenceId, string paymentNote, string supportEmail, DeliveryMethod delivery)`
+  - `static string SquarePayloads.LineNote(DeliveryMethod)` — the buyer-visible per-line note
+  - consts `SquarePayloads.TaxUid = "NC-SALES-725"`, `TaxName = "NC sales tax (7.25%)"`, `TaxPercent = "7.25"`, `DeliveryUid = "NSL-DELIVERY"`, `DeliveryName = "Local delivery (within 20 miles)"`, `DeliveryCents = 1000`
   - `static string SquarePayloads.RefundKey(string paymentId, long amountCents)` — always 45 chars
   - `static string SquarePayloads.BoxLineName(int palletNumber, string? displayName)`
   - `static string SquarePayloads.PaymentNote(IEnumerable<int> palletNumbers)`
@@ -182,10 +280,12 @@ public class SquarePayloadsTests
     private static readonly Guid A = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid B = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
-    private static JsonElement Build(params CartLine[] lines)
+    private static JsonElement Build(params CartLine[] lines) => Build(DeliveryMethod.Pickup, lines);
+
+    private static JsonElement Build(DeliveryMethod delivery, params CartLine[] lines)
     {
         var payload = SquarePayloads.CartLink(lines, "LOC1", "https://x/thanks.html?boxes=1,2",
-            "nsl-cart-abc", "NSL #1, #2", "NSL boxes #1, #2", "hello@example.com");
+            "nsl-cart-abc", "NSL #1, #2", "NSL boxes #1, #2", "hello@example.com", delivery);
         return JsonDocument.Parse(JsonSerializer.Serialize(payload)).RootElement.Clone();
     }
 
@@ -220,6 +320,80 @@ public class SquarePayloadsTests
         var cf = co.GetProperty("custom_fields");
         Assert.Equal(1, cf.GetArrayLength());
         Assert.Equal("Name & phone for pickup", cf[0].GetProperty("title").GetString());
+    }
+
+    // ── tax + delivery (spec §8.1, §8.2) ──────────────────────────────────
+
+    [Fact]
+    public void Order_carries_one_additive_line_item_scope_tax_at_725()
+    {
+        var order = Build(new CartLine(A, "BOX #1", 18000), new CartLine(B, "BOX #2", 25000)).GetProperty("order");
+        var taxes = order.GetProperty("taxes");
+        Assert.Equal(1, taxes.GetArrayLength());
+        Assert.Equal("NC-SALES-725", taxes[0].GetProperty("uid").GetString());
+        Assert.Equal("NC sales tax (7.25%)", taxes[0].GetProperty("name").GetString());
+        Assert.Equal("7.25", taxes[0].GetProperty("percentage").GetString());   // string, not number
+        Assert.Equal("ADDITIVE", taxes[0].GetProperty("type").GetString());
+        // LINE_ITEM, not ORDER: an ORDER-scope tax never reaches a service charge.
+        Assert.Equal("LINE_ITEM", taxes[0].GetProperty("scope").GetString());
+    }
+
+    [Fact]
+    public void Every_box_line_applies_the_tax()
+    {
+        var items = Build(new CartLine(A, "BOX #1", 18000), new CartLine(B, "BOX #2", 25000))
+            .GetProperty("order").GetProperty("line_items");
+        foreach (var li in items.EnumerateArray())
+        {
+            var at = li.GetProperty("applied_taxes");
+            Assert.Equal(1, at.GetArrayLength());
+            Assert.Equal("NC-SALES-725", at[0].GetProperty("tax_uid").GetString());
+        }
+    }
+
+    [Theory]
+    [InlineData(DeliveryMethod.Pickup)]
+    [InlineData(DeliveryMethod.Flea)]
+    public void No_service_charge_when_there_is_no_delivery(DeliveryMethod m)
+    {
+        var order = Build(m, new CartLine(A, "BOX #1", 18000)).GetProperty("order");
+        Assert.False(order.TryGetProperty("service_charges", out _));
+    }
+
+    [Fact]
+    public void Delivery_adds_one_taxed_subtotal_phase_service_charge()
+    {
+        var order = Build(DeliveryMethod.Delivery, new CartLine(A, "BOX #1", 18000)).GetProperty("order");
+        var sc = order.GetProperty("service_charges");
+        Assert.Equal(1, sc.GetArrayLength());
+        Assert.Equal("NSL-DELIVERY", sc[0].GetProperty("uid").GetString());
+        Assert.Equal(1000, sc[0].GetProperty("amount_money").GetProperty("amount").GetInt64());
+        Assert.Equal("USD", sc[0].GetProperty("amount_money").GetProperty("currency").GetString());
+        // SUBTOTAL_PHASE = before tax, so NC's tax on the delivery charge lands.
+        Assert.Equal("SUBTOTAL_PHASE", sc[0].GetProperty("calculation_phase").GetString());
+        Assert.Equal("ORDER", sc[0].GetProperty("scope").GetString());
+        Assert.Equal("LINE_ITEM_TREATMENT", sc[0].GetProperty("treatment_type").GetString());
+        Assert.True(sc[0].GetProperty("taxable").GetBoolean());
+        // taxable alone does nothing — applied_taxes is what charges the tax.
+        Assert.Equal("NC-SALES-725", sc[0].GetProperty("applied_taxes")[0].GetProperty("tax_uid").GetString());
+    }
+
+    [Fact]
+    public void Never_sends_checkout_options_shipping_fee()
+    {
+        var co = Build(DeliveryMethod.Delivery, new CartLine(A, "BOX #1", 18000)).GetProperty("checkout_options");
+        Assert.False(co.TryGetProperty("shipping_fee", out _));   // untaxable; we use service_charges
+        Assert.False(co.TryGetProperty("ask_for_shipping_address", out _));
+    }
+
+    [Theory]
+    [InlineData(DeliveryMethod.Pickup, "Pickup in Wake Forest, NC")]
+    [InlineData(DeliveryMethod.Delivery, "Local delivery — we'll call to schedule")]
+    [InlineData(DeliveryMethod.Flea, "Friday pickup at the Raleigh Flea Market")]
+    public void Line_note_names_the_chosen_handover(DeliveryMethod m, string expected)
+    {
+        var items = Build(m, new CartLine(A, "BOX #1", 18000)).GetProperty("order").GetProperty("line_items");
+        Assert.Equal(expected, items[0].GetProperty("note").GetString());
     }
 
     [Fact]
@@ -268,6 +442,32 @@ namespace NSL.Api.Services;
 /// <summary>One box on a cart checkout. ManifestId becomes the Square line-item uid.</summary>
 public sealed record CartLine(Guid ManifestId, string Name, long AmountCents);
 
+/// <summary>How the buyer gets the boxes (spec §8.3). Collected in our cart
+/// drawer, not by Square — the hosted page has no three-way choice.</summary>
+public enum DeliveryMethod { Pickup, Delivery, Flea }
+
+public static class DeliveryMethods
+{
+    public static string ToDb(DeliveryMethod m) => m switch
+    {
+        DeliveryMethod.Delivery => "delivery",
+        DeliveryMethod.Flea => "flea",
+        _ => "pickup"
+    };
+
+    /// <summary>Anything unrecognised (including null) falls back to pickup — the free, safe default.</summary>
+    public static bool TryParse(string? s, out DeliveryMethod m)
+    {
+        switch ((s ?? "").Trim().ToLowerInvariant())
+        {
+            case "": case "pickup": m = DeliveryMethod.Pickup; return true;
+            case "delivery":        m = DeliveryMethod.Delivery; return true;
+            case "flea":            m = DeliveryMethod.Flea; return true;
+            default:                m = DeliveryMethod.Pickup; return false;
+        }
+    }
+}
+
 /// <summary>
 /// Pure builders for the Square request bodies the cart needs. Kept free of
 /// I/O so they are unit-testable; SquareService serializes and posts them.
@@ -278,24 +478,74 @@ public static class SquarePayloads
 {
     public const string PickupFieldTitle = "Name & phone for pickup";
 
+    // Tax (spec §8.1). 7.25% = 4.75% NC + 2.00% Wake County + 0.50% transit.
+    public const string TaxUid     = "NC-SALES-725";
+    public const string TaxName    = "NC sales tax (7.25%)";
+    public const string TaxPercent = "7.25";               // Square wants a STRING
+
+    // Delivery (spec §8.2). Sent as an order service charge, never as
+    // checkout_options.shipping_fee — Square materialises that one with
+    // "taxable": false and no applied_taxes, and NC taxes a delivery charge.
+    public const string DeliveryUid  = "NSL-DELIVERY";
+    public const string DeliveryName = "Local delivery (within 20 miles)";
+    public const long   DeliveryCents = 1000;
+
+    /// <summary>Buyer-visible note on each box line — names the handover they picked.</summary>
+    public static string LineNote(DeliveryMethod d) => d switch
+    {
+        DeliveryMethod.Delivery => "Local delivery — we'll call to schedule",
+        DeliveryMethod.Flea     => "Friday pickup at the Raleigh Flea Market",
+        _                       => "Pickup in Wake Forest, NC"
+    };
+
     public static object CartLink(IReadOnlyList<CartLine> lines, string locationId, string redirectUrl,
-        string idempotencyKey, string referenceId, string paymentNote, string supportEmail)
-        => new
+        string idempotencyKey, string referenceId, string paymentNote, string supportEmail,
+        DeliveryMethod delivery)
+    {
+        var note = LineNote(delivery);
+        var order = new Dictionary<string, object?>
+        {
+            ["location_id"] = locationId,
+            ["reference_id"] = Cap(referenceId, 40),
+            ["line_items"] = lines.Select(l => new
+            {
+                uid = l.ManifestId.ToString(),
+                name = Cap(l.Name, 512),
+                quantity = "1",
+                base_price_money = new { amount = l.AmountCents, currency = "USD" },
+                applied_taxes = new[] { new { tax_uid = TaxUid } },
+                note
+            }).ToArray(),
+            // ONE tax object → the buyer sees one "NC sales tax (7.25%)" line,
+            // not one per box. LINE_ITEM scope (not ORDER) is what lets the
+            // delivery service charge reference it: an ORDER-scope tax is only
+            // spread across line items.
+            ["taxes"] = new[]
+            {
+                new { uid = TaxUid, name = TaxName, percentage = TaxPercent, type = "ADDITIVE", scope = "LINE_ITEM" }
+            }
+        };
+
+        if (delivery == DeliveryMethod.Delivery)
+            order["service_charges"] = new[]
+            {
+                new
+                {
+                    uid = DeliveryUid,
+                    name = DeliveryName,
+                    amount_money = new { amount = DeliveryCents, currency = "USD" },
+                    calculation_phase = "SUBTOTAL_PHASE",   // before tax, so NC's tax lands on it
+                    scope = "ORDER",
+                    treatment_type = "LINE_ITEM_TREATMENT",
+                    taxable = true,                          // documentation-only; applied_taxes does the work
+                    applied_taxes = new[] { new { tax_uid = TaxUid } }
+                }
+            };
+
+        return new
         {
             idempotency_key = idempotencyKey,
-            order = new
-            {
-                location_id = locationId,
-                reference_id = Cap(referenceId, 40),
-                line_items = lines.Select(l => new
-                {
-                    uid = l.ManifestId.ToString(),
-                    name = Cap(l.Name, 512),
-                    quantity = "1",
-                    base_price_money = new { amount = l.AmountCents, currency = "USD" },
-                    note = "Pickup in Wake Forest, NC"
-                }).ToArray()
-            },
+            order,
             checkout_options = new
             {
                 redirect_url = redirectUrl,
@@ -306,6 +556,7 @@ public static class SquarePayloads
             },
             payment_note = Cap(paymentNote, 500)
         };
+    }
 
     public static string BoxLineName(int palletNumber, string? displayName)
         => Cap($"BOX #{palletNumber} — {(string.IsNullOrWhiteSpace(displayName) ? "NSL Box" : displayName)}", 512);
@@ -343,19 +594,23 @@ and next to the other properties:
 
 (b) Replace the whole `CreatePaymentLinkAsync` method (from its `/// <summary>` at line 66 through the closing brace at line 102) and the `PaymentLink` record with:
 ```csharp
-    public sealed record CartLink(string Id, string OrderId, string Url, long TotalCents);
+    /// <summary>Per-box tax as Square computed it, keyed by the line uid (= manifest id).</summary>
+    public sealed record CartLink(string Id, string OrderId, string Url,
+        long TotalCents, long TaxCents, long DeliveryCents, IReadOnlyDictionary<Guid, long> LineTaxCents);
 
     /// <summary>
     /// One payment link for N boxes: a full `order` with one ad-hoc line item
-    /// per box (uid = manifest_id) instead of quick_pay. Idempotency key is
+    /// per box (uid = manifest_id) instead of quick_pay, plus the 7.25% NC tax
+    /// and — for delivery orders — the $10 service charge. Idempotency key is
     /// per attempt (nsl-cart-{guid}); reuse is decided by our DB, not Square.
-    /// TotalCents comes from Square's own order total so amount checks never
-    /// depend on our arithmetic.
+    /// Every money figure comes back out of Square's own order totals so our
+    /// arithmetic can never disagree with what the buyer is charged, and the
+    /// per-line tax means a partial refund can return that box's tax exactly.
     /// </summary>
     public async Task<CartLink> CreateCartPaymentLinkAsync(IReadOnlyList<CartLine> lines, string redirectUrl,
-        string idempotencyKey, string referenceId, string paymentNote, CancellationToken ct)
+        string idempotencyKey, string referenceId, string paymentNote, DeliveryMethod delivery, CancellationToken ct)
     {
-        var payload = SquarePayloads.CartLink(lines, LocationId, redirectUrl, idempotencyKey, referenceId, paymentNote, SupportEmail);
+        var payload = SquarePayloads.CartLink(lines, LocationId, redirectUrl, idempotencyKey, referenceId, paymentNote, SupportEmail, delivery);
         using var client = Client();
         var resp = await client.PostAsync("/v2/online-checkout/payment-links",
             new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"), ct);
@@ -367,16 +622,36 @@ and next to the other properties:
         }
         using var doc = JsonDocument.Parse(body);
         var link = doc.RootElement.GetProperty("payment_link");
-        long total = lines.Sum(l => l.AmountCents);
+
+        long total = lines.Sum(l => l.AmountCents);   // only a fallback; Square's number wins
+        long tax = 0, deliveryCents = 0;
+        var lineTax = new Dictionary<Guid, long>();
         if (doc.RootElement.TryGetProperty("related_resources", out var rr) &&
-            rr.TryGetProperty("orders", out var orders) && orders.GetArrayLength() > 0 &&
-            orders[0].TryGetProperty("total_money", out var tm) && tm.TryGetProperty("amount", out var ta))
-            total = ta.GetInt64();
+            rr.TryGetProperty("orders", out var orders) && orders.GetArrayLength() > 0)
+        {
+            var o = orders[0];
+            total         = Money(o, "total_money") ?? total;
+            tax           = Money(o, "total_tax_money") ?? 0;
+            deliveryCents = Money(o, "total_service_charge_money") ?? 0;
+            if (o.TryGetProperty("line_items", out var items))
+                foreach (var li in items.EnumerateArray())
+                    if (li.TryGetProperty("uid", out var uid) && Guid.TryParse(uid.GetString(), out var g))
+                        lineTax[g] = Money(li, "total_tax_money") ?? 0;
+        }
+        else
+        {
+            _log.LogWarning("Square CreatePaymentLink {LinkId}: no related_resources.orders — tax/delivery recorded as 0",
+                link.GetProperty("id").GetString());
+        }
+
         return new CartLink(
             link.GetProperty("id").GetString()!,
             link.GetProperty("order_id").GetString()!,
             link.GetProperty("url").GetString()!,
-            total);
+            total, tax, deliveryCents, lineTax);
+
+        static long? Money(JsonElement el, string name)
+            => el.TryGetProperty(name, out var m) && m.TryGetProperty("amount", out var a) ? a.GetInt64() : null;
     }
 
     /// <summary>Manifest ids we stamped as line-item uids on a cart order (webhook fallback correlation).</summary>
@@ -432,7 +707,7 @@ Expected: errors ONLY in `SquareFunction.cs` and `PalletsFunction.cs` where `Cre
     public sealed record PaymentLink(string Id, string OrderId, string Url);
     public async Task<PaymentLink> CreatePaymentLinkAsync(string name, long amountCents, string redirectUrl, string idempotencyKey, string? note, CancellationToken ct)
     {
-        var l = await CreateCartPaymentLinkAsync(new[] { new CartLine(Guid.Empty, name, amountCents) }, redirectUrl, idempotencyKey, name, note ?? name, ct);
+        var l = await CreateCartPaymentLinkAsync(new[] { new CartLine(Guid.Empty, name, amountCents) }, redirectUrl, idempotencyKey, name, note ?? name, DeliveryMethod.Pickup, ct);
         return new PaymentLink(l.Id, l.OrderId, l.Url);
     }
 ```
@@ -442,7 +717,7 @@ Re-run the build. Expected: `Build succeeded.`
 
 ```powershell
 git add api/Services/SquarePayloads.cs api/Services/SquareService.cs api.Tests/SquarePayloadsTests.cs
-git commit -m "feat(square): order-based cart payment links, confirmed deletes, 45-char refund keys"
+git commit -m "feat(square): order-based cart payment links with NC sales tax + delivery charge, confirmed deletes, 45-char refund keys"
 ```
 
 ---
@@ -602,6 +877,11 @@ WHERE NOT EXISTS (SELECT 1 FROM dbo.payments WHERE square_payment_id = @pid)",
                         _log.LogError("Fulfill: payment {PaymentId} matched no order and no line uids (order {OrderId})", paymentId, orderId);
                         return new FulfillResult("unmatched", 0, 0, 0, new List<int>());
                     }
+                    // Recovery path: we never saw the create response, so the
+                    // tax/delivery split is unknown. Record the paid amount as
+                    // the total and leave tax_cents/delivery_cents at 0 rather
+                    // than inventing a split — the row is flagged by the
+                    // "recovered order" warning below for a human to look at.
                     await conn.ExecuteAsync(@"
 INSERT INTO dbo.checkout_orders (square_order_id, kind, status, total_cents) VALUES (@oid, 'link', 'open', @total)",
                         new { oid = orderId, total = amountCents ?? 0 }, transaction: tx);
@@ -618,7 +898,7 @@ FROM dbo.v_pallets p WHERE p.manifest_id IN @ids",
 
                 string kind = (string)order.kind;
                 var boxes = (await conn.QueryAsync(@"
-SELECT b.manifest_id, b.amount_cents, b.outcome, m.pallet_number, m.publish_state, m.archived_at, m.is_ghost, m.invoice_id
+SELECT b.manifest_id, b.amount_cents, b.tax_cents, b.outcome, m.pallet_number, m.publish_state, m.archived_at, m.is_ghost, m.invoice_id
 FROM dbo.checkout_order_boxes b JOIN dbo.manifests m ON m.id = b.manifest_id
 WHERE b.square_order_id = @oid ORDER BY b.manifest_id",
                     new { oid = orderId }, transaction: tx)).ToList();
@@ -632,8 +912,12 @@ WHERE b.square_order_id = @oid ORDER BY b.manifest_id",
                     Guid mid = (Guid)b.manifest_id;
                     pallets.Add((int)b.pallet_number);
                     string? outcome = (string?)b.outcome;
+                    // refundDue is always TAX-INCLUSIVE: the buyer paid tax on a
+                    // box they are not getting, and we cannot remit it against a
+                    // sale that did not happen (spec §8.8).
+                    long boxDue = (long)b.amount_cents + (long)b.tax_cents;
                     if (outcome == "sold") { sold++; continue; }                     // re-entrant: already ours
-                    if (outcome == "unavailable") { unavailable++; refundDue += (long)b.amount_cents; continue; }
+                    if (outcome == "unavailable") { unavailable++; refundDue += boxDue; continue; }
 
                     bool ok = Availability.For(kind, (string?)b.publish_state, (DateTime?)b.archived_at,
                         b.is_ghost == true, (string?)b.invoice_id);
@@ -654,12 +938,20 @@ WHERE b.square_order_id = @oid ORDER BY b.manifest_id",
                             "UPDATE dbo.checkout_order_boxes SET outcome = 'unavailable', fulfilled_at = SYSUTCDATETIME() WHERE square_order_id = @oid AND manifest_id = @mid",
                             new { oid = orderId, mid }, transaction: tx);
                         unavailable++;
-                        refundDue += (long)b.amount_cents;
-                        _log.LogWarning("Fulfill: BOX #{Num} on order {OrderId} no longer available (state {State}) — refund due",
-                            (object?)b.pallet_number, orderId, (string?)b.publish_state);
+                        refundDue += boxDue;
+                        _log.LogWarning("Fulfill: BOX #{Num} on order {OrderId} no longer available (state {State}) — refund due {Due}c incl tax",
+                            (object?)b.pallet_number, orderId, (string?)b.publish_state, boxDue);
                     }
                 }
 
+                long total = (long)order.total_cents;
+                if (sold == 0 && refundDue > 0)
+                {
+                    // Nothing sold: there is no delivery to make either, so the
+                    // delivery fee and its own tax go back too. total_cents is
+                    // Square's total_money, so this is the whole payment.
+                    refundDue = total > 0 ? total : refundDue;
+                }
                 string status = refundDue == 0 ? "COMPLETED" : (sold == 0 ? "REFUND_FLAGGED" : "PARTIAL_REFUND_FLAGGED");
                 Guid? single = boxes.Count == 1 ? (Guid)boxes[0].manifest_id : null;
                 await conn.ExecuteAsync(@"
@@ -671,9 +963,11 @@ WHERE square_payment_id = @pid",
                     "UPDATE dbo.checkout_orders SET status = 'paid', closed_at = SYSUTCDATETIME() WHERE square_order_id = @oid",
                     new { oid = orderId }, transaction: tx);
 
-                long total = (long)order.total_cents;
+                // ORDER total, not the line-item sum: with 7.25% tax and a $10
+                // delivery charge the paid amount is legitimately larger than
+                // the boxes (spec §8.7). total_cents IS Square's total_money.
                 if (amountCents.HasValue && total > 0 && amountCents.Value != total)
-                    _log.LogWarning("Fulfill: payment {PaymentId} amount {Amt} != order total {Total}", paymentId, amountCents, total);
+                    _log.LogWarning("Fulfill: payment {PaymentId} amount {Amt} != order total {Total} (subtotal+tax+delivery)", paymentId, amountCents, total);
 
                 if (soldIds.Count > 0)
                     canceled = await CancelOpenLinksForBoxesAsync(conn, tx, soldIds, exceptOrderId: orderId);
@@ -770,7 +1064,8 @@ git commit -m "feat(checkout): Availability rule + transactional CheckoutFulfill
 
 **Interfaces:**
 - Consumes: `SquareService.CreateCartPaymentLinkAsync`, `SquarePayloads.BoxLineName/PaymentNote`, `Availability.ForLink` (Tasks 2–3).
-- Produces: `POST /api/public/checkout` body `{ "ids": ["<guid>", …] }` → `200 { url }` | `400 { error }` | `409 { error, unavailable: [guid…] }` | `503 { error }`. `POST /api/public/checkout/{id}` → same, cart of one. `GET /api/public/checkout-status` → `{ enabled, cartMax }`.
+- Produces: `POST /api/public/checkout` body `{ "ids": ["<guid>", …], "delivery": "pickup"|"delivery"|"flea", "zip": "27587", "address": "…", "memberNumber": "2600001" }` → `200 { url }` | `400 { error, field? }` | `409 { error, unavailable: [guid…] }` | `503 { error }`. `POST /api/public/checkout/{id}` → same, cart of one, always `pickup`. `GET /api/public/checkout-status` → `{ enabled, cartMax, taxPercent, deliveryCents, deliveryZips: ["27587", …], fleaNote }`.
+- The zip list on checkout-status is public on purpose: it is Rob's delivery radius, not customer data, and the drawer needs it to enable/disable a radio without a round trip. It is a **convenience copy** — `CreateCartCheckoutCore` re-checks every zip against `dbo.delivery_zips` (spec §8.3).
 
 - [ ] **Step 1: Add `PublicBaseUrl` to SquareService**
 
@@ -795,19 +1090,41 @@ Replace the constructor fields/ctor, `Status`, and the whole `CreateCheckout` fu
     }
 
     public const int CartMax = 20;
-    public sealed record CheckoutRequest(Guid[]? ids);
+    public const string FleaNote = "Fridays at the Raleigh Flea Market — we'll confirm the stall and time by phone.";
+    public sealed record CheckoutRequest(Guid[]? ids, string? delivery, string? zip, string? address, string? memberNumber);
 
     [Function("CheckoutStatus")]
-    public IActionResult Status(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "public/checkout-status")] HttpRequest req)
-        => new OkObjectResult(new { enabled = _square.CheckoutEnabled && _square.Configured, cartMax = CartMax });
+    public async Task<IActionResult> Status(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "public/checkout-status")] HttpRequest req,
+        CancellationToken ct)
+    {
+        // Rob's delivery radius, not customer data — safe to publish, and the
+        // drawer needs it to enable/disable the $10 radio without a round trip.
+        // Still re-validated server-side on every checkout (spec §8.3/§8.4).
+        List<string> zips = new();
+        if (_square.CheckoutEnabled)
+        {
+            await using var conn = await _sql.OpenAsync(ct);
+            zips = (await conn.QueryAsync<string>(
+                "SELECT zip FROM dbo.delivery_zips WHERE active = 1 ORDER BY zip")).ToList();
+        }
+        return new OkObjectResult(new
+        {
+            enabled = _square.CheckoutEnabled && _square.Configured,
+            cartMax = CartMax,
+            taxPercent = 7.25m,
+            deliveryCents = SquarePayloads.DeliveryCents,
+            deliveryZips = zips,
+            fleaNote = FleaNote
+        });
+    }
 
-    /// <summary>Legacy single-box route (tabs loaded before the cart deploy): a cart of one.</summary>
+    /// <summary>Legacy single-box route (tabs loaded before the cart deploy): a cart of one, pickup.</summary>
     [Function("CreateCheckoutOne")]
     public Task<IActionResult> CreateCheckoutOne(
         [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "public/checkout/{id}")] HttpRequest req,
         Guid id, CancellationToken ct)
-        => CreateCartCheckoutCore(new[] { id }, ct);
+        => CreateCartCheckoutCore(new[] { id }, DeliveryMethod.Pickup, null, null, null, ct);
 
     [Function("CreateCheckout")]
     public async Task<IActionResult> CreateCheckout(
@@ -818,10 +1135,13 @@ Replace the constructor fields/ctor, `Status`, and the whole `CreateCheckout` fu
         try { body = await JsonSerializer.DeserializeAsync<CheckoutRequest>(req.Body,
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct); }
         catch (JsonException) { return new BadRequestObjectResult(new { error = "Invalid JSON" }); }
-        return await CreateCartCheckoutCore(body?.ids ?? Array.Empty<Guid>(), ct);
+        if (!DeliveryMethods.TryParse(body?.delivery, out var method))
+            return new BadRequestObjectResult(new { error = "Unknown delivery option.", field = "delivery" });
+        return await CreateCartCheckoutCore(body?.ids ?? Array.Empty<Guid>(), method, body?.zip, body?.address, body?.memberNumber, ct);
     }
 
-    private async Task<IActionResult> CreateCartCheckoutCore(Guid[] rawIds, CancellationToken ct)
+    private async Task<IActionResult> CreateCartCheckoutCore(Guid[] rawIds, DeliveryMethod method,
+        string? rawZip, string? rawAddress, string? rawMember, CancellationToken ct)
     {
         if (!_square.CheckoutEnabled || !_square.Configured)
             return new ObjectResult(new { error = "Online checkout is not available right now." }) { StatusCode = 503 };
@@ -830,7 +1150,33 @@ Replace the constructor fields/ctor, `Status`, and the whole `CreateCheckout` fu
         if (ids.Length == 0) return new BadRequestObjectResult(new { error = "Add at least one box." });
         if (ids.Length > CartMax) return new BadRequestObjectResult(new { error = $"A cart holds at most {CartMax} boxes." });
 
+        // Only a delivery order carries a zip/address; the other two ignore them.
+        string? zip = null, address = null;
+        string? member = string.IsNullOrWhiteSpace(rawMember) ? null
+                       : (rawMember!.Trim().Length == 7 ? rawMember.Trim() : null);
+
         await using var conn = await _sql.OpenAsync(ct);
+
+        if (method == DeliveryMethod.Delivery)
+        {
+            zip = (rawZip ?? "").Trim();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(zip, @"^\d{5}$"))
+                return new BadRequestObjectResult(new { error = "Enter a 5-digit zip code so we can check delivery.", field = "zip" });
+            // The browser's copy of the list is a convenience; this is the authority.
+            bool ok = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM dbo.delivery_zips WHERE zip = @zip AND active = 1", new { zip }) > 0;
+            if (!ok)
+                return new BadRequestObjectResult(new
+                {
+                    error = $"We can't reach {zip} on our own truck — warehouse pickup and the Friday flea-market drop are both free.",
+                    field = "zip"
+                });
+            address = (rawAddress ?? "").Trim();
+            if (address.Length == 0)
+                return new BadRequestObjectResult(new { error = "Add the street address for the delivery.", field = "address" });
+            if (address.Length > 300) address = address[..300];
+        }
+
         var rows = (await conn.QueryAsync(@"
 SELECT p.manifest_id, p.pallet_number, p.display_name, p.publish_state, p.is_ghost, p.archived_at, m.invoice_id,
        COALESCE(p.sale_price, p.list_price, p.total_wholesale) AS ask_price
@@ -860,16 +1206,22 @@ WHERE p.manifest_id IN @ids", new { ids })).ToDictionary(r => (Guid)r.manifest_i
                 unavailable
             });
 
-        // Reuse an open link with the IDENTICAL (box, amount) set — open +
-        // identical means current, because price/state changes cancel links.
+        // Reuse an open link with the IDENTICAL (box, amount) set AND the same
+        // delivery choice — open + identical means current, because price/state
+        // changes cancel links. A different delivery choice prices differently,
+        // so it has to mint a new link (spec §5).
         var wanted = lines.ToDictionary(l => l.ManifestId, l => l.AmountCents);
+        string methodDb = DeliveryMethods.ToDb(method);
         var candidates = (await conn.QueryAsync(@"
-SELECT o.square_order_id, o.url, b.manifest_id, b.amount_cents
+SELECT o.square_order_id, o.url, o.delivery_method, o.delivery_zip, o.delivery_address, b.manifest_id, b.amount_cents
 FROM dbo.checkout_orders o
 JOIN dbo.checkout_order_boxes b ON b.square_order_id = o.square_order_id
 WHERE o.status = 'open' AND o.kind = 'link' AND o.url IS NOT NULL
+  AND o.delivery_method = @method
+  AND ((o.delivery_zip IS NULL AND @zip IS NULL) OR o.delivery_zip = @zip)
+  AND ((o.delivery_address IS NULL AND @addr IS NULL) OR o.delivery_address = @addr)
   AND o.square_order_id IN (SELECT square_order_id FROM dbo.checkout_order_boxes WHERE manifest_id = @first)",
-            new { first = ids[0] })).GroupBy(r => (string)r.square_order_id);
+            new { first = ids[0], method = methodDb, zip, addr = address })).GroupBy(r => (string)r.square_order_id);
         foreach (var g in candidates)
         {
             var set = g.ToDictionary(r => (Guid)r.manifest_id, r => (long)r.amount_cents);
@@ -881,23 +1233,31 @@ WHERE o.status = 'open' AND o.kind = 'link' AND o.url IS NOT NULL
         var link = await _square.CreateCartPaymentLinkAsync(lines, redirect,
             idempotencyKey: $"nsl-cart-{Guid.NewGuid():N}",
             referenceId: "NSL " + string.Join(" ", numbers.Select(n => "#" + n)),
-            paymentNote: SquarePayloads.PaymentNote(numbers), ct);
+            paymentNote: SquarePayloads.PaymentNote(numbers), method, ct);
 
+        // Every money column below is Square's own number (spec §8.6) — we do
+        // not recompute the tax, so our row can never disagree with the receipt.
+        long subtotal = link.TotalCents - link.TaxCents - link.DeliveryCents;
         using (var tx = conn.BeginTransaction())
         {
             await conn.ExecuteAsync(@"
-INSERT INTO dbo.checkout_orders (square_order_id, kind, square_link_id, url, status, total_cents)
-VALUES (@oid, 'link', @lid, @url, 'open', @total)",
-                new { oid = link.OrderId, lid = link.Id, url = link.Url, total = link.TotalCents }, transaction: tx);
+INSERT INTO dbo.checkout_orders (square_order_id, kind, square_link_id, url, status,
+                                 subtotal_cents, tax_cents, delivery_cents, total_cents,
+                                 delivery_method, delivery_zip, delivery_address, member_number)
+VALUES (@oid, 'link', @lid, @url, 'open', @sub, @tax, @del, @total, @method, @zip, @addr, @member)",
+                new { oid = link.OrderId, lid = link.Id, url = link.Url,
+                      sub = subtotal, tax = link.TaxCents, del = link.DeliveryCents, total = link.TotalCents,
+                      method = methodDb, zip, addr = address, member }, transaction: tx);
             foreach (var l in lines)
                 await conn.ExecuteAsync(@"
-INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents) VALUES (@oid, @mid, @amt)",
-                    new { oid = link.OrderId, mid = l.ManifestId, amt = l.AmountCents }, transaction: tx);
+INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents, tax_cents) VALUES (@oid, @mid, @amt, @tax)",
+                    new { oid = link.OrderId, mid = l.ManifestId, amt = l.AmountCents,
+                          tax = link.LineTaxCents.TryGetValue(l.ManifestId, out var t) ? t : 0L }, transaction: tx);
             tx.Commit();
         }
 
-        _log.LogInformation("CreateCheckout: {N} box(es) {Boxes} -> link {LinkId} order {OrderId} total {Total}",
-            lines.Count, string.Join(",", numbers), link.Id, link.OrderId, link.TotalCents);
+        _log.LogInformation("CreateCheckout: {N} box(es) {Boxes} {Method} -> link {LinkId} order {OrderId} subtotal {Sub} tax {Tax} delivery {Del} total {Total}",
+            lines.Count, string.Join(",", numbers), methodDb, link.Id, link.OrderId, subtotal, link.TaxCents, link.DeliveryCents, link.TotalCents);
         return new OkObjectResult(new { url = link.Url });
     }
 ```
@@ -928,6 +1288,7 @@ git commit -m "feat(checkout): POST /api/public/checkout for N boxes; single-box
   - table `dbo.payment_refunds (square_refund_id VARCHAR(64) PK, square_payment_id VARCHAR(64), amount_cents BIGINT, created_at)`
   - `static Task<bool> CheckoutFulfillment.RecordRefundAsync(SqlConnection conn, string refundId, string paymentId, long amountCents)` — true if newly recorded (and `payments.refunded_cents`/`status`/`needs_refund` updated), false on replay.
   - Webhook 200 bodies: `{ ignored: "floor"|"malformed"|<type>|<status> }`, `{ duplicate: true }`, `{ unmatched: true }`, `{ fulfilled: true, sold, unavailable, refundDue, boxes }`, `{ refund: <status>, recorded }`.
+- Unchanged by the tax work, with one thing to keep straight: `pay.AmountCents` is now legitimately larger than the sum of the box prices (7.25% tax, plus $10 + tax on a delivery order). `FulfillOrderAsync` compares it to `checkout_orders.total_cents` — Square's own `total_money` — and nothing here should ever compare it to a line-item sum (spec §8.7). `refundDue` in the response body is tax-inclusive.
 
 - [ ] **Step 1: Append the refunds table to the migration and re-apply**
 
@@ -1367,8 +1728,8 @@ git commit -m "feat(reconcile): set-based cancel + confirmed Square deletes + ne
 - Consumes: `CheckoutFulfillment.RecordRefundAsync`, `SquareService.RefundPaymentAsync` (Tasks 2, 5).
 - Produces:
   - `POST /api/square-refund` body `{ paymentId, reason?, amountCents? }` → `{ paymentId, refundId, refundStatus, amountCents }`; `409` when nothing left to refund.
-  - `GET /api/square-payments` rows gain `boxes` (string like `#12, #14` or null), `refund_due_cents`, `refunded_cents`.
-  - `GET /api/sales-summary` `sales[]` rows gain `boxes` (string) and `box_count` (int); `margin_cents` now = amount − refunded − cost.
+  - `GET /api/square-payments` rows gain `boxes` (string like `#12, #14` or null), `refund_due_cents`, `refunded_cents`, `delivery_method`.
+  - `GET /api/sales-summary` `sales[]` rows gain `boxes` (string), `box_count` (int), `tax_cents`, `delivery_cents`, `delivery_method`. **`amount_cents` for a web sale becomes goods-only** (the sum of sold boxes' `amount_cents`), and `margin_cents` = goods − cost. Tax and the delivery fee are reported in their own columns and never enter revenue or margin (spec §8.6) — sales tax is money we hold for NCDOR, and the $10 covers Norm's fuel.
 
 - [ ] **Step 1: `ListPayments` query**
 
@@ -1377,11 +1738,13 @@ Replace the SQL with:
 SELECT TOP 100 p.square_payment_id, p.square_order_id, p.manifest_id,
        p.amount_cents, p.refunded_cents, p.refund_due_cents, p.status, p.needs_refund, p.created_at,
        m.pallet_number, m.display_name,
+       o.delivery_method, o.tax_cents, o.delivery_cents,
        (SELECT STRING_AGG('#' + CAST(m2.pallet_number AS VARCHAR(10)), ', ') WITHIN GROUP (ORDER BY m2.pallet_number)
         FROM dbo.checkout_order_boxes b JOIN dbo.manifests m2 ON m2.id = b.manifest_id
         WHERE b.square_order_id = p.square_order_id AND b.outcome = 'sold') AS boxes
 FROM dbo.payments p
 LEFT JOIN dbo.manifests m ON m.id = p.manifest_id
+LEFT JOIN dbo.checkout_orders o ON o.square_order_id = p.square_order_id
 ORDER BY p.needs_refund DESC, p.created_at DESC
 ```
 
@@ -1397,6 +1760,13 @@ Replace the `RefundRequest` record and the `Refund` function with:
     /// remainder of the payment); an explicit amountCents ≤ remainder is
     /// allowed for staff-initiated partials. Bookkeeping goes through
     /// RecordRefundAsync so the refund.updated webhook cannot double count.
+    ///
+    /// Square's RefundPayment is AMOUNT-ONLY — there is no way to say "return
+    /// this box and its tax"; itemised returns belong to the Orders
+    /// returns/exchanges flow, which payment links do not give us. So
+    /// refund_due_cents is stored tax-inclusive (spec §8.8) and we just send
+    /// it. A staff-typed amountCents is NOT grossed up for tax — whoever types
+    /// it owns it; the admin button's title attribute says so.
     /// </summary>
     [Function("SquareRefund")]
     public async Task<IActionResult> Refund(
@@ -1449,24 +1819,38 @@ Replace the `webRows` query with:
 SELECT p.square_payment_id,
        STRING_AGG('#' + CAST(m.pallet_number AS VARCHAR(10)), ', ') WITHIN GROUP (ORDER BY m.pallet_number) AS boxes,
        MIN(m.pallet_number) AS pallet_number, MIN(m.display_name) AS display_name, COUNT(*) AS box_count,
+       SUM(b.amount_cents) AS goods_cents,          -- what we actually sold, EX tax
+       MIN(o.tax_cents)      AS tax_cents,          -- per order, not per box
+       MIN(o.delivery_cents) AS delivery_cents,
+       MIN(o.delivery_method) AS delivery_method,
        SUM(COALESCE(v.total_cost, v.total_cost_units)) AS cost,
        SUM(CASE WHEN COALESCE(v.total_cost, v.total_cost_units) IS NULL THEN 1 ELSE 0 END) AS cost_missing
 FROM dbo.payments p
 JOIN dbo.checkout_order_boxes b ON b.square_order_id = p.square_order_id AND b.outcome = 'sold'
 JOIN dbo.manifests m ON m.id = b.manifest_id
+JOIN dbo.checkout_orders o ON o.square_order_id = p.square_order_id
 LEFT JOIN dbo.v_pallets v ON v.manifest_id = m.id
 WHERE p.created_at >= @begin
 GROUP BY p.square_payment_id
 ```
+`MIN(o.tax_cents)` is not an aggregate in spirit — `checkout_orders` is one row per payment, so MIN just satisfies the GROUP BY. Note these are the **order's** tax and delivery, which on a partial-unavailable order include tax for boxes that did not sell; the refund row next to it is where that comes back out.
+
 In the Square-payments loop replace the cost/`sales.Add` block with:
 ```csharp
             decimal? cost = null;
             if (isWeb && (int)web!.cost_missing == 0) cost = (decimal?)web.cost;
+            // Revenue is GOODS ONLY (spec §8.6): sales tax belongs to NCDOR and
+            // the delivery fee covers the truck. Neither is ours, so neither
+            // enters the sale amount or the margin.
+            long goods = isWeb ? (long)web!.goods_cents : amt;
             sales.Add(new SaleRow(
                 payment_id: pid,
                 created_at: created,
-                amount_cents: amt,
+                amount_cents: goods,
                 refunded_cents: refunded,
+                tax_cents: isWeb ? (long)web!.tax_cents : 0,
+                delivery_cents: isWeb ? (long)web!.delivery_cents : 0,
+                delivery_method: isWeb ? (string?)web!.delivery_method : null,
                 channel: isWeb ? "web" : "floor",
                 source: "square",
                 pallet_number: isWeb ? (int?)web!.pallet_number : null,
@@ -1474,9 +1858,10 @@ In the Square-payments loop replace the cost/`sales.Add` block with:
                 boxes: isWeb ? (string?)web!.boxes : null,
                 box_count: isWeb ? (int)web!.box_count : 0,
                 cost: cost,
-                margin_cents: isWeb && cost.HasValue ? (long?)(amt - refunded - (long)Math.Round(cost.Value * 100)) : null,
+                margin_cents: isWeb && cost.HasValue ? (long?)(goods - (long)Math.Round(cost.Value * 100)) : null,
                 note: null));
 ```
+`refunded` no longer appears in `margin_cents`: boxes that came back are `outcome='unavailable'` and the join already excludes them, so subtracting the refund too would double-count. The one case this reads high is a *goodwill* partial refund on a fully-sold order — `refunded_cents` is still displayed beside it so staff can see it (spec §8.6, accepted imprecision).
 Replace the `adminRows` `NOT EXISTS` clause with:
 ```sql
   AND NOT EXISTS (SELECT 1 FROM dbo.payments p
@@ -1484,10 +1869,11 @@ Replace the `adminRows` `NOT EXISTS` clause with:
                   WHERE b.manifest_id = m.id AND b.outcome = 'sold'
                     AND p.status <> 'REFUNDED')
 ```
-In the admin-rows `sales.Add`, add `boxes: null, box_count: 1,` after `display_name:`. Change `SaleRow` to:
+In the admin-rows `sales.Add`, add `boxes: null, box_count: 1,` after `display_name:` and `tax_cents: 0, delivery_cents: 0, delivery_method: null,` after `refunded_cents:`. Change `SaleRow` to:
 ```csharp
     private sealed record SaleRow(
         string? payment_id, string? created_at, long amount_cents, long refunded_cents,
+        long tax_cents, long delivery_cents, string? delivery_method,
         string channel, string source, int? pallet_number, string? display_name,
         string? boxes, int box_count,
         decimal? cost, long? margin_cents, string? note);
@@ -1504,7 +1890,10 @@ In the admin-rows `sales.Add`, add `boxes: null, box_count: 1,` after `display_n
 - attention table: Box cell → `` <td>${r.boxes ? esc(r.boxes) : r.pallet_number ? `#${r.pallet_number} ${esc(r.display_name || '')}` : '<span class="flag">no box matched</span>'}</td> ``; Why cell → `` <td class="flag">${r.status === 'UNMATCHED' ? 'payment matched no box' : r.status.startsWith('PARTIAL') ? 'some boxes were already sold — partial refund due' : r.status.startsWith('REFUND_') && r.status !== 'REFUND_FLAGGED' ? 'refund ' + esc(r.status.slice(7).toLowerCase()) : 'box was already sold'}</td> ``; the button's `data-amt` → `${r.refund_due_cents ?? (r.amount_cents - (r.refunded_cents || 0))}`.
 - payments table: Box cell → `` <td>${r.boxes ? esc(r.boxes) : r.pallet_number ? `#${r.pallet_number} ${esc(r.display_name || '')}` : '—'}</td> ``; Amount cell → `` <td class="money">${money(r.amount_cents)}${r.refunded_cents ? ` <span class="neg">(−${money(r.refunded_cents)})</span>` : ''}</td> ``.
 - `refund()` confirm text → `` `Refund ${money(Number(btn.dataset.amt))} back to the buyer? This cannot be undone.` `` and call `apiClient.squareRefund(pid, null, Number(btn.dataset.amt))`; toast → `` `Refund ${r.refundStatus} — ${money(r.amountCents)}` ``.
-- `staff/sales.html:67` copy → `Payments that landed on a box that was already sold (partial refunds for carts) or matched no box. Refund sends the amount owed back through Square.`
+- sales table: after the Amount cell add a **Tax / Delivery** cell → `` <td class="money">${x.tax_cents ? money(x.tax_cents) : '—'}${x.delivery_cents ? ` <span title="${esc(x.delivery_method || '')}">+${money(x.delivery_cents)} del</span>` : ''}</td> ``, and add the matching `<th>Tax / Del</th>` to the header row. Put a one-line note under the table: `Amount and margin are goods only — sales tax is held for NCDOR and the delivery fee covers the truck.`
+- attention table: the refund button gains `title="Refunds the amount owed including that box's sales tax. Typing a different amount does NOT add tax."`
+- payments table: Box cell shows the handover when it is not pickup → append `` ${r.delivery_method && r.delivery_method !== 'pickup' ? ` <span class="tag">${r.delivery_method === 'flea' ? 'flea market' : 'delivery'}</span>` : ''} ``
+- `staff/sales.html:67` copy → `Payments that landed on a box that was already sold (partial refunds for carts) or matched no box. Refund sends the amount owed — the box price plus the sales tax the buyer paid on it — back through Square.`
 
 - [ ] **Step 5: Build, commit**
 
@@ -1556,7 +1945,7 @@ git commit -m "chore(square): per-environment webhook settings with fallback"
 - Modify: `css/site.css` — after `.view.buy:hover` (`:160`)
 
 **Interfaces:**
-- Consumes: `GET /api/public/checkout-status` (`{enabled, cartMax}`), `GET /api/public/pallets` rows (`manifest_id`, `pallet_number`, `display_name`, `publish_state`, `ask_price`, `photo_url`).
+- Consumes: `GET /api/public/checkout-status` (`{enabled, cartMax, taxPercent, deliveryCents, deliveryZips, fleaNote}`), `GET /api/public/pallets` rows (`manifest_id`, `pallet_number`, `display_name`, `publish_state`, `ask_price`, `photo_url`), `localStorage['nsl.member' | 'nsl.zip' | 'nsl.addr']` (Task 16).
 - Produces (inside the IIFE, exported on `NSL`): `cartIds()`, `cartHas(id)`, `cartAdd(id) → bool`, `cartRemove(id)`, `cartClear()`, `cartButtonHtml(id)`, `syncCartUi()`, `refreshPublicPallets()`, `onCartButton(id)`; a hook `let openCartHook = null` that Task 11 sets to `openCart`. `window.nslBuyBox(id)` stays as an alias (add + open).
 
 - [ ] **Step 1: Header comment + fresh fetch**
@@ -1725,6 +2114,11 @@ Replace `initPage` and `checkoutReady` with:
   }
 
   let checkoutProbe = null;
+  // Delivery config, filled from /api/public/checkout-status. The zip list is
+  // Rob's delivery radius (spec §8.4), not customer data; the server re-checks
+  // every zip on checkout, so this copy is only here to enable/disable a radio
+  // without a round trip.
+  let TAX_PCT = 7.25, DELIVERY_CENTS = 1000, DELIVERY_ZIPS = [], FLEA_NOTE = '';
   function checkoutReady() {
     if (!checkoutProbe) {
       checkoutProbe = fetch('/api/public/checkout-status', { credentials: 'omit' })
@@ -1732,12 +2126,31 @@ Replace `initPage` and `checkoutReady` with:
         .then(cs => {
           window.nslCheckoutEnabled = !!cs.enabled;
           if (Number(cs.cartMax) > 0) CART_MAX = Number(cs.cartMax);
+          if (Number(cs.taxPercent) > 0) TAX_PCT = Number(cs.taxPercent);
+          if (Number(cs.deliveryCents) > 0) DELIVERY_CENTS = Number(cs.deliveryCents);
+          DELIVERY_ZIPS = Array.isArray(cs.deliveryZips) ? cs.deliveryZips.map(String) : [];
+          FLEA_NOTE = cs.fleaNote || '';
           return window.nslCheckoutEnabled;
         })
         .catch(() => false);
     }
     return checkoutProbe;
   }
+
+  // ── delivery choice (spec §8.3) ──────────────────────────────────────────
+  // Remembered per device, like the cart itself. 'pickup' is always the safe
+  // default: it is free and it is what NSL did before this existed.
+  const DELIV_KEY = 'nsl.delivery';
+  function storedZip()  { try { return localStorage.getItem('nsl.zip')  || ''; } catch { return ''; } }
+  function storedAddr() { try { return localStorage.getItem('nsl.addr') || ''; } catch { return ''; } }
+  function zipQualifies(z) { return /^\d{5}$/.test(z) && DELIVERY_ZIPS.includes(z); }
+  function deliveryChoice() {
+    let d = 'pickup';
+    try { d = localStorage.getItem(DELIV_KEY) || 'pickup'; } catch { /* private mode */ }
+    if (d === 'delivery' && !zipQualifies(storedZip())) return 'pickup';   // never leave a $10 selected that no longer qualifies
+    return (d === 'delivery' || d === 'flea') ? d : 'pickup';
+  }
+  function setDeliveryChoice(d) { try { localStorage.setItem(DELIV_KEY, d); } catch { /* ignore */ } }
 ```
 In the export replace `showManifest, buyBox, initPage, openJoin, checkoutReady,` with:
 ```javascript
@@ -1774,7 +2187,7 @@ git commit -m "feat(cart): localStorage cart state + Add-to-cart control replace
 - Modify: `css/site.css` — after the cart control CSS from Task 10
 
 **Interfaces:**
-- Consumes: Task 10 state functions; `POST /api/public/checkout` (Task 4).
+- Consumes: Task 10 state functions and the delivery helpers (`deliveryChoice`, `setDeliveryChoice`, `zipQualifies`, `storedZip`, `storedAddr`, `TAX_PCT`, `DELIVERY_CENTS`, `DELIVERY_ZIPS`, `FLEA_NOTE`); `POST /api/public/checkout` (Task 4).
 - Produces: `mountCart()`, `openCart(noticeText?)`, `closeCart()`, `renderCart()`, `checkoutCart()`, `openOverlay(overlay, firstFocus)`, `closeOverlay(overlay)`; sets `openCartHook = openCart`. Exported: `openCart`.
 
 - [ ] **Step 1: Shared overlay helpers (put right before `// ── manifest modal`)**
@@ -1855,8 +2268,33 @@ Then in `mountManifestModal`: replace `const close = () => { overlay.hidden = tr
     <div class="mf-body" id="cart-body"></div>
     <div class="mf-foot cart-foot">
       <p class="cart-notice" id="cart-notice" aria-live="polite" hidden></p>
+
+      <fieldset class="cart-deliv" id="cart-deliv">
+        <legend>How do you want them?</legend>
+        <label class="deliv-opt"><input type="radio" name="nsl-deliv" value="pickup" checked>
+          <span class="deliv-label">Pick up at our Wake Forest warehouse</span><span class="deliv-price">Free</span></label>
+        <label class="deliv-opt" id="deliv-opt-delivery"><input type="radio" name="nsl-deliv" value="delivery" disabled>
+          <span class="deliv-label">Delivered to you<span class="deliv-to" id="deliv-to"></span></span><span class="deliv-price">${dollars(DELIVERY_CENTS)}</span></label>
+        <div class="deliv-zip" id="deliv-zip-row">
+          <label for="deliv-zip">Your zip</label>
+          <input id="deliv-zip" inputmode="numeric" maxlength="5" autocomplete="postal-code" placeholder="27587">
+          <button type="button" class="btn btn-ghost" id="deliv-check">Check</button>
+        </div>
+        <div class="deliv-addr" id="deliv-addr-row" hidden>
+          <label for="deliv-addr">Street address</label>
+          <input id="deliv-addr" maxlength="300" autocomplete="street-address" placeholder="123 Main St, Wake Forest">
+        </div>
+        <label class="deliv-opt"><input type="radio" name="nsl-deliv" value="flea">
+          <span class="deliv-label">Meet us at the Raleigh Flea Market on Friday</span><span class="deliv-price">Free</span></label>
+      </fieldset>
+
+      <dl class="cart-receipt" id="cart-receipt">
+        <div><dt>Subtotal</dt><dd id="cart-sub-amt">$0</dd></div>
+        <div id="cart-deliv-line" hidden><dt>Delivery</dt><dd id="cart-deliv-amt">$0</dd></div>
+        <div><dt>Sales tax (${TAX_PCT}%)</dt><dd id="cart-tax-amt">$0</dd></div>
+      </dl>
       <div class="cart-total"><span>Total</span><strong id="cart-total">$0</strong></div>
-      <p class="note">${esc(CART_NOTE)}</p>
+      <p class="note" id="cart-note">${esc(CART_NOTE)}</p>
       <button type="button" class="btn btn-primary cart-checkout" id="cart-checkout">Checkout with Square →</button>
     </div>
   </div>`;
@@ -1867,6 +2305,30 @@ Then in `mountManifestModal`: replace `const close = () => { overlay.hidden = tr
     const notice = overlay.querySelector('#cart-notice');
     const total = overlay.querySelector('#cart-total');
     const checkout = overlay.querySelector('#cart-checkout');
+    const deliv = {
+      set: overlay.querySelector('#cart-deliv'),
+      radios: Array.from(overlay.querySelectorAll('input[name="nsl-deliv"]')),
+      optDelivery: overlay.querySelector('#deliv-opt-delivery'),
+      to: overlay.querySelector('#deliv-to'),
+      zipRow: overlay.querySelector('#deliv-zip-row'),
+      zip: overlay.querySelector('#deliv-zip'),
+      check: overlay.querySelector('#deliv-check'),
+      addrRow: overlay.querySelector('#deliv-addr-row'),
+      addr: overlay.querySelector('#deliv-addr'),
+    };
+    const receipt = {
+      sub: overlay.querySelector('#cart-sub-amt'),
+      delLine: overlay.querySelector('#cart-deliv-line'),
+      del: overlay.querySelector('#cart-deliv-amt'),
+      tax: overlay.querySelector('#cart-tax-amt'),
+      note: overlay.querySelector('#cart-note'),
+    };
+    deliv.radios.forEach(r => r.addEventListener('change', () => {
+      if (r.checked) { setDeliveryChoice(r.value); syncDelivery(); renderTotals(); }
+    }));
+    deliv.check.addEventListener('click', checkZip);
+    deliv.zip.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); checkZip(); } });
+    deliv.addr.addEventListener('input', () => { try { localStorage.setItem('nsl.addr', deliv.addr.value.trim()); } catch {} });
     overlay.addEventListener('click', e => { if (e.target === overlay) closeCart(); });
     overlay.querySelector('.mf-close').addEventListener('click', closeCart);
     body.addEventListener('click', e => {
@@ -1928,6 +2390,59 @@ Then in `mountManifestModal`: replace `const close = () => { overlay.hidden = tr
     return 'Some boxes in your cart are no longer available — removed.';
   }
 
+  // Enable/disable the $10 option from what we know about the shopper's zip.
+  // If a member signed up on this device we already have it (spec §8.5) and
+  // the zip input never appears; otherwise they type it once.
+  function syncDelivery() {
+    const c = mountCart();
+    const z = storedZip();
+    const ok = zipQualifies(z);
+    const choice = deliveryChoice();
+    c.deliv.radios.forEach(r => { r.checked = r.value === choice; });
+    c.deliv.optDelivery.querySelector('input').disabled = !ok;
+    c.deliv.optDelivery.classList.toggle('is-off', !ok);
+    c.deliv.to.textContent = ok ? ` (to ${z})` : '';
+    c.deliv.zipRow.hidden = ok;
+    c.deliv.addrRow.hidden = !(ok && choice === 'delivery');
+    if (c.deliv.addrRow.hidden === false && !c.deliv.addr.value) c.deliv.addr.value = storedAddr();
+    c.receipt.note.textContent =
+      choice === 'flea' ? (FLEA_NOTE || CART_NOTE)
+      : choice === 'delivery' ? "We'll call to schedule the drop — usually within a couple of days."
+      : CART_NOTE;
+  }
+
+  function checkZip() {
+    const c = mountCart();
+    const z = (c.deliv.zip.value || '').trim();
+    if (!/^\d{5}$/.test(z)) { cartNotice('Enter a 5-digit zip code.'); c.deliv.zip.focus(); return; }
+    try { localStorage.setItem('nsl.zip', z); } catch { /* ignore */ }
+    if (zipQualifies(z)) {
+      cartNotice(`Good news — we deliver to ${z} for ${dollars(DELIVERY_CENTS)}.`);
+      setDeliveryChoice('delivery');
+    } else {
+      cartNotice(`We can't reach ${z} on our own truck — pickup and the Friday flea-market drop are both free.`);
+    }
+    syncDelivery();
+    renderTotals();
+  }
+
+  // Display arithmetic ONLY. Square computes the real tax per line and its
+  // number is what the buyer pays (spec §8.6); this is here so nobody is
+  // surprised by the total on the next screen.
+  let goodsCents = 0;
+  function renderTotals() {
+    const c = mountCart();
+    const choice = deliveryChoice();
+    const del = choice === 'delivery' ? DELIVERY_CENTS : 0;
+    const tax = Math.round((goodsCents + del) * TAX_PCT) / 100;
+    const taxCents = Math.round(tax);
+    c.receipt.sub.textContent = dollars(goodsCents);
+    c.receipt.delLine.hidden = del === 0;
+    c.receipt.del.textContent = dollars(del);
+    c.receipt.tax.textContent = dollars(taxCents);
+    c.total.textContent = dollars(goodsCents + del + taxCents);
+  }
+
   async function renderCart() {
     const c = mountCart();
     const ids = cartIds();
@@ -1937,8 +2452,12 @@ Then in `mountManifestModal`: replace `const close = () => { overlay.hidden = tr
     c.checkout.disabled = true;
     if (!ids.length) {
       c.body.innerHTML = `<p class="cart-empty">Your cart is empty. <a class="view" href="shop.html?view=all">Shop what's on the floor →</a></p>`;
+      c.deliv.set.hidden = true;
+      goodsCents = 0;
+      renderTotals();
       return;
     }
+    c.deliv.set.hidden = false;
     c.body.innerHTML = '<p class="mf-loading">Checking your boxes…</p>';
     let rows;
     try { rows = await refreshPublicPallets(); }
@@ -1967,8 +2486,10 @@ Then in `mountManifestModal`: replace `const close = () => { overlay.hidden = tr
         <button type="button" class="cart-remove" data-remove="${esc(p.manifest_id)}" aria-label="Remove BOX #${esc(p.pallet_number)}">&times;</button>
       </li>`;
     }).join('') + `</ul>`;
-    c.sub.textContent = `${kept.length} box${kept.length === 1 ? '' : 'es'} · pickup in Wake Forest`;
-    c.total.textContent = dollars(cents);
+    c.sub.textContent = `${kept.length} box${kept.length === 1 ? '' : 'es'}`;
+    goodsCents = cents;
+    syncDelivery();
+    renderTotals();
     c.checkout.disabled = false;
   }
 
@@ -1985,10 +2506,21 @@ Then in `mountManifestModal`: replace `const close = () => { overlay.hidden = tr
     c.checkout.disabled = true;
     c.checkout.textContent = 'One sec…';
     try {
+      const choice = deliveryChoice();
+      const addr = choice === 'delivery' ? (c.deliv.addr.value || '').trim() : '';
+      if (choice === 'delivery' && !addr) {
+        cartNotice('Add the street address for the delivery.');
+        c.deliv.addr.focus();
+        resetCheckoutBtn();
+        return;
+      }
+      let member = '';
+      try { member = localStorage.getItem('nsl.member') || ''; } catch { /* ignore */ }
       const r = await fetch('/api/public/checkout', {
         method: 'POST', credentials: 'omit',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids }),
+        body: JSON.stringify({ ids, delivery: choice, zip: choice === 'delivery' ? storedZip() : null,
+                               address: addr || null, memberNumber: member || null }),
       });
       let j = {};
       try { j = await r.json(); } catch { /* non-JSON body */ }
@@ -1998,6 +2530,14 @@ Then in `mountManifestModal`: replace `const close = () => { overlay.hidden = tr
         if (gone && gone.length) saveCart(ids.filter(id => !gone.includes(id)));
         await renderCart();                                            // fresh fetch prunes the rest
         cartNotice(j.error || 'Some boxes in your cart are no longer available.');
+        return;
+      }
+      if (r.status === 400 && (j.field === 'zip' || j.field === 'address')) {
+        // The server is the authority on the delivery radius; our copy of the
+        // zip list can be stale if Rob just edited it.
+        cartNotice(j.error || 'Check the delivery address.');
+        if (j.field === 'zip') { setDeliveryChoice('pickup'); syncDelivery(); renderTotals(); c.deliv.zip.focus(); }
+        else c.deliv.addr.focus();
         return;
       }
       if (r.status === 503) { cartNotice(`Online checkout is paused right now — call us at ${PHONE} and we'll take care of you.`); return; }
@@ -2046,6 +2586,29 @@ body:has(.cart-bar:not([hidden])) { padding-bottom: 64px; }
 .cart-checkout[disabled] { opacity: 0.55; cursor: not-allowed; }
 .cart-notice { margin: 0; padding: 10px 12px; background: #FFF3C4; color: #7a5a00; font-size: 14px; border-left: 3px solid var(--warehouse-yellow); }
 .cart-notice[hidden] { display: none; }
+
+/* delivery choice (spec §8.3) */
+.cart-deliv { border: 1px solid #e3e3e3; border-radius: 6px; margin: 0; padding: 10px 12px 12px; }
+.cart-deliv[hidden] { display: none; }
+.cart-deliv legend { font-weight: 700; font-size: 14px; padding: 0 4px; }
+.deliv-opt { display: flex; align-items: center; gap: 10px; padding: 9px 2px; min-height: 44px; cursor: pointer; }
+.deliv-opt .deliv-label { flex: 1; font-size: 15px; }
+.deliv-opt .deliv-price { font-weight: 700; white-space: nowrap; }
+.deliv-opt.is-off { opacity: .55; cursor: default; }
+.deliv-to { color: #666; font-weight: 400; }
+.deliv-zip, .deliv-addr { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 2px 2px 8px 28px; }
+.deliv-zip[hidden], .deliv-addr[hidden] { display: none; }
+.deliv-zip label, .deliv-addr label { font-size: 13px; color: #555; }
+.deliv-zip input { width: 7em; }
+.deliv-addr input { flex: 1; min-width: 12em; }
+.deliv-zip input, .deliv-addr input { min-height: 40px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; }
+
+/* receipt block */
+.cart-receipt { margin: 10px 0 0; font-size: 14px; }
+.cart-receipt div { display: flex; justify-content: space-between; padding: 3px 0; }
+.cart-receipt div[hidden] { display: none; }
+.cart-receipt dt { color: #555; }
+.cart-receipt dd { margin: 0; }
 .cart-empty { color: #555; font-size: 15px; padding: 24px 0; text-align: center; line-height: 1.6; }
 ```
 
@@ -2198,13 +2761,17 @@ Create `api/local.settings.json` (gitignored — confirm with `git check-ignore 
 
 - [ ] **Step 2: Scenarios (record the outcome of each in the PR body)**
 
-1. **Two-box cart pays.** Add boxes A and B → Checkout → sandbox card `4111 1111 1111 1111`, CVV 111, any future expiry → webhook → both boxes `sold`; `SELECT status FROM dbo.checkout_orders WHERE square_order_id=…` = `paid`; one `payments` row, `status='COMPLETED'`, `manifest_id IS NULL`; two `checkout_order_boxes` rows with `outcome='sold'`; thanks page shows both numbers and the cart is empty.
+1. **Two-box cart pays, pickup, taxed.** Add boxes A ($180) and B ($250) → the drawer receipt reads Subtotal $430.00 / Sales tax (7.25%) $31.18 / **Total $461.18** → Checkout → the Square page shows the same total and **one** "NC sales tax (7.25%)" line, no shipping line → pay with sandbox card `4111 1111 1111 1111`, CVV 111, any future expiry → webhook → both boxes `sold`; `SELECT status, subtotal_cents, tax_cents, delivery_cents, total_cents, delivery_method FROM dbo.checkout_orders WHERE square_order_id=…` = `paid, 43000, 3118, 0, 46118, pickup` and **subtotal+tax+delivery = total**; one `payments` row, `amount_cents = 46118`, `status='COMPLETED'`, `manifest_id IS NULL`, **no "amount != order total" warning in the log**; two `checkout_order_boxes` rows with `outcome='sold'` and `tax_cents` summing to `checkout_orders.tax_cents` exactly (Square rounds per line — $250 x 7.25% = $18.125 may land on .12 or .13, so assert the SUM matches the order, not a hand-typed cent); thanks page shows both numbers and the cart is empty. On the staff sales page the row reads **$430.00** (goods), with $31.18 in the Tax/Del column — not $461.18.
 2. **Overlap, first pays.** Cart A `{1,2}` (tab 1) and cart B `{2,3}` (tab 2), both click Checkout (two links). Pay A → order B `status='canceled'`, `link_deleted_at` set (or `NULL` + a warning log if Square answered without `cancelled_order_id` — then run Reconcile and confirm it becomes set). Tab 2's Square page refuses to complete.
-3. **Partial refund path.** Cart C `{4,5}` → get to the Square page but do not pay; in admin mark box 4 SOLD (PATCH publishState=sold) → the link is canceled in the DB. Simulate the delete race: temporarily set order C back to `open` with SQL, then pay it → box 5 `sold`, box 4 `outcome='unavailable'`, `payments.status='PARTIAL_REFUND_FLAGGED'`, `refund_due_cents` = box 4's price. In `staff/sales.html` the attention row shows "some boxes were already sold — partial refund due" with that amount; click Refund → Square refund for exactly that amount; the `refund.updated` webhook sets `refunded_cents`, `status='PARTIAL_REFUNDED'`, `needs_refund=0`.
+3. **Partial refund path, with tax.** Cart C `{4,5}` → get to the Square page but do not pay; in admin mark box 4 SOLD (PATCH publishState=sold) → the link is canceled in the DB. Simulate the delete race: temporarily set order C back to `open` with SQL, then pay it → box 5 `sold`, box 4 `outcome='unavailable'`, `payments.status='PARTIAL_REFUND_FLAGGED'`, and **`refund_due_cents` = box 4's `amount_cents` + its `tax_cents`**, not the bare price — check the arithmetic by hand against `SELECT amount_cents, tax_cents FROM dbo.checkout_order_boxes WHERE manifest_id = <box 4>`. In `staff/sales.html` the attention row shows "some boxes were already sold — partial refund due" with the tax-inclusive amount; click Refund → Square refund for exactly that amount; the `refund.updated` webhook sets `refunded_cents`, `status='PARTIAL_REFUNDED'`, `needs_refund=0`.
 4. **Missed webhook.** Delete the sandbox subscription, pay a one-box cart, `POST /api/square-reconcile` from the staff page → `healed: 1`, box sold, `payments.status='COMPLETED'`. Re-create the subscription.
 5. **Price change cancels.** Add box D to a cart, click Checkout (link minted, don't pay); PATCH `listPrice` → `checkout_orders` row canceled; re-open the drawer → still there at the new price; Checkout → a NEW link (different `square_order_id`).
 6. **Floor sale ignored.** In the sandbox Dashboard/Point of Sale simulator create a cash payment → webhook 200 `ignored: floor`, no `payments` row.
 7. **Kill switch.** Set `SQUARE_CHECKOUT_ENABLED=false` → cards have no control, header button hidden, bottom bar hidden, `localStorage['nsl.cart']` untouched, `POST /api/public/checkout` → 503 and the drawer shows the "paused" notice.
+8. **Delivery order, taxed fee (spec §8.1–§8.2).** Clear `localStorage['nsl.zip']`. Open the drawer with one $180 box → the **Delivered to you** radio is **disabled** with the zip prompt showing. Type `28202` → Check → "We can't reach 28202…" and the radio stays disabled. Type `27587` → Check → radio enables, label reads "(to 27587)", the street-address field appears. Enter an address, select the radio → receipt reads Subtotal $180.00 / Delivery $10.00 / Sales tax (7.25%) $13.78 / **Total $203.78** — i.e. the tax is charged on $190, **not** $180. Checkout → the Square page shows a separate "Local delivery (within 20 miles)" line **and** a tax line; pay → `checkout_orders` = `subtotal_cents 18000, delivery_cents 1000, tax_cents 1378, total_cents 20378, delivery_method 'delivery', delivery_zip '27587'`, `delivery_address` = what was typed. This scenario is the whole point of choosing `service_charges[]` over `checkout_options.shipping_fee`: **if `tax_cents` comes back 1305 ($180 × 7.25%) instead of 1378, the delivery charge is not being taxed and the payload is wrong.**
+9. **Flea market.** Same box, choose the Friday flea-market option → no Delivery line in the receipt, total = $180.00 + $13.05 tax; the Square line-item note reads "Friday pickup at the Raleigh Flea Market"; `delivery_method='flea'`, `delivery_cents=0`, `delivery_zip IS NULL`.
+10. **Zip list is server-authoritative.** With the drawer open and `27587` qualifying, run `UPDATE dbo.delivery_zips SET active = 0 WHERE zip = '27587'`, then click Checkout without reloading → `400 { field: "zip" }`, the drawer flips back to pickup and shows the reason, nothing is minted at Square. Re-activate the zip.
+11. **Delivery choice changes the link.** Pickup cart → Checkout (link 1, don't pay) → close, switch to delivery with a qualifying zip → Checkout → **a different `square_order_id`** with `delivery_cents = 1000`; the pickup order row is still `open` (it ages out at 7 days or dies with the first competing sale). Then click Checkout twice on the *same* delivery choice → the identical link is returned, no second order row.
 
 - [ ] **Step 3: Browser pass at phone width**
 
@@ -2212,7 +2779,7 @@ With Playwright (MCP) at 400×800: bottom bar visible with a non-empty cart; dra
 
 - [ ] **Step 4: Update the docs**
 
-In `SQUARE-INTEGRATION.md` replace the "One link per box, links are single-use." bullet and the "New pieces" table rows for `CheckoutFunction` / `manifests columns` with a short "Cart model (2026-09)" paragraph: one link per checkout attempt in `checkout_orders` (+ `checkout_order_boxes`, per-box `outcome`), fulfilment transactional in `CheckoutFulfillment`, competing links canceled DB-first, partial refunds via `refund_due_cents`, Reconcile ages links out at 7 days and runs from the GitHub cron. Point to the spec for detail. Change the spec's **Status** line to `APPROVED 2026-09-13 — implemented in PR #<n>`.
+In `SQUARE-INTEGRATION.md` replace the "One link per box, links are single-use." bullet and the "New pieces" table rows for `CheckoutFunction` / `manifests columns` with a short "Cart model (2026-09)" paragraph: one link per checkout attempt in `checkout_orders` (+ `checkout_order_boxes`, per-box `outcome`), fulfilment transactional in `CheckoutFulfillment`, competing links canceled DB-first, partial refunds via `refund_due_cents`, Reconcile ages links out at 7 days and runs from the GitHub cron. Point to the spec for detail. Add a line to the "Cart model (2026-09)" paragraph: orders carry 7.25% NC sales tax as an ADDITIVE LINE_ITEM-scope tax and, for delivery orders, a $10 taxed service charge; the sales dashboard reports goods only. Change the spec's **Status** line to `APPROVED 2026-09-14 (v3) — implemented in PR #<n>`.
 ```powershell
 git add SQUARE-INTEGRATION.md docs/superpowers/specs/2026-09-13-cart-checkout-design.md
 git commit -m "docs: cart model in SQUARE-INTEGRATION.md; spec marked approved"
@@ -2224,21 +2791,27 @@ git commit -m "docs: cart model in SQUARE-INTEGRATION.md; spec marked approved"
 git push -u origin feature/cart-checkout
 gh pr create --title "Cart + combined checkout (multi-box Square orders)" --body-file - <<'EOF'
 ## Why
-Norm: "we need an add to cart button so people can buy multiple items." Spec: docs/superpowers/specs/2026-09-13-cart-checkout-design.md (reviewed by 4 agents + Square docs check).
+Norm: "we need an add to cart button so people can buy multiple items." Rob (9/14): sales tax, a three-way delivery choice, and an address on the join form. Spec: docs/superpowers/specs/2026-09-13-cart-checkout-design.md (reviewed by 4 agents + Square docs check; tax/delivery in §8).
 
 ## What
-- DB: checkout_orders / checkout_order_boxes / payment_refunds (additive; db/cart-checkout.sql applied to prod before merge and re-run after)
-- API: POST /api/public/checkout {ids}; one Square `order` link with N ad-hoc lines (coupons/tips off); transactional CheckoutFulfillment with per-box outcome + partial refund flag; DB-first cancel of competing links on sale / price change / state change / invoice / fake-sale / delete; Reconcile set-based + confirmed deletes + 7-day age-out + cron tick route; partial refunds; sales summary via checkout_order_boxes
-- Site: Add-to-cart control (replaces Buy now), header badge, phone bottom bar, drawer with fresh re-validation, thanks page for N boxes
-- Tests: api.Tests (SquarePayloads, Availability)
+- DB: checkout_orders / checkout_order_boxes / payment_refunds / delivery_zips (additive; db/cart-checkout.sql applied to prod before merge and re-run after)
+- API: POST /api/public/checkout {ids, delivery, zip, address}; one Square `order` link with N ad-hoc lines plus a 7.25% ADDITIVE LINE_ITEM-scope tax and, for delivery orders, a $10 taxed service charge (coupons/tips off, no shipping_fee, no shipping-address collection); transactional CheckoutFulfillment with per-box outcome + tax-inclusive partial refund flag; DB-first cancel of competing links on sale / price change / state change / invoice / fake-sale / delete; Reconcile set-based + confirmed deletes + 7-day age-out + cron tick route; partial refunds; sales summary via checkout_order_boxes, goods-only revenue
+- Site: Add-to-cart control (replaces Buy now), header badge, phone bottom bar, drawer with fresh re-validation + delivery radio group + live receipt, thanks page for N boxes
+- Tests: api.Tests (SquarePayloads incl. tax/service-charge shape, Availability)
+- **No card surcharge** — Square does not support it on payment links and no network allows surcharging debit; spec §7.1 has the full reasoning and the cash-discount alternative.
 
 ## Sandbox scenarios run
-(paste results from Task 14 Step 2, 1–7)
+(paste results from Task 14 Step 2, 1–11)
+
+## Needs Rob before the live test
+- NCDOR sales-tax registration + filing frequency (spec §8.9 Q1) — **blocking**
+- Confirm the delivery zip list; 12 borderline zips are seeded inactive (§8.9 Q2)
+- Confirm the flea-market day/venue/window for the buyer-facing copy (§8.9 Q3)
 
 ## Rollout
 1. SWA settings: SQUARE_PUBLIC_BASE_URL, SQUARE_SUPPORT_EMAIL, RECONCILE_CRON_KEY (+ GitHub secret NSL_RECONCILE_KEY), per-env webhook keys
-2. Merge → deploy → re-run db/cart-checkout.sql
-3. $1 live test: two $0.50 boxes, refund, confirm fee rate
+2. Merge → deploy → re-run db/cart-checkout.sql; seed/activate delivery_zips from Rob's answer
+3. $1 live test: two $0.50 boxes (confirm tax lands), one delivery order, refund one box and confirm the refund includes its tax, confirm fee rate
 4. Days later: db/cart-checkout-drop.sql
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
@@ -2253,9 +2826,10 @@ Expected: `Build and Deploy pass`. Merge is Jeff's call.
 
 1. Set the SWA application settings listed in the PR body (Azure Portal → `stapp-nsl-website` → Environment variables). Production webhook subscription must include `payment.updated`, `payment.created`, `refund.updated`, `refund.created`.
 2. Re-run `db/cart-checkout.sql` (Task 1 Step 3 command).
-3. Live test: two boxes priced $0.50 each (or one $1 box) → pay with a real card → both flip SOLD → refund from admin → `refunded_cents` matches → confirm the 2.9% + 30¢ fee on the Square Dashboard.
-4. Run the "Square reconcile" workflow manually once → 200 with counts.
-5. Tell Rob: web orders stay OPEN in the Square Dashboard's Order Manager forever (Square can't close payment-link fulfillments via API) — that is normal.
+3. **Confirm the Square location's own tax settings** before the first live order — if the location already applies a tax to orders, our 7.25% would stack on top of it. Web and floor must both land on 7.25% (spec §8.9 Q5).
+4. Live test: two boxes priced $0.50 each (or one $1 box) → pay with a real card → both flip SOLD, `tax_cents` non-zero and equal to Square's `total_tax_money` → refund one from admin → `refunded_cents` matches the tax-inclusive `refund_due_cents` → confirm the 2.9% + 30¢ fee on the Square Dashboard. Run one $0.50 **delivery** order too and confirm the total is `0.50 + 10.00 + tax on 10.50`.
+5. Run the "Square reconcile" workflow manually once → 200 with counts.
+6. Tell Rob: (a) web orders stay OPEN in the Square Dashboard's Order Manager forever (Square can't close payment-link fulfillments via API) — that is normal; (b) his NC filing figure is tax collected minus tax refunded from `checkout_orders.tax_cents` and refunded boxes' `tax_cents`, **not** Square's partial-refund report, which does not break tax out (spec §8.8); (c) the delivery zip list is a table he can change — send him the current rows.
 
 ---
 
@@ -2296,4 +2870,49 @@ $tok = az account get-access-token --resource https://database.windows.net/ --qu
 Invoke-Sqlcmd -ServerInstance sql-nsl-prod-nc5h2y.database.windows.net -Database sqldb-nsl-prod -AccessToken $tok -InputFile db/cart-checkout-drop.sql -Verbose
 git add db/cart-checkout-drop.sql
 git commit -m "db: drop legacy manifests.checkout_* columns (cart phase 2)"
+```
+
+---
+
+### Task 16: Member address shortcut — capture zip/address on signup (spec §8.5)
+
+> **Append-only task, added 2026-09-14 with spec v3.** It is last because it depends on another agent's work: the street-address lines on `dbo.members`, the join modal and `POST /api/public/register`. **Rebase on `main` and re-read the join section of `js/site.js` before starting.** Do not edit the join form markup, `sp_RegisterMember`, or `MembersFunction` here — only the success handler.
+
+**Files:**
+- Modify: `js/site.js` — the join modal's submit success path (around the `rememberMember(n)` call)
+
+**Interfaces:**
+- Consumes: the join form's zip field (`#join-zip`, exists today) and the street-address field the other agent is adding.
+- Produces: `localStorage['nsl.zip']` (5-digit string) and `localStorage['nsl.addr']` (one street line), read by Task 10's `storedZip()` / `storedAddr()` and by the drawer's `syncDelivery()`.
+
+**Why this shape.** Rob asked for "if they are a member, it will automatically know." The public site has **no login**: signup posts to `POST /api/public/register` and the browser keeps the member number in `localStorage['nsl.member']`. There is no public endpoint that reads a member row back, and **there must not be** — member numbers are sequential (`2600001`, `2600002`, …), so a public `GET /api/public/member/{number}` would let anyone walk the range and harvest home addresses. So the shortcut is device-local, exactly like the member number itself. Say so to Rob in plain words: *this works on the phone they signed up on; on a new device they type their zip once.* The real fix is member login — `RESELLER-PROGRAM-DESIGN.md` §1, which Rob has separately asked for — and once it exists `POST /api/public/checkout` can read the address server-side and the drawer needs no address form for members at all.
+
+- [ ] **Step 1: Store the zip and address alongside the member number**
+
+In the join modal's submit handler, where the successful response currently calls `rememberMember(n)`, add:
+
+```javascript
+      // Device-local delivery shortcut (spec §8.5). The member number already
+      // lives here; the zip is what the cart drawer needs to answer "do you
+      // qualify for $10 delivery" without asking again. NOT a substitute for
+      // member login — see RESELLER-PROGRAM-DESIGN.md §1.
+      try {
+        const z = (body.zip || '').trim();
+        if (/^\d{5}$/.test(z)) localStorage.setItem('nsl.zip', z);
+        const street = (body.addressLine1 || '').trim();   // field name per the members/address change
+        if (street) localStorage.setItem('nsl.addr', [street, body.city, body.state].filter(Boolean).join(', '));
+      } catch { /* private mode — the drawer just asks for the zip */ }
+```
+
+If the address field has not landed yet, ship the zip half now; the drawer degrades to "qualifies, type your street address", which is still the whole of the eligibility answer.
+
+- [ ] **Step 2: Check**
+
+With the SWA CLI running: sign up with zip `27587` → `localStorage['nsl.zip'] === '27587'` → open the cart drawer → the **Delivered to you** radio is already enabled, labelled "(to 27587)", and **no zip input is shown**. Sign up with `28202` in a fresh profile → the radio stays disabled with the "can't reach" explanation. Private-browsing window → no throw, drawer falls back to asking for the zip.
+
+- [ ] **Step 3: Commit**
+
+```powershell
+git add js/site.js
+git commit -m "feat(cart): remember a new member's zip for the delivery check (device-local)"
 ```

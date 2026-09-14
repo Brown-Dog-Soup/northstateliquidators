@@ -200,7 +200,7 @@ EXEC dbo.sp_RegisterMember
     }
 
     private const string ListSql = @"
-SELECT id, member_number, first_name, last_name, email, phone, city, state, zip, how_heard, source, created_at
+SELECT id, member_number, first_name, last_name, email, phone, city, state, zip, how_heard, source, created_at, welcome_sent_at
 FROM dbo.members ORDER BY created_at DESC";
 
     [Function("ListMembers")]
@@ -227,11 +227,12 @@ FROM dbo.members ORDER BY created_at DESC";
 
         var sb = new StringBuilder();
         sb.Append((char)0xFEFF);   // UTF-8 BOM — Excel needs it to read UTF-8 correctly
-        sb.Append("member_number,first_name,last_name,email,phone,city,state,zip,how_heard,source,created_at\r\n");
+        sb.Append("member_number,first_name,last_name,email,phone,city,state,zip,how_heard,source,created_at,welcome_sent_at\r\n");
         foreach (var r in rows)
         {
             var d = (IDictionary<string, object?>)r;
             var createdAt = d["created_at"] is DateTime dt ? dt.ToString("yyyy-MM-ddTHH:mm:ssZ") : (d["created_at"]?.ToString() ?? "");
+            var welcomeAt = d.TryGetValue("welcome_sent_at", out var w) && w is DateTime wt ? wt.ToString("yyyy-MM-ddTHH:mm:ssZ") : "";
             sb.Append(string.Join(",", new[]
             {
                 CsvField(d["member_number"]?.ToString()?.Trim()),
@@ -244,7 +245,8 @@ FROM dbo.members ORDER BY created_at DESC";
                 CsvField(d["zip"]?.ToString()),
                 CsvField(d["how_heard"]?.ToString()),
                 CsvField(d["source"]?.ToString()),
-                CsvField(createdAt)
+                CsvField(createdAt),
+                CsvField(welcomeAt)
             }));
             sb.Append("\r\n");
         }

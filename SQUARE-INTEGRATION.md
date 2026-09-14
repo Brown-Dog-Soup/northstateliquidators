@@ -90,6 +90,9 @@ index.html (public)          api/ (.NET 8 isolated Functions)         Square
   slipping through): webhook handler tolerates a COMPLETED payment for an
   already-sold/canceled box by flagging it for refund
   (`POST /v2/refunds`) — surfaced in admin, one click, rare.
+- **Shared account:** the webhook fires for floor POS sales too. Only payments
+  with `application_details.square_product` ECOMMERCE_API or INVOICES are
+  ours; unmatched payments from other products are ignored (2026-09-13 hotfix).
 
 ### New pieces
 

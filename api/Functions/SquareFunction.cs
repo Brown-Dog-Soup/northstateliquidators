@@ -111,43 +111,61 @@ WHERE id = @id AND checkout_link_id IS NULL",
             return new StatusCodeResult(403);
         }
 
-        using var doc = JsonDocument.Parse(raw);
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(raw); }
+        catch (JsonException)
+        {
+            _log.LogWarning("SquareWebhook: body is not JSON ({Len} bytes)", raw.Length);
+            return new OkObjectResult(new { ignored = "malformed" });
+        }
+        using var docScope = doc;
         var root = doc.RootElement;
-        var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+        var type = SquareEvents.EventType(root);
 
         // Refunds: mark our audit row REFUNDED (and clear the attention flag)
         // when Square confirms the money went back — whether we triggered it
         // via the admin button or someone did it in the Square Dashboard.
         if (type is "refund.updated" or "refund.created")
         {
-            var refund = root.GetProperty("data").GetProperty("object").GetProperty("refund");
-            var rStatus = refund.TryGetProperty("status", out var rs) ? rs.GetString() : null;
-            var rPaymentId = refund.TryGetProperty("payment_id", out var rp) ? rp.GetString() : null;
-            if (rStatus == "COMPLETED" && rPaymentId != null)
+            if (!SquareEvents.TryParseRefund(root, out var refund))
+                return new OkObjectResult(new { ignored = "malformed" });
+            if (refund.Status == "COMPLETED" && refund.PaymentId != null)
             {
                 await using var rconn = await _sql.OpenAsync(ct);
                 var n = await rconn.ExecuteAsync(
                     "UPDATE dbo.payments SET status = 'REFUNDED', needs_refund = 0 WHERE square_payment_id = @pid",
-                    new { pid = rPaymentId });
-                _log.LogInformation("SquareWebhook: refund COMPLETED for payment {PaymentId} ({N} row updated)", rPaymentId, n);
+                    new { pid = refund.PaymentId });
+                _log.LogInformation("SquareWebhook: refund COMPLETED for payment {PaymentId} ({N} row updated)", refund.PaymentId, n);
             }
-            return new OkObjectResult(new { refund = rStatus });
+            return new OkObjectResult(new { refund = refund.Status });
         }
 
         if (type != "payment.updated" && type != "payment.created")
             return new OkObjectResult(new { ignored = type });   // subscribed but not relevant
 
-        var payment = root.GetProperty("data").GetProperty("object").GetProperty("payment");
-        var status = payment.TryGetProperty("status", out var st) ? st.GetString() : null;
-        if (status != "COMPLETED")
-            return new OkObjectResult(new { ignored = status });
+        if (!SquareEvents.TryParsePayment(root, out var pay))
+            return new OkObjectResult(new { ignored = "malformed" });
+        if (pay.Status != "COMPLETED")
+            return new OkObjectResult(new { ignored = pay.Status });
 
-        var paymentId = payment.GetProperty("id").GetString()!;
-        var orderId   = payment.TryGetProperty("order_id", out var o) ? o.GetString() : null;
-        long? amount  = payment.TryGetProperty("amount_money", out var am) &&
-                        am.TryGetProperty("amount", out var amv) ? amv.GetInt64() : null;
+        var paymentId = pay.PaymentId;
+        var orderId   = pay.OrderId;
+        long? amount  = pay.AmountCents;
 
         await using var conn = await _sql.OpenAsync(ct);
+
+        // The merchant account is shared with the floor POS. Match by order
+        // first; a payment that matches no box AND did not come from our
+        // payment links / invoices is a counter sale — not ours, not logged.
+        var box = orderId == null ? null : await conn.QueryFirstOrDefaultAsync(
+            "SELECT id, pallet_number, publish_state FROM dbo.manifests WHERE checkout_order_id = @oid",
+            new { oid = orderId });
+        if (box == null && !SquareEvents.IsOurProduct(pay.Product))
+        {
+            _log.Log(pay.Product == null ? LogLevel.Warning : LogLevel.Information,
+                "SquareWebhook: ignoring {Product} payment {PaymentId} (floor/other)", pay.Product ?? "unknown", pay.PaymentId);
+            return new OkObjectResult(new { ignored = "floor" });
+        }
 
         // Idempotency anchor: one row per Square payment, ever.
         var inserted = await conn.ExecuteAsync(@"
@@ -158,18 +176,14 @@ WHERE NOT EXISTS (SELECT 1 FROM dbo.payments WHERE square_payment_id = @pid)",
         if (inserted == 0)
             return new OkObjectResult(new { duplicate = true });   // retry/replay — already handled
 
-        var box = orderId == null ? null : await conn.QueryFirstOrDefaultAsync(
-            "SELECT id, pallet_number, publish_state FROM dbo.manifests WHERE checkout_order_id = @oid",
-            new { oid = orderId });
-
         if (box == null)
         {
-            // Money arrived for an order we can't match — flag for a human.
+            // Money arrived from OUR product for an order we can't match — flag for a human.
             await conn.ExecuteAsync(
                 "UPDATE dbo.payments SET needs_refund = 1, status = 'UNMATCHED' WHERE square_payment_id = @pid",
                 new { pid = paymentId });
-            _log.LogError("SquareWebhook: COMPLETED payment {PaymentId} matched no box (order {OrderId})",
-                paymentId, orderId);
+            _log.LogError("SquareWebhook: COMPLETED {Product} payment {PaymentId} matched no box (order {OrderId})",
+                pay.Product, paymentId, orderId);
             return new OkObjectResult(new { unmatched = true });
         }
 

@@ -43,7 +43,9 @@ shopify-cli/.shopify/
 Amazon/
 
 # .NET build output for the api/ project
-api/bin/
-api/obj/
 api/local.settings.json
 Square/
+
+# .NET build output
+**/bin/
+**/obj/

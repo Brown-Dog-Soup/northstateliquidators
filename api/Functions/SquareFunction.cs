@@ -162,7 +162,8 @@ WHERE id = @id AND checkout_link_id IS NULL",
             new { oid = orderId });
         if (box == null && !SquareEvents.IsOurProduct(pay.Product))
         {
-            _log.LogInformation("SquareWebhook: ignoring {Product} payment {PaymentId} (floor/other)", pay.Product ?? "?", paymentId);
+            _log.Log(pay.Product == null ? LogLevel.Warning : LogLevel.Information,
+                "SquareWebhook: ignoring {Product} payment {PaymentId} (floor/other)", pay.Product ?? "unknown", pay.PaymentId);
             return new OkObjectResult(new { ignored = "floor" });
         }
 

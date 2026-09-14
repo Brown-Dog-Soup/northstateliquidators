@@ -20,6 +20,7 @@ namespace NSL.Api.Functions;
 ///   POST /api/public/register      — anonymous (honeypot + soft per-IP rate limit)
 ///   GET  /api/members              — staff list, newest first
 ///   GET  /api/members/export.csv   — staff CSV download for email blasts
+///   POST /api/members/{memberNumber}/resend-welcome — staff: resend the welcome email
 /// </summary>
 public sealed class MembersFunction
 {

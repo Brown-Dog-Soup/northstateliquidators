@@ -22,6 +22,7 @@ public static class MemberEmailTemplates
         var site = siteBase.TrimEnd('/');
         var num = WebUtility.HtmlEncode(m.MemberNumber);
         var first = WebUtility.HtmlEncode(m.FirstName);
+        // Subject is not HTML: only strip angle brackets from the (always 7-digit) number.
         var subject = $"You're member #{m.MemberNumber.Replace("<", "").Replace(">", "")} — welcome to North State Liquidators";
         var html = $@"<div style=""margin:0;padding:24px 12px;background:#f6f4ef;font-family:Segoe UI,Arial,Helvetica,sans-serif;color:#1d2330;"">
   <div style=""display:none;max-height:0;overflow:hidden;opacity:0;"">Your member number is {num}. Give it at the warehouse — save this email.</div>

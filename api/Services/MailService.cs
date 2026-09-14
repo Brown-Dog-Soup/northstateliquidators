@@ -22,6 +22,9 @@ namespace NSL.Api.Services;
 ///   MAIL_TENANT_ID      d9b645c3-3587-4cd4-be9b-1a8d405c92ad
 ///   MAIL_CLIENT_ID      NSL-Website-Mail app registration (client id)
 ///   MAIL_CLIENT_SECRET  its client secret
+///                       captured once at startup (singleton) — after rotating
+///                       the secret, re-set the SWA setting; SWA restarts the
+///                       API on a settings change.
 ///   MAIL_REPLY_TO       optional; defaults to MAIL_FROM
 ///   SITE_BASE_URL       optional; defaults to https://northstateliquidators.com
 ///
@@ -48,6 +51,12 @@ public sealed class MailService
     private readonly string _siteBase;
 
     public MailService(IHttpClientFactory http, IConfiguration cfg, ILogger<MailService> log)
+        : this(http, cfg, log, BuildCredential(cfg))
+    {
+    }
+
+    /// <summary>Credential seam for tests — bypasses BuildCredential's ClientSecretCredential/ManagedIdentityCredential selection.</summary>
+    public MailService(IHttpClientFactory http, IConfiguration cfg, ILogger<MailService> log, TokenCredential credential)
     {
         _http = http;
         _log = log;
@@ -55,11 +64,15 @@ public sealed class MailService
         From      = cfg["MAIL_FROM"] ?? "";
         _replyTo  = cfg["MAIL_REPLY_TO"] ?? From;
         _siteBase = (cfg["SITE_BASE_URL"] ?? "https://northstateliquidators.com").TrimEnd('/');
+        _credential = credential;
+    }
 
+    private static TokenCredential BuildCredential(IConfiguration cfg)
+    {
         var tenant = cfg["MAIL_TENANT_ID"];
         var client = cfg["MAIL_CLIENT_ID"];
         var secret = cfg["MAIL_CLIENT_SECRET"];
-        _credential = !string.IsNullOrEmpty(tenant) && !string.IsNullOrEmpty(client) && !string.IsNullOrEmpty(secret)
+        return !string.IsNullOrEmpty(tenant) && !string.IsNullOrEmpty(client) && !string.IsNullOrEmpty(secret)
             ? new ClientSecretCredential(tenant, client, secret)
             : new ManagedIdentityCredential();   // only reachable on a BYO-Functions backend
     }
@@ -157,13 +170,19 @@ public sealed class MailService
         }
         var (subject, html) = MemberEmailTemplates.Welcome(m, _siteBase);
 
+        // The caller's ct is deliberately CancellationToken.None at both call
+        // sites (a mail problem must never abort the signup POST or the staff
+        // resend click). This 10 s budget — not the caller's ct — is what
+        // actually bounds how long the attempt loop can run.
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
         // One retry, transient classes only (429 / 5xx / exception). Runs on the
         // request path, so it is capped hard rather than backed off politely.
         for (var attempt = 1; attempt <= 2; attempt++)
         {
             try
             {
-                var r = await SendAsync(m.Email, m.FirstName, subject, html, ct);
+                var r = await SendAsync(m.Email, m.FirstName, subject, html, budget.Token);
                 if (r.Sent)
                 {
                     _log.LogInformation("Welcome mail accepted by Graph for member {Num}", m.MemberNumber);
@@ -174,6 +193,11 @@ public sealed class MailService
                     "Welcome mail failed for member {Num}: HTTP {Status} {Error}", m.MemberNumber, r.StatusCode, r.Error);
                 if (!transient) return false;   // 401/403/404 will not fix themselves
             }
+            catch (Azure.Identity.AuthenticationFailedException ex)
+            {
+                _log.LogError(ex, "Welcome mail: token acquisition failed for member {Num} — check MAIL_CLIENT_* / secret expiry", m.MemberNumber);
+                return false;   // auth failures never retry
+            }
             catch (Exception ex)
             {
                 // Catches OperationCanceledException too: the unconditional
@@ -183,7 +207,7 @@ public sealed class MailService
             }
             if (attempt == 1)
             {
-                try { await Task.Delay(TimeSpan.FromSeconds(2), ct); } catch (OperationCanceledException) { return false; }
+                try { await Task.Delay(TimeSpan.FromSeconds(2), budget.Token); } catch (Exception) { return false; }
             }
         }
         return false;

@@ -49,7 +49,7 @@ async function loadMembers() {
       toast(r.sent ? `Welcome email sent to member ${b.dataset.num}` : 'Email not sent — check MAIL settings / logs', r.sent ? 'ok' : 'err', 3500);
       await loadMembers();
     } catch (e) {
-      toast(`Send failed: ${e.message}`, 'err', 4000);
+      toast(`Send failed: ${e.data?.error || e.message}`, 'err', 4000);
       b.disabled = false; b.textContent = 'Send welcome';
     }
   }));

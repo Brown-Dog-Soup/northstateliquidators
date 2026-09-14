@@ -6,7 +6,16 @@ verification) and a production data check; nothing in it has been built yet.
 v3 folds in Rob's 2026-09-14 checkout requests — **7.25% NC sales tax**, a
 **three-way delivery choice**, and the member street address — and records the
 decision **not** to add a card surcharge. All of that lives in **§8**; §1, §2,
-§4, §5 and §7 carry the consequences. Awaiting Jeff's sign-off.
+§4, §5 and §7 carry the consequences.
+**CLIENT DECISIONS 2026-09-14 (Rob, on the "Laundry" thread):** the card
+surcharge is **dropped for good** — "Good point on the CC fee. Ignore. Fine the
+way it is." He declined the cash-discount alternative too, so **pricing is
+unchanged and no fee logic of any kind is built** (§7.1 stands as the record of
+why). Member password login is **deferred** — "Good with not having a password
+for now... we will trend in that direction as we begin to have member tiers and
+discounts" — so §8's member-recognition stays device-local for now and a login
+is a prerequisite only for the later tier/discount work. Sales tax and the
+three-way delivery choice are confirmed as specced.
 **Requested by:** Norm — "we need an add to cart button so people can buy
 multiple items" — multiple boxes of any size (Mega Box, Mini Pallet, Full
 Pallet, Individual) in one purchase.

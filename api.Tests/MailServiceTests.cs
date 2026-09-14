@@ -86,4 +86,32 @@ public class MailServiceTests
         var sent = await svc.SendMemberWelcomeAsync(new MemberMail("2600001", "Sam", "sam@example.com"), CancellationToken.None);
         Assert.False(sent);
     }
+
+    [Fact]
+    public async Task SendMemberWelcome_WithCancelledToken_ReturnsFalse()
+    {
+        var cfg = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["MAIL_ENABLED"] = "true", ["MAIL_FROM"] = "hello@northstateliquidators.com",
+            ["MAIL_TENANT_ID"] = "00000000-0000-0000-0000-000000000000",
+            ["MAIL_CLIENT_ID"] = "00000000-0000-0000-0000-000000000001", ["MAIL_CLIENT_SECRET"] = "x"
+        }).Build();
+        var svc = new MailService(new NoHttp(), cfg, NullLogger<MailService>.Instance);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        // Real cancellation must still come back as false, not propagate — the
+        // "never throws" contract on SendMemberWelcomeAsync is unconditional.
+        var sent = await svc.SendMemberWelcomeAsync(new MemberMail("2600001", "Sam", "sam@example.com"), cts.Token);
+        Assert.False(sent);
+    }
+
+    [Fact]
+    public void RedactError_KeepsGraphCodeButHidesRecipientAddress()
+    {
+        var body = "{\"error\":{\"code\":\"ErrorInvalidRecipients\",\"message\":\"Recipient sam@example.com is invalid\"}}";
+        var result = MailService.RedactError(body, "sam@example.com");
+        Assert.Contains("ErrorInvalidRecipients", result);
+        Assert.Contains("[recipient]", result);
+        Assert.DoesNotContain("sam@example.com", result);
+    }
 }

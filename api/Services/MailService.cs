@@ -4,8 +4,11 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+
+[assembly: InternalsVisibleTo("api.Tests")]
 
 namespace NSL.Api.Services;
 
@@ -96,8 +99,48 @@ public sealed class MailService
 
         var body = await resp.Content.ReadAsStringAsync(ct);
         var retryAfter = resp.Headers.RetryAfter?.Delta?.TotalSeconds;
-        var err = (body.Length > 500 ? body[..500] : body) + (retryAfter is null ? "" : $" (retry-after {retryAfter}s)");
+        var err = RedactError(body, toAddress, resp.ReasonPhrase ?? resp.StatusCode.ToString())
+                  + (retryAfter is null ? "" : $" (retry-after {retryAfter}s)");
         return new MailResult(false, err, (int)resp.StatusCode);
+    }
+
+    /// <summary>
+    /// Reduces a Graph error response to "{code}: {message}" (falling back to
+    /// <paramref name="statusFallback"/> when the body isn't the expected JSON
+    /// shape), then redacts any occurrence of the recipient address before the
+    /// text is logged — the recipient's email must never land in logs via the
+    /// raw Graph error body. Capped at 300 chars.
+    /// </summary>
+    internal static string RedactError(string body, string toAddress, string? statusFallback = null)
+    {
+        string message;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("error", out var error))
+            {
+                var code = error.TryGetProperty("code", out var c) ? c.GetString() : null;
+                var msg = error.TryGetProperty("message", out var m) ? m.GetString() : null;
+                message = string.IsNullOrEmpty(code) && string.IsNullOrEmpty(msg)
+                    ? statusFallback ?? body
+                    : $"{code}: {msg}";
+            }
+            else
+            {
+                message = statusFallback ?? body;
+            }
+        }
+        catch (JsonException)
+        {
+            message = statusFallback ?? body;
+        }
+
+        if (!string.IsNullOrEmpty(toAddress) && !string.IsNullOrEmpty(message))
+        {
+            message = message.Replace(toAddress, "[recipient]", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return message.Length > 300 ? message[..300] : message;
     }
 
     /// <summary>
@@ -131,8 +174,11 @@ public sealed class MailService
                     "Welcome mail failed for member {Num}: HTTP {Status} {Error}", m.MemberNumber, r.StatusCode, r.Error);
                 if (!transient) return false;   // 401/403/404 will not fix themselves
             }
-            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            catch (Exception ex)
             {
+                // Catches OperationCanceledException too: the unconditional
+                // "never throws" contract on this method outranks propagating
+                // a real cancellation — callers must always get a bool back.
                 _log.LogWarning(ex, "Welcome mail attempt {N} threw for member {Num}", attempt, m.MemberNumber);
             }
             if (attempt == 1)

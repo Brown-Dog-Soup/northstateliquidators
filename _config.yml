@@ -1,0 +1,20 @@
+# GitHub Pages / Jekyll configuration.
+#
+# WHY THIS FILE EXISTS: the live site is Azure Static Web Apps, not Pages. Pages is a
+# leftover that still builds this repository's markdown on every push to main, and it
+# went permanently red when engineering docs containing Liquid-like text ({{ ... }} in
+# code samples) were added. A build that is always red is a build nobody reads, so the
+# engineering docs are excluded from it rather than left to keep failing.
+#
+# These are working notes -- specs, implementation plans, decision records. They are
+# for people reading the repository, not pages to publish. Excluding them fixes the
+# build and stops them being rendered as a public site if Pages ever serves traffic.
+exclude:
+  - docs/superpowers/
+  - outbox/
+  - api/
+  - api.Tests/
+  - db/
+  - azure/
+  - Powershell/
+  - node_modules/

@@ -905,9 +905,30 @@ ORDER BY p.needs_refund DESC, p.created_at DESC", cancellationToken: ct))).ToLis
         public bool Allowed => Refusal == null;
     }
 
+    /// <summary>Cents as staff read them, for a sentence they see mid-task.</summary>
+    private static string Dollars(long cents) => $"${cents / 100m:0.00}";
+
+    /// <summary>
+    /// The one row fulfilment DECLINES TO PRICE. PARTIAL_REFUND_FLAGGED with no
+    /// refund_due_cents is CheckoutFulfillment saying, at length, that it could
+    /// not work out the debt: boxes on this order did sell, but a box the buyer
+    /// paid for has no line left on our copy, so no figure computed from the
+    /// lines is the whole bill. It leaves the column NULL ON PURPOSE.
+    ///
+    /// The status is the only place that fact is written down, which is this
+    /// test's limit: once any refund lands on such a row ApplyRefundSql rewrites
+    /// the status to PARTIAL_REFUNDED and the fact is gone. Recording it durably
+    /// needs a column on dbo.payments, which is not this task's to add.
+    /// </summary>
+    internal static bool DebtIsUnpriceable(string? status, long? refundDueCents)
+        => refundDueCents is null && string.Equals(status, "PARTIAL_REFUND_FLAGGED", StringComparison.Ordinal);
+
     /// <summary>
     /// The refund arithmetic, pure (spec §8.8), so it can be tested rather than
-    /// described.
+    /// described. THIS FUNCTION IS THE ENFORCEMENT, not the page: every caller —
+    /// the Sales page, a script, a retried request, a second browser — gets the
+    /// same ceiling, because the page's arithmetic is a render-time snapshot and
+    /// a snapshot cannot guard money.
     ///
     /// <paramref name="totalCents"/> NULL is not zero. An unknown total concludes
     /// nothing — the same ruling CheckoutFulfillment applies to the attention
@@ -917,16 +938,33 @@ ORDER BY p.needs_refund DESC, p.created_at DESC", cancellationToken: ct))).ToLis
     /// Refunds ACCUMULATE, so both bars move as money goes back: the payment's
     /// remainder (total − refunded) caps anything we send, and what is OWED
     /// (refund_due_cents, tax-inclusive per spec §8.8) MINUS what has already
-    /// gone back is the default. Subtracting <paramref name="refundedCents"/>
-    /// from the owed figure is not tidiness: a second click on a row whose owed
-    /// amount is partly settled would otherwise send the whole owed figure
-    /// again and over-refund the buyer, because an explicit amount is clamped
-    /// only against the payment remainder, which is much larger.
+    /// gone back is the amount.
+    ///
+    /// AN EXPLICIT AMOUNT IS A CEILING TO CHECK, NOT AN INSTRUCTION TO OBEY. It
+    /// used to be clamped against the payment remainder and nothing else, and
+    /// since the page always renders an amount into the button and always sends
+    /// it, the owed-subtraction below ran on a branch production never took: the
+    /// guarantee was enforced by the browser, against a snapshot, and by nothing
+    /// here. Walk it: a row renders owing $16.08, the button carries 1608, a
+    /// $6.00 refund then lands from the webhook or the sweep's orphan replay,
+    /// Rob clicks the stale button, and $22.08 goes back on a $16.08 debt. So an
+    /// amount ABOVE what is owed is now REFUSED rather than clamped — clamping
+    /// silently would send a different figure from the one the clicker read, and
+    /// the honest answer to "this row moved under you" is to say so and have
+    /// them look again. An amount at or below what is owed is honoured as typed:
+    /// smaller is always safe.
+    ///
+    /// That deliberately closes the old goodwill escape hatch — a typed amount
+    /// used to be allowed even with nothing outstanding. Discretionary refunds
+    /// beyond the debt belong in the Square Dashboard, where they are a person's
+    /// decision rather than an endpoint's default, and the page never offered
+    /// them: the only amount it sends is the owed figure it drew.
     ///
     /// A settled partial refund is never escalated into a refund of the rest of
-    /// the payment: when nothing is owed and nothing was typed, we say so.
+    /// the payment: when nothing is owed, we say so.
     /// </summary>
-    internal static RefundPlan PlanRefund(long? totalCents, long refundedCents, long? refundDueCents, long? requestedCents)
+    internal static RefundPlan PlanRefund(long? totalCents, long refundedCents, long? refundDueCents,
+                                          long? requestedCents, string? status = null)
     {
         if (totalCents is null or <= 0)
             return new RefundPlan(0,
@@ -935,29 +973,50 @@ ORDER BY p.needs_refund DESC, p.created_at DESC", cancellationToken: ct))).ToLis
         if (remaining <= 0)
             return new RefundPlan(0, "Already refunded in full — nothing left on this payment to send back.");
 
+        // The page disables its button here and says guessing would be guessing
+        // with the buyer's money. The server used to fall back to the payment
+        // total on the same row and refund ALL of it — the one place the two
+        // halves disagreed about one row, and the dangerous direction.
+        if (DebtIsUnpriceable(status, refundDueCents))
+            return new RefundPlan(0,
+                "Boxes on this order did sell, but our copy of the order is incomplete, so we cannot work out what is owed — and refunding the whole payment would take back money for boxes the buyer kept. Read the amount off the Square receipt, refund it in the Square Dashboard, then use “Mark handled” on this row.");
+
         long due = Math.Min(refundDueCents ?? totalCents.Value, totalCents.Value);
         long owed = Math.Max(0, due - refundedCents);
-        if (requestedCents is > 0)
-            return new RefundPlan(Math.Min(requestedCents.Value, remaining), null);
         if (owed == 0)
             return new RefundPlan(0,
                 "Nothing outstanding to refund on this payment — what was owed has already gone back. Refund the rest in the Square Dashboard if you mean to.");
-        return new RefundPlan(Math.Min(owed, remaining), null);
+
+        long payable = Math.Min(owed, remaining);
+        if (requestedCents is > 0)
+        {
+            if (requestedCents.Value > payable)
+                return new RefundPlan(0,
+                    $"This asks to send {Dollars(requestedCents.Value)}, but only {Dollars(payable)} is still owed on this payment — {Dollars(refundedCents)} has already gone back. Reload Sales and click Refund again to send {Dollars(payable)}.");
+            return new RefundPlan(requestedCents.Value, null);
+        }
+        return new RefundPlan(payable, null);
     }
 
     /// <summary>
-    /// POST /api/square-refund — refund from the admin. The default amount is
-    /// what is OWED (refund_due_cents for a partial-unavailable cart, else the
-    /// remainder of the payment); an explicit amountCents is clamped to the
-    /// remainder for staff-initiated partials. Bookkeeping goes through
-    /// RecordRefundAsync so the refund.updated webhook cannot double count.
+    /// POST /api/square-refund — refund from the admin. The amount is what is
+    /// OWED (refund_due_cents for a partial-unavailable cart, else the remainder
+    /// of the payment), and an explicit amountCents may only ever be LESS than
+    /// that: PlanRefund refuses anything above it rather than clamping, so a
+    /// button rendered against a snapshot that has since moved is told to look
+    /// again instead of quietly sending a different figure. THE CEILING LIVES
+    /// HERE, not in the page — no caller can route around it. Bookkeeping goes
+    /// through RecordRefundAsync so the refund.updated webhook cannot double
+    /// count.
     ///
     /// Square's RefundPayment is AMOUNT-ONLY — there is no way to say "return
     /// this box and its tax"; itemised returns belong to the Orders
     /// returns/exchanges flow, which payment links do not give us. So
     /// refund_due_cents is stored tax-inclusive (spec §8.8) and we just send it.
     /// A staff-typed amountCents is NOT grossed up for tax — whoever types it
-    /// owns it; the admin button's title attribute says so.
+    /// owns it; the admin button's title attribute says so. It is still capped
+    /// by the debt: "whoever types it owns it" was never licence to hand back
+    /// more than is owed.
     ///
     /// ONLY A SETTLED REFUND CLEARS THE ATTENTION FLAG, which is the invariant
     /// the webhook now honours and which this route used to contradict: it set
@@ -991,7 +1050,8 @@ ORDER BY p.needs_refund DESC, p.created_at DESC", cancellationToken: ct))).ToLis
             new { pid = body.paymentId }, cancellationToken: ct));
         if (row == null) return new NotFoundObjectResult(new { error = "Payment not found in our records." });
 
-        var plan = PlanRefund((long?)row.amount_cents, (long)row.refunded_cents, (long?)row.refund_due_cents, body.amountCents);
+        var plan = PlanRefund((long?)row.amount_cents, (long)row.refunded_cents, (long?)row.refund_due_cents,
+                              body.amountCents, (string?)row.status);
         if (!plan.Allowed) return new ConflictObjectResult(new { error = plan.Refusal });
         long cents = plan.Amount;
 
@@ -1122,6 +1182,90 @@ FROM dbo.payments WHERE square_payment_id = @pid",
     private sealed record PaymentAfterLookup(long? AmountCents, long RefundedCents,
                                              long? RefundDueCents, string? Status, bool NeedsRefund);
 
+    public sealed record AcknowledgeRequest(string? paymentId);
+
+    /// <summary>The status a hand-settled, unpriceable row carries afterwards.</summary>
+    internal const string AcknowledgedStatus = "REFUND_ACKNOWLEDGED";
+
+    /// <summary>
+    /// POST /api/square-acknowledge — the exit from the one flagged state that
+    /// can never clear itself.
+    ///
+    /// THE TRAP. PARTIAL_REFUND_FLAGGED with no refund_due_cents is fulfilment
+    /// declining to price the debt (see <see cref="DebtIsUnpriceable"/>). The
+    /// automatic clear in ApplyRefundSql tests
+    /// refunded_cents >= COALESCE(refund_due_cents, amount_cents), so with the
+    /// owed figure NULL the bar is THE WHOLE PAYMENT. The page — correctly —
+    /// tells staff to read the Square receipt and refund the right PARTIAL
+    /// amount by hand. Doing exactly as instructed therefore leaves the row
+    /// flagged forever: the partial can never reach the whole-payment bar, and
+    /// refunding the whole payment to clear it would take back money for boxes
+    /// the buyer kept. That is amendment 2's cry-wolf sequence again, from a
+    /// different cause, and the system walks the staff member into it.
+    ///
+    /// So: a way for a person to say "I have dealt with this", which is what
+    /// amendment 2 offered and what this state needs. It does NOT touch
+    /// refunded_cents and does NOT claim a refund happened — the money half is
+    /// whatever really went back through Square and reached us as refund.updated.
+    /// It only lowers the flag and writes down that a human, not arithmetic,
+    /// lowered it.
+    ///
+    /// NARROW ON PURPOSE. The UPDATE is a compare-and-swap against exactly the
+    /// trapped state: still flagged, status PARTIAL_REFUND_FLAGGED, owed figure
+    /// NULL, amount known. Every other flagged row has a real exit — refund it,
+    /// or look the amount up — and must keep nagging until it is taken. Widening
+    /// this to "clear any flag" would turn the attention table into something
+    /// staff can tidy away, which is the whole thing it exists not to be. A
+    /// double click matches zero rows and answers 409 rather than re-clearing.
+    ///
+    /// WHAT IS NOT RECORDED, and it needs a schema column this task does not
+    /// own: WHO acknowledged and WHEN. The status carries the fact; the caller's
+    /// identity reaches the log only. dbo.payments wants
+    /// acknowledged_at DATETIME2 NULL / acknowledged_by NVARCHAR(200) NULL for
+    /// that to be durable — and the same column would fix the other limit noted
+    /// on DebtIsUnpriceable, because a later partial refund rewrites the status
+    /// and erases both facts.
+    /// </summary>
+    [Function("SquareAcknowledge")]
+    public async Task<IActionResult> Acknowledge(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "square-acknowledge")] HttpRequest req,
+        CancellationToken ct)
+    {
+        AcknowledgeRequest? body;
+        try { body = await JsonSerializer.DeserializeAsync<AcknowledgeRequest>(req.Body,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct); }
+        catch (JsonException ex) { return new BadRequestObjectResult(new { error = "Invalid JSON", detail = ex.Message }); }
+        if (string.IsNullOrWhiteSpace(body?.paymentId))
+            return new BadRequestObjectResult(new { error = "paymentId is required" });
+
+        var who = ClientPrincipal.UserDetails(req);
+        await using var conn = await _sql.OpenAsync(ct);
+        var applied = await conn.ExecuteAsync(new CommandDefinition(@"
+UPDATE dbo.payments SET needs_refund = 0, status = @ack
+WHERE square_payment_id = @pid
+  AND needs_refund = 1
+  AND status = 'PARTIAL_REFUND_FLAGGED'
+  AND refund_due_cents IS NULL
+  AND amount_cents IS NOT NULL",
+            new { pid = body.paymentId, ack = AcknowledgedStatus }, cancellationToken: ct));
+        if (applied == 0)
+        {
+            var row = await conn.QueryFirstOrDefaultAsync(new CommandDefinition(
+                "SELECT status, needs_refund FROM dbo.payments WHERE square_payment_id = @pid",
+                new { pid = body.paymentId }, cancellationToken: ct));
+            if (row == null) return new NotFoundObjectResult(new { error = "Payment not found in our records." });
+            return new ConflictObjectResult(new
+            {
+                error = "This row is not the one that cannot clear itself — only a payment whose owed amount our order copy could not work out can be marked handled. Refund it, or use “Get amount from Square”.",
+                status = (string?)row.status,
+            });
+        }
+        _log.LogWarning(
+            "SquareAcknowledge: payment {PaymentId} marked handled by {Who} — the attention flag was lowered by a person, not by a refund. refunded_cents is unchanged; whatever went back to the buyer went back through the Square Dashboard.",
+            body.paymentId, who ?? "(unknown staff user)");
+        return new OkObjectResult(new { paymentId = body.paymentId, status = AcknowledgedStatus, cleared = true });
+    }
+
     /// <summary>
     /// GET /api/sales-summary?days=30 — the profit view Square alone can't
     /// give: Square knows every sale (floor + web, one account); our DB knows
@@ -1166,6 +1310,33 @@ FROM dbo.payments WHERE square_payment_id = @pid",
         // every box of a cart order (db/square-payments.sql), so the old join on
         // it classified every multi-box sale as "floor".
         //
+        // A PAYMENT IS NOT AN ORDER, and this query used to spend that confusion
+        // twice over:
+        //
+        //   * It grouped by PAYMENT and sourced goods, tax, delivery and cost
+        //     from the ORDER, so two payments against one order each reported the
+        //     whole order. Gross, Website, the tax-and-delivery tile and margin
+        //     all overstated by a full order and the table listed the same boxes
+        //     twice — on precisely the case (duplicate tender / Square split
+        //     tender) the system raises an attention row for. tender_seq below
+        //     is the fix: the order's goods belong to the FIRST tender against
+        //     it, and a later one reports what it actually sold, which is
+        //     nothing.
+        //   * It INNER joined checkout_orders, so a payment matching no order at
+        //     all vanished from here, fell through to the floor branch, and had
+        //     its whole tax-inclusive amount counted as counter revenue with no
+        //     note — while the comment beside it claimed money-in-nothing-sold
+        //     was handled. Every dbo.payments row is ours by construction (the
+        //     webhook refuses to record a floor POS sale — IsFloorPayment), so
+        //     the join is LEFT and an unmatched payment is now a WEB row with
+        //     zero goods and a sentence saying so.
+        //
+        // tender_seq is ranked over ALL payments on the order, not just those in
+        // the window: a second tender does not become the first one because the
+        // report starts after the first. The cost of that is honest — when only
+        // the later tender falls inside the window, the window shows a web row
+        // with no goods, because the goods were sold in an earlier window.
+        //
         // The boxes are LEFT joined on purpose: an order that took money and could
         // hand nothing over (reconcile calls it paidNothingSold) is still a WEB
         // payment and must not be counted as floor revenue at its tax-inclusive
@@ -1178,19 +1349,33 @@ FROM dbo.payments WHERE square_payment_id = @pid",
         // boxes that did not sell; the refund beside it is where that comes back
         // out.
         var webRows = (await conn.QueryAsync(new CommandDefinition(@"
+WITH tender AS (
+    SELECT square_payment_id,
+           -- PARTITION BY puts every NULL order in one partition, which would
+           -- rank unrelated unmatched payments against each other. They have no
+           -- order to be a second tender ON, so they are all first.
+           CASE WHEN square_order_id IS NULL THEN 1
+                ELSE ROW_NUMBER() OVER (PARTITION BY square_order_id
+                                        ORDER BY created_at, square_payment_id) END AS tender_seq
+    FROM dbo.payments
+)
 SELECT p.square_payment_id,
+       MIN(t.tender_seq) AS tender_seq,
+       MAX(CASE WHEN o.square_order_id IS NULL THEN 0 ELSE 1 END) AS order_matched,
        STRING_AGG('#' + CAST(m.pallet_number AS VARCHAR(10)), ', ') WITHIN GROUP (ORDER BY m.pallet_number) AS boxes,
        MIN(m.pallet_number) AS pallet_number, MIN(m.display_name) AS display_name,
-       COUNT(b.manifest_id) AS box_count,
+       COUNT(b.manifest_id) AS box_count,                 -- boxes SOLD on the order
+       COUNT(m.id)          AS named_boxes,               -- of those, ones whose manifest still exists
        COALESCE(SUM(b.amount_cents), 0) AS goods_cents,   -- what we actually sold, EX tax
-       MIN(o.tax_cents)       AS tax_cents,               -- per order, not per box
-       MIN(o.delivery_cents)  AS delivery_cents,
+       COALESCE(MIN(o.tax_cents), 0)      AS tax_cents,   -- per order, not per box
+       COALESCE(MIN(o.delivery_cents), 0) AS delivery_cents,
        MIN(o.delivery_method) AS delivery_method,
        SUM(COALESCE(v.total_cost, v.total_cost_units)) AS cost,
        SUM(CASE WHEN b.manifest_id IS NOT NULL
                  AND COALESCE(v.total_cost, v.total_cost_units) IS NULL THEN 1 ELSE 0 END) AS cost_missing
 FROM dbo.payments p
-JOIN dbo.checkout_orders o ON o.square_order_id = p.square_order_id
+JOIN tender t ON t.square_payment_id = p.square_payment_id
+LEFT JOIN dbo.checkout_orders o ON o.square_order_id = p.square_order_id
 LEFT JOIN dbo.checkout_order_boxes b ON b.square_order_id = p.square_order_id AND b.outcome = 'sold'
 LEFT JOIN dbo.manifests m ON m.id = b.manifest_id
 LEFT JOIN dbo.v_pallets v ON v.manifest_id = m.id
@@ -1216,9 +1401,22 @@ GROUP BY p.square_payment_id", new { begin }, cancellationToken: ct))).ToList();
 
             // A cost roll-up that is missing on ANY sold box makes the whole
             // payment's margin unknowable — a partial cost would read as profit.
-            decimal? cost = null;
-            if (isWeb && (int)web!.cost_missing == 0) cost = (decimal?)web.cost;
-            long boxCount = isWeb ? (long)(int)web!.box_count : 0;
+            decimal? orderCost = null;
+            if (isWeb && (int)web!.cost_missing == 0) orderCost = (decimal?)web.cost;
+
+            // What THIS PAYMENT reports off the order it hit — which is not the
+            // order's figures whenever it is not the order's only tender.
+            var share = isWeb
+                ? ShareOfOrder(
+                    orderMatched: (int)web!.order_matched == 1,
+                    tenderSeq: (long)web.tender_seq,
+                    orderGoodsCents: (long)web.goods_cents,
+                    orderTaxCents: (long)web.tax_cents,
+                    orderDeliveryCents: (long)web.delivery_cents,
+                    orderBoxCount: (int)web.box_count,
+                    namedBoxCount: (int)web.named_boxes,
+                    orderCost: orderCost)
+                : default;
 
             // REVENUE IS GOODS ONLY (spec §8.6). Sales tax belongs to NCDOR and
             // the delivery fee covers Norm's truck: neither is ours, so neither
@@ -1228,10 +1426,10 @@ GROUP BY p.square_payment_id", new { begin }, cancellationToken: ct))).ToList();
             // tax is the exact failure that ruling exists to catch.
             var split = SplitSale(isWeb,
                 paymentAmountCents: amt,
-                goodsCents: isWeb ? (long)web!.goods_cents : 0,
-                taxCents: isWeb ? (long)web!.tax_cents : 0,
-                deliveryCents: isWeb ? (long)web!.delivery_cents : 0,
-                cost: cost);
+                goodsCents: share.GoodsCents,
+                taxCents: share.TaxCents,
+                deliveryCents: share.DeliveryCents,
+                cost: share.Cost);
 
             squareCents += split.GoodsCents;
             refundedCents += refunded;
@@ -1243,20 +1441,18 @@ GROUP BY p.square_payment_id", new { begin }, cancellationToken: ct))).ToList();
                 created_at: created,
                 amount_cents: split.GoodsCents,
                 refunded_cents: refunded,
-                tax_cents: isWeb ? (long)web!.tax_cents : 0,
-                delivery_cents: isWeb ? (long)web!.delivery_cents : 0,
-                delivery_method: isWeb ? (string?)web!.delivery_method : null,
+                tax_cents: share.TaxCents,
+                delivery_cents: share.DeliveryCents,
+                delivery_method: share.BoxCount > 0 ? (string?)web!.delivery_method : null,
                 channel: isWeb ? "web" : "floor",
                 source: "square",
-                pallet_number: isWeb ? (int?)web!.pallet_number : null,
-                display_name: isWeb ? (string?)web!.display_name : null,
-                boxes: isWeb ? (string?)web!.boxes : null,
-                box_count: (int)boxCount,
-                cost: cost,
+                pallet_number: share.BoxCount > 0 ? (int?)web!.pallet_number : null,
+                display_name: share.BoxCount > 0 ? (string?)web!.display_name : null,
+                boxes: share.BoxCount > 0 ? (string?)web!.boxes : null,
+                box_count: share.BoxCount,
+                cost: share.Cost,
                 margin_cents: split.MarginCents,
-                note: isWeb && boxCount == 0
-                    ? "Paid, but no box could be handed over — a refund is owed. See Needs attention."
-                    : null));
+                note: share.Note));
         }
 
         // B1: boxes marked SOLD in admin with no live Square payment on file.
@@ -1348,6 +1544,71 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
         string channel, string source, int? pallet_number, string? display_name,
         string? boxes, int box_count,
         decimal? cost, long? margin_cents, string? note);
+
+    /// <summary>
+    /// What ONE PAYMENT reports off the order it hit: goods, the held money,
+    /// how many boxes to name, the cost roll-up behind the margin, and the
+    /// sentence that explains a row with no goods on it.
+    /// </summary>
+    internal readonly record struct PaymentShare(long GoodsCents, long TaxCents, long DeliveryCents,
+                                                 int BoxCount, decimal? Cost, string? Note);
+
+    /// <summary>
+    /// A PAYMENT IS NOT AN ORDER. The sales query groups by payment and the
+    /// goods, tax, delivery and cost all live on the order, so anything that
+    /// simply reads them across reports a whole order for every tender against
+    /// it. This is the one place that is decided, and the three cases it has to
+    /// tell apart are all real:
+    ///
+    ///   NO ORDER AT ALL. A payment we recorded whose order we cannot find —
+    ///   fulfilment's UNMATCHED. Money in, nothing sold. Zero goods and zero
+    ///   held money, because there is no order to have taxed anything, and a
+    ///   note. The alternative, which is what used to happen, is that the inner
+    ///   join dropped it, the floor branch caught it, and its whole
+    ///   tax-inclusive amount was counted as counter revenue with no note at
+    ///   all.
+    ///
+    ///   A LATER TENDER. <paramref name="tenderSeq"/> above 1 is a second
+    ///   payment id against an order the first tender already bought: a double
+    ///   charge, or Square's split tender. Either way THIS payment sold nothing
+    ///   — the boxes, the tax, the delivery fee and the cost are all on the
+    ///   first tender and counting them twice is how Gross, Website, the
+    ///   held-money tile and margin each overstated by a full order on exactly
+    ///   the rows the attention table exists to raise. Zero here is not a
+    ///   guess: whether this money is owed back is genuinely unknown, which is
+    ///   why fulfilment flags rather than refunds, and the one thing that is
+    ///   certain is that no second set of goods left the building.
+    ///
+    ///   PAID, NOTHING HANDED OVER. Reconcile's paidNothingSold. A real web
+    ///   payment against a real order that could deliver no box. Zero goods, but
+    ///   the tax and delivery ARE on the order and were really collected, so
+    ///   they stay in the held-money column where the refund beside them takes
+    ///   them back out.
+    ///
+    /// <paramref name="namedBoxCount"/> is how many of the sold boxes still have
+    /// a manifest row to name. Fewer names than boxes is a deleted manifest, and
+    /// the box list silently shortens — so it is said out loud rather than left
+    /// to look like a miscount.
+    /// </summary>
+    internal static PaymentShare ShareOfOrder(bool orderMatched, long tenderSeq,
+        long orderGoodsCents, long orderTaxCents, long orderDeliveryCents,
+        int orderBoxCount, int namedBoxCount, decimal? orderCost)
+    {
+        if (!orderMatched)
+            return new PaymentShare(0, 0, 0, 0, null,
+                "This payment matched no order of ours — money in, nothing sold. Not counted as revenue. See Needs attention.");
+        if (tenderSeq > 1)
+            return new PaymentShare(0, 0, 0, 0, null,
+                "A second payment against an order the first payment already covered — a double charge, or one half of a Square split tender. The boxes, tax and delivery are counted on the first payment, so nothing is counted here. See Needs attention.");
+        if (orderBoxCount == 0)
+            return new PaymentShare(0, orderTaxCents, orderDeliveryCents, 0, null,
+                "Paid, but no box could be handed over — a refund is owed. See Needs attention.");
+
+        string? note = namedBoxCount < orderBoxCount
+            ? $"{orderBoxCount - namedBoxCount} of {orderBoxCount} sold box(es) no longer have a box record, so they are missing from the list — the money and the cost below still include them."
+            : null;
+        return new PaymentShare(orderGoodsCents, orderTaxCents, orderDeliveryCents, orderBoxCount, orderCost, note);
+    }
 
     /// <summary>What one payment contributes to revenue, to the held-money tile, and to margin.</summary>
     internal readonly record struct SaleSplit(long GoodsCents, long TaxAndDeliveryCents, long? MarginCents);

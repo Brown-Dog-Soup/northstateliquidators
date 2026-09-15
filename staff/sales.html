@@ -80,7 +80,7 @@
 
     <div id="attention" hidden>
       <div class="sect" style="color:#b42318;">⚠ Needs attention</div>
-      <p style="margin:0 0 10px;font-size:13px;color:#666;">Payments that landed on a box that was already sold (partial refunds for carts) or matched no box. Refund sends the amount owed &mdash; the box price plus the sales tax the buyer paid on it &mdash; back through Square.</p>
+      <p style="margin:0 0 10px;font-size:13px;color:#666;">Payments that landed on a box that was already sold (partial refunds for carts) or matched no box. Refund sends the amount owed &mdash; the box price plus the sales tax the buyer paid on it &mdash; back through Square, and the server re-reads that figure as it sends, so a row someone else has part-refunded since this page loaded is refused rather than over-refunded. Read the <b>Why</b> column before clicking: not every flagged row means the buyer is owed anything.</p>
       <div class="twrap"><table class="stable" id="attention-table"></table></div>
     </div>
 

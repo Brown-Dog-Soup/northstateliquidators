@@ -63,7 +63,8 @@ async function loadSummary() {
     <div class="tile"><div class="lbl">Margin</div>
       <div class="val ${margin >= 0 ? 'pos' : 'neg'}">${marginKnown ? money(margin) : '—'}</div>
       <div class="sub">goods − our cost, boxes with a cost</div></div>
-    <div class="tile"><div class="lbl">Refunded</div><div class="val">${money(s.refunded_cents)}</div></div>`;
+    <div class="tile"><div class="lbl">Refunded</div><div class="val">${money(s.refunded_cents)}</div>
+      <div class="sub">includes tax and delivery — the tiles above are goods only</div></div>`;
 
   $('#sales-table').innerHTML =
     `<tr><th>Date</th><th>Channel</th><th>Box</th><th class="money">Amount</th><th class="money">Tax / Del</th><th class="money">Our cost</th><th class="money">Margin</th></tr>` +
@@ -79,7 +80,15 @@ async function loadSummary() {
                 ? `#${x.pallet_number} ${esc(x.display_name || '')}`
                 : x.channel === 'floor'
                   ? '<span style="color:#999;">in-person sale</span>'
-                  : '<span style="color:#999;">no box handed over</span>'}${x.note ? `<div class="subnote">${esc(x.note)}</div>` : ''}</td>
+                  // A WEB row with no boxes now has three different causes — no
+                  // box could be handed over, a second tender against an order
+                  // the first one bought, a payment matching no order at all —
+                  // and the note underneath names the one that applies. "No box
+                  // handed over" is true of only the first, and printed above "a
+                  // second payment against an order the first already covered"
+                  // it is the same self-contradicting cell the attention table
+                  // was just cleared of. This headline is true of all three.
+                  : '<span style="color:#999;">no boxes on this payment</span>'}${x.note ? `<div class="subnote">${esc(x.note)}</div>` : ''}</td>
         <td class="money">${x.amount_cents === 0 && x.source === 'admin'
             ? '<span title="No price set on this box">—</span>'
             : money(x.amount_cents)}${x.refunded_cents ? ` <span class="neg">(−${money(x.refunded_cents)})</span>` : ''}</td>
@@ -124,6 +133,29 @@ function owedCents(r) {
   return Math.max(0, n(r.amount_cents) - back);
 }
 
+/// A SECOND PAYMENT against an order whose boxes we had already sold —
+/// fulfilment's duplicateTender. The status it writes, REFUND_FLAGGED, is the
+/// same one it writes when NOTHING was handed over, and the two rows want
+/// opposite advice: on this one the buyer HAS the boxes. It is also genuinely
+/// ambiguous — a double charge and one half of a Square split tender land here
+/// identically, which is precisely why fulfilment flags instead of refunding —
+/// so nothing on this row may read as a confident instruction to hand the whole
+/// payment back. The separating fact is the one attentionBox already uses:
+/// boxes on this order sold.
+function isSecondTender(r) {
+  return String(r.status || '') === 'REFUND_FLAGGED' && (n(r.sold_boxes) > 0 || !!r.boxes);
+}
+
+/// The one flagged state that can NEVER clear itself: fulfilment declined to
+/// price the debt (refund_due_cents left NULL on purpose), so the automatic
+/// clear's bar is the whole payment, while the correct action is a partial
+/// refund by hand. Doing as instructed leaves the row flagged forever — which is
+/// what "Mark handled" exists for.
+function isUnpriceable(r) {
+  return String(r.status || '') === 'PARTIAL_REFUND_FLAGGED' &&
+         r.refund_due_cents == null && r.amount_cents != null;
+}
+
 /// The Box column. "no box matched" is reserved for a payment that hit no order
 /// at all — every other empty state has a different, truer sentence.
 function attentionBox(r) {
@@ -146,11 +178,22 @@ function attentionReason(r) {
   if (owedCents(r) === 0)
     return 'everything owed on this payment has gone back — there is nothing left to refund here';
   if (s === 'UNMATCHED')      return 'this payment matched no order — nothing was sold';
-  if (s === 'REFUND_FLAGGED') return 'nothing was handed over on this payment — the whole amount is owed back';
+  if (s === 'REFUND_FLAGGED')
+    return isSecondTender(r)
+      // The boxes are named one column to the left. "Nothing was handed over"
+      // beside them is the self-contradicting row the amendment was written to
+      // get rid of, and here it also gives the dangerous instruction: refunding
+      // the whole of a split tender takes back money for goods the buyer kept.
+      ? 'a SECOND payment on an order whose boxes were already sold — a double charge, or one half of a Square split tender. The buyer has the boxes: check the Square receipt before sending anything back'
+      : 'nothing was handed over on this payment — the whole amount is owed back';
   if (s === 'PARTIAL_REFUND_FLAGGED') {
     if (n(r.unavailable_boxes) > 0)
       return `${plural(n(r.unavailable_boxes), 'box was', 'boxes were')} no longer available — a partial refund is owed`;
-    return 'the order lines do not add up — work the amount out from the Square receipt';
+    // The row that can never clear itself. Saying only "work it out from the
+    // receipt" is what walked staff into a permanently flagged row: doing
+    // exactly that leaves it here forever, because the automatic clear's bar is
+    // the whole payment. Name the second half of the job.
+    return 'the order lines do not add up, so we cannot say what is owed — work it out from the Square receipt, refund it there, then press Mark handled';
   }
   if (s === 'PARTIAL_REFUNDED') return 'partly refunded — the rest of what is owed has not gone back yet';
   if (s === 'REFUND_PENDING' || s === 'REFUND_APPROVED')
@@ -163,8 +206,16 @@ function attentionReason(r) {
 }
 
 /// The action cell. A Refund button that asks for the wrong amount is worse
-/// than a disabled one, so there are only three outcomes: look the amount up,
-/// refund exactly what is owed, or nothing to do.
+/// than a disabled one, so there are only four outcomes: look the amount up,
+/// refund what is owed, mark a hand-settled row handled, or nothing to do.
+///
+/// THE AMOUNT ON THE BUTTON IS NOT THE GUARANTEE. It is a render-time snapshot,
+/// and a refund can land from the webhook, the sweep's orphan replay or another
+/// browser between the render and the click. What stops an over-refund is the
+/// server: /api/square-refund refuses any amount above what is still owed at the
+/// moment it runs, and says so in words. The figure is still sent, because
+/// sending it is what turns a moved row into "reload and look again" rather than
+/// a silently different amount going back.
 function attentionAction(r) {
   const pid = esc(r.square_payment_id);
   if (r.amount_cents == null)
@@ -172,14 +223,27 @@ function attentionAction(r) {
               title="We have no amount for this payment, so no refund can be worked out and nothing can clear this row. This asks Square what it was for and writes it down. It does not refund anything.">Get amount from Square</button>`;
   const owed = owedCents(r);
   if (owed === null)
+    // Unpriceable, and until now a dead end: the flag clears only at a FULL
+    // payment refund, while the right action is a partial one by hand. Do as the
+    // tooltip says and the row is flagged forever. "Mark handled" is the way out
+    // — it lowers the flag and claims nothing about the money.
     return `<button class="btn" disabled style="padding:4px 12px;font-size:11px;"
-              title="Boxes on this order did sell, but our copy of the order is incomplete, so we cannot work out what is owed — and a button that guesses would guess with the buyer's money. Read the amount off the Square receipt and refund it in the Square Dashboard.">Amount unclear</button>`;
+              title="Boxes on this order did sell, but our copy of the order is incomplete, so we cannot work out what is owed — and a button that guesses would guess with the buyer's money. Read the amount off the Square receipt and refund it in the Square Dashboard.">Amount unclear</button>` +
+           (isUnpriceable(r)
+             ? ` <button class="btn do-ack" data-pid="${pid}" style="padding:4px 12px;font-size:11px;margin-left:6px;"
+                   title="Use this AFTER you have refunded the right amount in the Square Dashboard. It takes this row off the list and records that a person settled it. It does not refund anything and does not change what we have recorded as refunded.">Mark handled</button>`
+             : '');
   if (owed === 0)
     return `<button class="btn" disabled style="padding:4px 12px;font-size:11px;"
               title="What was owed on this payment has already gone back. Refund the rest in the Square Dashboard if you mean to.">Nothing owed</button>`;
+  const dup = isSecondTender(r);
+  const title = dup
+    ? "The buyer HAS the boxes on this order — this is a second payment against it. If it is a double charge, all of it goes back; if Square split one sale across two tenders, refunding it hands back money for goods they kept. Check the Square receipt first."
+    : "Refunds the amount owed including that box's sales tax. Typing a different amount does NOT add tax.";
   return `<button class="btn btn-danger do-refund" data-pid="${pid}" data-amt="${owed}" data-full="${n(r.amount_cents)}"
+            ${dup ? 'data-dup="1"' : ''}
             style="padding:4px 12px;font-size:11px;background:#b42318;color:#fff;border:none;"
-            title="Refunds the amount owed including that box's sales tax. Typing a different amount does NOT add tax.">Refund ${money(owed)}</button>`;
+            title="${title}">Refund ${money(owed)}${dup ? ' — check first' : ''}</button>`;
 }
 
 async function loadPayments() {
@@ -205,6 +269,7 @@ async function loadPayments() {
         </tr>`).join('');
     document.querySelectorAll('.do-refund').forEach(b => b.addEventListener('click', () => refund(b)));
     document.querySelectorAll('.do-lookup').forEach(b => b.addEventListener('click', () => lookUpAmount(b)));
+    document.querySelectorAll('.do-ack').forEach(b => b.addEventListener('click', () => markHandled(b)));
   }
 
   $('#payments-table').innerHTML =
@@ -227,10 +292,15 @@ async function refund(btn) {
   const full = Number(btn.dataset.full);
   // Say WHICH refund this is. On a partial-unavailable cart the button sends
   // the price of the boxes we could not hand over plus their sales tax — not
-  // the whole order, which the buyer is keeping the rest of.
-  const msg = amt >= full
-    ? `Refund the full ${money(amt)} back to the buyer? This cannot be undone.`
-    : `Refund ${money(amt)} — the part of this ${money(full)} payment the buyer is owed, including the sales tax on it. The rest stays with the sale.\n\nThis cannot be undone.`;
+  // the whole order, which the buyer is keeping the rest of. And never call a
+  // figure "the full amount" unless it really is the whole payment: the server
+  // sends exactly what is owed at the moment it runs, which can be less than
+  // this button was drawn with.
+  const msg = btn.dataset.dup
+    ? `This is a SECOND payment of ${money(full)} against an order whose boxes were already sold.\n\nIf the buyer was charged twice, refunding ${money(amt)} is right. If Square split one sale across two payments, this hands back money for boxes they have. Check the Square receipt before you confirm.\n\nRefund ${money(amt)}? This cannot be undone.`
+    : amt >= full
+      ? `Refund all ${money(amt)} of this payment back to the buyer? This cannot be undone.`
+      : `Refund ${money(amt)} — the part of this ${money(full)} payment the buyer is owed, including the sales tax on it. The rest stays with the sale.\n\nThis cannot be undone.`;
   if (!confirm(msg)) return;
   const label = btn.textContent;
   btn.disabled = true;
@@ -268,6 +338,27 @@ async function lookUpAmount(btn) {
     toast(`Could not get the amount: ${e.data?.error || e.message}`, 'err', 6000);
     btn.disabled = false;
     btn.textContent = 'Get amount from Square';
+  }
+}
+
+/// Item 5's exit, and the ONLY row it is offered on. A payment fulfilment could
+/// not price cannot be cleared by any refund short of the whole payment, so a
+/// staff member who does the right thing — read the Square receipt, refund the
+/// correct partial amount by hand — is left with a row that nags forever. This
+/// says a person dealt with it. It claims nothing about the money: what went
+/// back went back through Square, and refunded_cents is untouched.
+async function markHandled(btn) {
+  if (!confirm('Mark this row handled?\n\nUse this only AFTER refunding the right amount in the Square Dashboard. It takes the row off this list and records that a person settled it — it does NOT refund anything.')) return;
+  btn.disabled = true;
+  btn.textContent = 'Marking…';
+  try {
+    await apiClient.squareAcknowledge(btn.dataset.pid);
+    toast('Marked handled — this row is off the attention list. Nothing was refunded from here.', 'ok', 5000);
+    await loadPayments();
+  } catch (e) {
+    toast(`Could not mark it handled: ${e.data?.error || e.message}`, 'err', 6000);
+    btn.disabled = false;
+    btn.textContent = 'Mark handled';
   }
 }
 

@@ -17,13 +17,25 @@
 # a quiet month silently stops the sweep. The staff Reconcile button on
 # staff/sales.html is the reliable trigger and must stay. Belt-and-braces.
 #
-# WHAT IT FAILS ON, AND WHY FAILING IS THE POINT. This runs unattended against
-# live money, and a scheduled job that fails quietly is worse than no job at all,
-# because everyone assumes it is working. So a red run is the product here: any
-# non-200, any body that is not JSON, and any body reporting Square errors,
-# refund errors, money taken with nothing sold, or payments flagged for a human
-# all fail the job. Green means the sweep completed AND found nothing needing
-# attention. Nothing else.
+# WHAT IT FAILS ON. This runs unattended against live money, and a scheduled job
+# that fails quietly is worse than no job at all, because everyone assumes it is
+# working. So RED MEANS THE SWEEP ITSELF MALFUNCTIONED: a transport failure, any
+# non-2xx, a body that is not JSON, squareErrors, refundErrors. Green means the
+# sweep ran and completed.
+#
+# WHAT IT ONLY WARNS ON, AND WHY THAT IS NOT SOFTNESS. needsRefund and
+# paidNothingSold are STANDING COUNTS, not events. They stay non-zero until a
+# person works the row, which on a small floor can be days, so failing on them
+# made the schedule permanently red — and a schedule that is always red tells you
+# nothing on the morning it goes red for a real reason. That is alarm fatigue on
+# the one signal whose entire purpose is to prove the sweep is still running, and
+# it is the same trap the squareAnswered warning below already went to some
+# length to avoid.
+#
+# The standing debts are not being ignored: they have a home, and it is the
+# Needs-attention table on staff/sales.html, which is where a person is meant to
+# see them and which now says what each one is and what to do about it. This
+# job's job is to prove the sweep ran, not to nag.
 name: Square reconcile
 
 on:
@@ -135,19 +147,17 @@ jobs:
             fail=1
           fi
 
+          # WARNINGS BELOW THIS LINE, NOT FAILURES. Both counts are standing:
+          # they stay non-zero until a human works the row, so failing on them
+          # keeps the schedule red for days and buries the runs that are red
+          # because the sweep actually broke. The sweep did its job by counting
+          # them; staff/sales.html is where they get worked.
           if [ "${paidNothingSold}" != "0" ]; then
-            echo "::error::${paidNothingSold} order(s) were PAID at Square with nothing left to sell. That is money taken and nothing handed over — a full refund is owed on each. Open staff/sales.html."
-            fail=1
+            echo "::warning::${paidNothingSold} order(s) were PAID at Square with nothing left to sell. That is money taken and nothing handed over — a refund is owed on each. Work them in staff/sales.html; they will be counted here every run until someone does."
           fi
 
           if [ "${needsRefund}" != "0" ]; then
-            # A STANDING COUNT, not an event: it stays non-zero, and this job
-            # stays red, until a person refunds the flagged payments and the flag
-            # is cleared. That is intended rather than a rough edge. These are
-            # buyers owed their money back, and a red schedule is the only thing
-            # here that will nag anybody.
-            echo "::error::${needsRefund} payment(s) are flagged as needing a refund. This job stays red until they are dealt with in staff/sales.html."
-            fail=1
+            echo "::warning::${needsRefund} payment(s) are flagged for a human. Standing count — it stays non-zero until the rows are dealt with in staff/sales.html, and the Why column there says what each one actually is. Not every flagged row is money owed back."
           fi
 
           # NOT a failure. squareAnswered is false whenever the run read no order

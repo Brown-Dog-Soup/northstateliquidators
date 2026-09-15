@@ -125,9 +125,13 @@
     new:  { title: 'Just Dropped', eyebrow: 'Live in the last 48 hours', sub: 'The newest boxes and pallets — live within the last 48 hours. First come, first served.',
             empty: `Nothing new in the last 48 hours — see All Inventory, or call ${PHONE}.`,
             test: r => !!r.is_just_dropped, sort: (a, b) => ts(b.live_at) - ts(a.live_at) },
-    hot:  { title: '🔥 Hot Deals', eyebrow: 'Live boxes on sale right now', sub: 'Marked down from the list price. When they go, they go.',
+    // Manually-featured boxes (is_hot_deal, staff toggle) win the top slots —
+    // newest featured first — so what staff toggle on today shows up front;
+    // sale-price boxes fill in after, deepest discount first.
+    hot:  { title: '🔥 Hot Deals', eyebrow: 'Our picks, right now', sub: "This week's picks and everything marked down from the list price. When they go, they go.",
             empty: `No hot deals right now — check back Friday or call ${PHONE}.`,
-            test: r => isLive(r) && !!r.is_on_sale, sort: (a, b) => (discount(b) - discount(a)) || byLiveDesc(a, b) },
+            test: r => isLive(r) && (!!r.is_on_sale || !!r.is_hot_deal),
+            sort: (a, b) => (!!b.is_hot_deal - !!a.is_hot_deal) || (ts(b.hot_deal_at) - ts(a.hot_deal_at)) || (discount(b) - discount(a)) || byLiveDesc(a, b) },
     mega_box:    sizeView('mega_box'),
     mini_pallet: sizeView('mini_pallet'),
     full_pallet: sizeView('full_pallet'),
@@ -195,7 +199,7 @@
   <div class="box-photo"${photo}>
     ${size ? `<span class="box-size">${esc(size)}</span>` : ''}
     ${p.is_just_dropped && !sold ? `<span class="box-flag new">Just dropped</span>` : ''}
-    ${onSale && live ? `<span class="box-flag hot">🔥 Hot deal</span>` : ''}
+    ${live && (onSale || p.is_hot_deal) ? `<span class="box-flag hot">🔥 Hot deal</span>` : ''}
     ${sold ? `<span class="box-stamp">SOLD</span>` : ''}
   </div>
   <div class="box-body">

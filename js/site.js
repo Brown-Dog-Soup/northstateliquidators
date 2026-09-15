@@ -996,6 +996,16 @@
         const n = j.memberNumber;
         if (n) {
           rememberMember(n);
+          // Device-local delivery shortcut (spec §8.5). The member number already
+          // lives here; the zip is what the cart drawer needs to answer "do you
+          // qualify for $10 delivery" without asking again. NOT a substitute for
+          // member login — see RESELLER-PROGRAM-DESIGN.md §1.
+          try {
+            const z = (body.zip || '').trim();
+            if (/^\d{5}$/.test(z)) localStorage.setItem('nsl.zip', z);
+            const street = (body.address1 || '').trim();   // shipped field name (see MembersFunction RegisterRequest / #join-address1)
+            if (street) localStorage.setItem('nsl.addr', [street, body.city, body.state].filter(Boolean).join(', '));
+          } catch { /* private mode — the drawer just asks for the zip */ }
           relabelTriggers();
           showResult(n, JOIN_SUB_DEFAULT);
         } else if (j.alreadyRegistered) {

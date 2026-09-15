@@ -281,8 +281,8 @@ public class FulfillMoneyDecisionTests
 }
 
 /// <summary>
-/// Two source pins, for the one regression in the above that text CAN catch and
-/// that nothing else would: the counted signal going quiet.
+/// Source pins for the one regression in the above that text CAN catch and that
+/// nothing else would: the counted signal going quiet.
 ///
 /// WHY IT NEEDS A PIN. `recoveredLinesWithNoBox` is initialised to 0 and only the
 /// recovery path raises it. Delete the assignment — tidy the INSERT back to a bare
@@ -293,10 +293,24 @@ public class FulfillMoneyDecisionTests
 /// branch this round fixed. That is the whole shape of the bug being fixed,
 /// reintroduced by an edit nothing would object to.
 ///
-/// What it is not: it reads text. It cannot tell you Dapper still returns the sum
-/// of the rowcounts for a list parameter, that dbo.v_pallets is still one row per
-/// manifest, or that the comparison is the right way round. Those need a database
-/// and are a staging-pass question — see the report.
+/// THREE PINS, AND THE THIRD IS THE ONE THAT MATTERS. The first two check the two
+/// ENDS of that signal independently — a rowcount is captured, an argument is
+/// passed — and independently is not enough: they name the same wire from opposite
+/// sides without ever asserting it IS one wire. Delete the single line that joins
+/// them, `recoveredLinesWithNoBox = recovered.Lines.Count - boxRowsWritten;`, and
+/// both still pass — the capture survives, the argument survives, and only the
+/// variable in between is frozen at 0 forever. So does passing a literal `false`.
+/// That is exactly the regression described above, green. The third pin reads the
+/// identifier out of each end and demands the subtraction that connects them, so
+/// none of those edits can pass it.
+///
+/// The first two are kept for the diagnostic they give: when only one end goes,
+/// its own named test says which one.
+///
+/// What none of them are: they read text. They cannot tell you Dapper still
+/// returns the sum of the rowcounts for a list parameter, that dbo.v_pallets is
+/// still one row per manifest, or that the comparison is the right way round.
+/// Those need a database and are a staging-pass question — see the report.
 /// </summary>
 public class RecoveredLineCountReachesTheDecisionTests
 {
@@ -326,4 +340,39 @@ public class RecoveredLineCountReachesTheDecisionTests
     [Fact]
     public void The_count_still_reaches_the_payment_verdict()
         => Assert.Matches(new Regex(@"DecidePaymentOutcome\([^;]*linesKnownMissing\s*:", RegexOptions.Singleline), Source());
+
+    /// <summary>
+    /// The two above, joined. Reads the identifier the INSERT's rowcount is
+    /// captured into, reads the identifier bound at `linesKnownMissing:`, and
+    /// requires the second to be assigned a subtraction of the first. That is the
+    /// whole signal in one assertion: count, subtract, pass.
+    ///
+    /// It kills what the pair does not — deleting the subtraction, assigning the
+    /// flag from anything that is not this INSERT's rowcount, capturing the
+    /// rowcount into a variable nobody reads, or passing a literal at the call.
+    /// Every one of those leaves both pins above green and fulfilment blind.
+    /// </summary>
+    [Fact]
+    public void The_rows_the_insert_wrote_are_the_rows_the_verdict_reads()
+    {
+        var src = Source();
+
+        var counted = Regex.Match(src,
+            @"(?<var>\w+)\s*=\s*await\s+conn\.ExecuteAsync\(@""\s*INSERT\s+INTO\s+dbo\.checkout_order_boxes",
+            RegexOptions.IgnoreCase);
+        Assert.True(counted.Success,
+            "The recovery INSERT into dbo.checkout_order_boxes no longer captures its rowcount — nothing left can tell a line whose box is gone from one that was written.");
+
+        var passed = Regex.Match(src, @"linesKnownMissing\s*:\s*(?<var>\w+)\b");
+        Assert.True(passed.Success,
+            "DecidePaymentOutcome is no longer passed a linesKnownMissing argument at all.");
+        Assert.False(passed.Groups["var"].Value is "true" or "false",
+            $"linesKnownMissing is passed the literal '{passed.Groups["var"].Value}'. The flag has to come from the counted shortfall, not from a constant — a constant here is the signal switched off.");
+
+        var rows = counted.Groups["var"].Value;
+        var flag = passed.Groups["var"].Value;
+        var join = new Regex($@"\b{Regex.Escape(flag)}\s*=\s*[^;]*-\s*{Regex.Escape(rows)}\b");
+        Assert.True(join.IsMatch(src),
+            $"'{flag}' reaches the payment verdict but is never assigned a shortfall computed from '{rows}'. The INSERT counts its rows, the decision reads a flag, and nothing joins them — which is the counted signal going quiet with every other test in this file still green.");
+    }
 }

@@ -11,11 +11,15 @@ using Xunit;
 /// CheckoutFulfillment.RetireLinksAsync: what is allowed to stamp link_deleted_at.
 ///
 /// WHY THIS FILE EXISTS. The stamp used to be housekeeping and is now the thing
-/// that decides whether a canceled row stays inside SquareFunction.ReconcileBacklogSql
-/// — the only pass that still asks Square about the order and heals it if it comes
-/// back paid. Two ways of stamping it without evidence were left in the method:
-/// a 404 from Square read as confirmation (which is what EVERY call looks like on
-/// a credential pointed at the wrong merchant), and a row with no link id stamped
+/// that decides whether a canceled row stays inside the draw that still reaches it
+/// — SquareFunction.ReconcileRetireRecheckSql, the recovery queue's own reserved
+/// share of pass 1, which is the only pass that still asks Square about the order
+/// and heals it if it comes back paid. (It was ReconcileBacklogSql's canceled arm
+/// until the reserved-draw split; that constant now selects open orders only.)
+///
+/// Two ways of stamping it without evidence were left in the method: a 404 from
+/// Square read as confirmation (which is what EVERY call looks like on a
+/// credential pointed at the wrong merchant), and a row with no link id stamped
 /// with no Square call at all.
 ///
 /// THE SEAM, and why these are not tests that would pass against a broken

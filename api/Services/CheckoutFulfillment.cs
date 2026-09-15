@@ -858,10 +858,11 @@ WHERE o.status = 'open' AND o.kind = 'link'
     /// buyers' links stay payable and their payments stay where they are, at OUR
     /// merchant. Only our ability to see them moves, and what we see instead is a
     /// 404 on every call. Read as confirmation, every one of those 404s stamps
-    /// link_deleted_at — and a canceled row that is stamped matches neither arm
-    /// of SquareFunction.ReconcileBacklogSql, so it becomes unreachable by the
-    /// one pass that could still discover a payment against it, permanently,
-    /// including after somebody fixes the credential.
+    /// link_deleted_at — and a stamped row no longer matches
+    /// SquareFunction.ReconcileRetireRecheckSql, the recovery queue's reserved
+    /// draw, so it becomes unreachable by the one pass that could still discover
+    /// a payment against it, permanently, including after somebody fixes the
+    /// credential.
     ///
     /// SquareFunction.Reconcile already refuses to call this at all without a
     /// readable order somewhere in the same run (SquareAnswered). The gate below
@@ -915,13 +916,14 @@ WHERE o.status = 'open' AND o.kind = 'link'
                 // column. There is indeed nothing here for us to cancel: we never
                 // recorded the id, so no delete call is even expressible. But
                 // link_deleted_at no longer means only "the link is gone" — it is
-                // what takes a canceled row OUT of ReconcileBacklogSql, the one
-                // pass that still asks Square about the ORDER and heals it if it
-                // comes back paid (SquareFunction.VerdictFor: CANCELED + paid =>
-                // Heal). A row with no link id is precisely the row where we
-                // cannot have cancelled anything at Square, so whatever link the
-                // buyer was given may still be payable. And these rows are real,
-                // not theoretical: db/cart-checkout.sql backfills legacy orders
+                // what takes a canceled row OUT of ReconcileRetireRecheckSql —
+                // the recovery queue's own reserved draw, and the one pass that
+                // still asks Square about the ORDER and heals it if it comes back
+                // paid (SquareFunction.VerdictFor: CANCELED + paid => Heal).
+                // A row with no link id is precisely the row where we cannot have
+                // cancelled anything at Square, so whatever link the buyer was
+                // given may still be payable. And these rows are real, not
+                // theoretical: db/cart-checkout.sql backfills legacy orders
                 // from manifests.checkout_link_id, which is nullable while
                 // checkout_url is not, and the recovery path in FulfillOrderAsync
                 // inserts kind='link' rows carrying no link id at all.

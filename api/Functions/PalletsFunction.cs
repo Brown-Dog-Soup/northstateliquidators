@@ -515,10 +515,46 @@ FROM dbo.line_items WHERE manifest_id = @sid",
                 // destroyed. Half a guard.)
                 //
                 // Second thing it buys, and it is not a side benefit: LOCK ORDER.
-                // Fulfilment takes manifests before checkout_orders; this route
-                // used to take checkout_orders first (the cancel below) and
-                // manifests last, which is the textbook deadlock cycle. Both now
-                // start at the manifest.
+                // This route used to take checkout_orders first (the cancel below)
+                // and manifests last. Fulfilment's COMMON path takes the manifest
+                // first and touches the order tables only inside the loop that
+                // follows it, so the cycle those two used to form — the textbook
+                // one, and the one reachable on an ordinary sale — is gone.
+                //
+                // ONE ORDERING IS DELIBERATELY LEFT INVERTED. Do not read the above
+                // as "both paths now start at the manifest": fulfilment's RECOVERY
+                // branch does not. When we never saw the link-create response the
+                // order row is rebuilt from Square's own figures, and that branch
+                // INSERTs dbo.checkout_orders and then dbo.checkout_order_boxes
+                // BEFORE its loop ever reaches the manifest lock (CheckoutFulfillment,
+                // the order == null block). Against this route that is a real cycle:
+                // recovery holds uncommitted order-line rows for this box and then
+                // wants the manifest; we hold the manifest and then want those rows,
+                // at the cancel and the settling UPDATE below.
+                //
+                // TOLERATED, and that is a decision rather than an oversight. The
+                // consequence is a deadlock VICTIM, never corruption: whichever
+                // transaction SQL Server picks rolls back whole. If fulfilment
+                // loses, its payment anchor rolls back with it and Square retries;
+                // by then this delete has committed, the box is gone, the retry's
+                // recovery INSERT writes no row for it, and the rowcount shortfall
+                // (recoveredLinesWithNoBox) flags the payment for refund — which is
+                // the answer we want. If this route loses, a staff member sees a
+                // server error and nothing was deleted. Reaching it at all needs a
+                // recovery fulfilment — already the rare path — racing a hard delete
+                // of one of that same order's boxes.
+                //
+                // Why it is not simply fixed: the fix is to take the manifest locks
+                // BEFORE the recovery inserts, and to be safe those pre-locks have
+                // to be acquired in the same order the fulfilment loop walks, which
+                // is SQL Server's ORDER BY over uniqueidentifier — NOT .NET's Guid
+                // ordering, which sorts the bytes differently. A wrong comparator
+                // there quietly creates a NEW deadlock between two fulfilments that
+                // share a box. That is a subtle, database-only ordering dependency
+                // added to the money path to remove a deadlock that is already safe
+                // in both directions and cannot be tested without a database. Not
+                // worth it. If it is ever done it belongs beside the C1 lock in
+                // CheckoutFulfillment, sorted with SqlGuid, not here.
                 //
                 // The result is deliberately discarded. A row that is already gone
                 // is still handled the old way — by the rowcount of the DELETE at
@@ -573,8 +609,22 @@ WHERE manifest_id = @id AND outcome IS NULL", new { id }, transaction: tx);
                 // after the UPDATE above has taken a write lock on every one of
                 // this box's order lines, so no sale can still be in flight behind
                 // it. If one appeared anyway — the claim above did not hold, or
-                // some path nobody has thought of wrote 'sold' without going
-                // through the manifest row — the box is NOT destroyed.
+                // something wrote 'sold' without going through the manifest row —
+                // the box is NOT destroyed.
+                //
+                // THE RESIDUAL, stated precisely because a vague one is worthless.
+                // No RUNTIME writer sets outcome = 'sold' without first deciding
+                // under this manifest row's lock: fulfilment is the only one, and
+                // it writes that value one statement after its own UPDLOCK read of
+                // the same row ("C1" in CheckoutFulfillment). What is NOT covered
+                // by that sentence, and exists in this repository, is the
+                // deploy-time backfill in db/cart-checkout.sql, which copies the
+                // old per-box model forward and sets outcome = 'sold' from
+                // manifests.publish_state with no manifest lock at all. It is
+                // guarded by NOT EXISTS, runs once at deploy, and would in practice
+                // block on this transaction's uncommitted rows anyway — so the risk
+                // is negligible. It is still a writer, and the residual has to say
+                // so rather than say "nothing".
                 //
                 // Rolling back takes the 'unavailable' marks and the link cancels
                 // with it, which is exactly right: nothing was deleted, so nothing
@@ -586,7 +636,13 @@ WHERE manifest_id = @id AND outcome IS NULL", new { id }, transaction: tx);
                 if (soldNow > 0)
                 {
                     tx.Rollback();
-                    _log.LogWarning("DeletePallet {Id}: a website sale landed while this delete was in flight — refused, box and sale both kept", id);
+                    // ERROR, not warning. This fires only when a genuine sale
+                    // committed mid-delete — the exact event the two checks exist
+                    // for — and every other money-relevant surprise on this path
+                    // (CheckoutFulfillment's unmatched, zero-box, paid-after-cancel
+                    // and missing-line cases) is an error. A person watching the
+                    // error stream is the person who needs to see this one.
+                    _log.LogError("DeletePallet {Id}: a website sale landed while this delete was in flight — refused, box and sale both kept", id);
                     return new ConflictObjectResult(new { error = "This box was sold through the website — archive it instead of deleting so the sale record stays intact." });
                 }
 

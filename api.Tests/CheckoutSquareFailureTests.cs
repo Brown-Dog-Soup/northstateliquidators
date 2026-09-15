@@ -44,7 +44,7 @@ public class CheckoutSquareFailureTests
         var square = new SquareService(new ThrowingTransportFactory(transportThrows), cfg, NullLogger<SquareService>.Instance);
         var sql = new SqlService(cfg, NullLogger<SqlService>.Instance);
         var fulfill = new CheckoutFulfillment(square, NullLogger<CheckoutFulfillment>.Instance);
-        return new SquareFunction(sql, square, fulfill, NullLogger<SquareFunction>.Instance);
+        return new SquareFunction(sql, square, fulfill, cfg, NullLogger<SquareFunction>.Instance);
     }
 
     private static Task<(SquareService.CartLink? Link, IActionResult? Error)> Attempt(

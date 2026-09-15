@@ -1,0 +1,167 @@
+# The Square reconciliation sweep, on a schedule.
+#
+# WHY IT EXISTS: SWA-managed Functions have no timer triggers, so the only way to
+# run the sweep unattended is to call it from outside. This workflow is that
+# caller. It POSTs /api/public/reconcile-tick with the shared secret in
+# x-nsl-cron-key; /api/public/* is anonymous at the SWA layer, so that header is
+# the whole of the auth.
+#
+# SETUP (Task 14): repo secret NSL_RECONCILE_KEY must equal the SWA app setting
+# RECONCILE_CRON_KEY. Generate one with
+#   [Convert]::ToHexString((1..32 | % { Get-Random -Max 256 }) -as [byte[]])
+# Manual run: Actions -> Square reconcile -> Run workflow.
+#
+# IT IS A CONVENIENCE, NOT THE DEPENDABLE PATH. GitHub's scheduled workflows are
+# best-effort — runs are delayed, and dropped outright under load — and GitHub
+# DISABLES a schedule automatically after 60 days with no repository activity, so
+# a quiet month silently stops the sweep. The staff Reconcile button on
+# staff/sales.html is the reliable trigger and must stay. Belt-and-braces.
+#
+# WHAT IT FAILS ON, AND WHY FAILING IS THE POINT. This runs unattended against
+# live money, and a scheduled job that fails quietly is worse than no job at all,
+# because everyone assumes it is working. So a red run is the product here: any
+# non-200, any body that is not JSON, and any body reporting Square errors,
+# refund errors, money taken with nothing sold, or payments flagged for a human
+# all fail the job. Green means the sweep completed AND found nothing needing
+# attention. Nothing else.
+name: Square reconcile
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+# Nothing here reads or writes the repository.
+permissions: {}
+
+concurrency:
+  # Two sweeps at once are safe — every pass is idempotent — but they spend the
+  # Square call budget on each other's rows. A run that arrives while one is
+  # still going is dropped rather than queued: the next tick is fifteen minutes
+  # away and does the same work.
+  group: square-reconcile
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call reconcile-tick
+        env:
+          # Through the environment, never inline in the command: an argument
+          # list can reach a trace or an error message, and this value IS the
+          # auth. Nothing in this step echoes it, and there is deliberately no
+          # "set -x" anywhere below.
+          RECONCILE_KEY: ${{ secrets.NSL_RECONCILE_KEY }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${RECONCILE_KEY}" ]; then
+            echo "::error::NSL_RECONCILE_KEY is not set on this repository. The scheduled sweep cannot authenticate, which means it has not been running — set it (and RECONCILE_CRON_KEY on the SWA, to the same value) or reconcile by hand from staff/sales.html."
+            exit 1
+          fi
+
+          # No --retry, on purpose. Every pass of the sweep is idempotent, so a
+          # retry would be safe, but a retry also hides a site that is answering
+          # 5xx and turns one clear failure into three. The next tick is fifteen
+          # minutes away; let this run fail and say so.
+          code=$(curl -sS -o body.json -w '%{http_code}' --max-time 300 \
+                   -X POST -H "x-nsl-cron-key: ${RECONCILE_KEY}" \
+                   https://northstateliquidators.com/api/public/reconcile-tick)
+          curl_status=$?
+
+          if [ "${curl_status}" -ne 0 ]; then
+            echo "::error::reconcile-tick could not be reached (curl exit ${curl_status}). The sweep did not run."
+            exit 1
+          fi
+
+          echo "HTTP ${code}"
+          echo '--- body ---'
+          cat body.json 2>/dev/null || true
+          echo
+          echo '------------'
+
+          # THE TWO SHAPES. A completed sweep answers 200 with the counters. A
+          # host shutdown part-way through answers 503 with a shorter body
+          # carrying an "aborted" marker plus whatever it had committed — a real
+          # outcome rather than a crash, and the next run picks up the rest, but
+          # still not a sweep that finished, so still red.
+          # The other non-200s: 401 (or the 302 the SWA responseOverride turns a
+          # 401 into) means this repo's key does not match RECONCILE_CRON_KEY on
+          # the SWA; 503 with "Cron key not configured" means that app setting is
+          # missing; 503 with "Square is not configured" means the Square
+          # credentials are.
+          if [ "${code}" != "200" ]; then
+            echo "::error::reconcile-tick answered HTTP ${code} — the sweep did not complete. See the body above."
+            exit 1
+          fi
+
+          if ! jq -e . body.json > /dev/null 2>&1; then
+            echo "::error::reconcile-tick answered 200 with a body that is not JSON. Treated as a failed sweep."
+            exit 1
+          fi
+
+          # An absent key reads as 0 rather than as an empty string, so a change
+          # to the body's shape cannot quietly turn a check into a comparison
+          # that always passes.
+          n() { jq -r --arg k "$1" '(.[$k] // 0) | tostring' body.json; }
+
+          healed=$(n healed)
+          canceledByRule=$(n canceledByRule)
+          linksDeleted=$(n linksDeleted)
+          canceledAtSquare=$(n canceledAtSquare)
+          stillOpen=$(n stillOpen)
+          refundsApplied=$(n refundsApplied)
+          refundCents=$(n refundCentsApplied)
+          retireQueue=$(jq -r '.retireQueue' body.json)
+          squareErrors=$(n squareErrors)
+          refundErrors=$(n refundErrors)
+          paidNothingSold=$(n paidNothingSold)
+          needsRefund=$(n needsRefund)
+          squareAnswered=$(jq -r '.squareAnswered // false' body.json)
+
+          echo "healed=${healed} canceledByRule=${canceledByRule} linksDeleted=${linksDeleted} canceledAtSquare=${canceledAtSquare} stillOpen=${stillOpen} refundsApplied=${refundsApplied} (${refundCents}c) retireQueue=${retireQueue}"
+
+          fail=0
+
+          if [ "${squareErrors}" != "0" ]; then
+            echo "::error::${squareErrors} order(s) could not be checked at Square this run. Nothing was closed on them and they stay open — a rotated token, a rate-limit storm or a Square outage. Read the function logs."
+            fail=1
+          fi
+
+          if [ "${refundErrors}" != "0" ]; then
+            echo "::error::${refundErrors} payment(s) had recorded refunds that could not be applied. Our books under-state what Square refunded on them until this clears."
+            fail=1
+          fi
+
+          if [ "${paidNothingSold}" != "0" ]; then
+            echo "::error::${paidNothingSold} order(s) were PAID at Square with nothing left to sell. That is money taken and nothing handed over — a full refund is owed on each. Open staff/sales.html."
+            fail=1
+          fi
+
+          if [ "${needsRefund}" != "0" ]; then
+            # A STANDING COUNT, not an event: it stays non-zero, and this job
+            # stays red, until a person refunds the flagged payments and the flag
+            # is cleared. That is intended rather than a rough edge. These are
+            # buyers owed their money back, and a red schedule is the only thing
+            # here that will nag anybody.
+            echo "::error::${needsRefund} payment(s) are flagged as needing a refund. This job stays red until they are dealt with in staff/sales.html."
+            fail=1
+          fi
+
+          # NOT a failure. squareAnswered is false whenever the run read no order
+          # back from Square, and that includes every quiet night when there was
+          # nothing open to ask about — failing on it would leave the schedule red
+          # most of the time and therefore worthless. The wrong-merchant alarm
+          # proper is a LogError inside the sweep, which is where to look if this
+          # line appears on a run that also reports orders.
+          if [ "${squareAnswered}" != "true" ]; then
+            echo "::warning::This run read no order back from Square. Normal when nothing was open to ask about; if the floor has open carts, check SQUARE_ENVIRONMENT, the access token and the location id, and read the function logs for the wrong-merchant error."
+          fi
+
+          if [ "${retireQueue}" = "null" ]; then
+            echo "::warning::The unconfirmed-delete queue could not be measured this run. A diagnostic only — nothing the sweep did depends on it."
+          fi
+
+          exit ${fail}

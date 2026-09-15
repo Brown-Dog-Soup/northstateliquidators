@@ -38,7 +38,7 @@ public class CheckoutHardeningTests
         var square = new SquareService(new ExplodingHttpClientFactory(), cfg, NullLogger<SquareService>.Instance);
         var sql = new SqlService(cfg, NullLogger<SqlService>.Instance);
         var fulfill = new CheckoutFulfillment(square, NullLogger<CheckoutFulfillment>.Instance);
-        return new SquareFunction(sql, square, fulfill, NullLogger<SquareFunction>.Instance);
+        return new SquareFunction(sql, square, fulfill, cfg, NullLogger<SquareFunction>.Instance);
     }
 
     /// <summary>An empty cart: refused from the request alone, so it never reaches SQL or Square.</summary>

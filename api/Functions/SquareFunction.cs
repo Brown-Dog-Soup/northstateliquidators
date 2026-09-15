@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NSL.Api.Services;
 using Dapper;
@@ -20,6 +21,9 @@ namespace NSL.Api.Functions;
 ///                                        refund.updated → accumulate what went back
 ///                                        (HMAC-authed, anonymous route)
 ///   POST /api/square-reconcile         — staff-triggered sweep healing missed webhooks
+///   POST /api/public/reconcile-tick    — the SAME sweep, for the GitHub Actions cron;
+///                                        /api/public/* is anonymous at the SWA layer,
+///                                        so a shared secret header is the auth
 ///
 /// Design invariants: one single-use link per CART (reuse is decided by our own
 /// checkout_orders rows, not Square); SOLD only ever set via sp_SetPublishState;
@@ -32,12 +36,15 @@ public sealed class SquareFunction
     private readonly SquareService _square;
     private readonly CheckoutFulfillment _fulfill;
     private readonly ILogger<SquareFunction> _log;
+    private readonly IConfiguration _config;
 
-    public SquareFunction(SqlService sql, SquareService square, CheckoutFulfillment fulfill, ILogger<SquareFunction> log)
+    public SquareFunction(SqlService sql, SquareService square, CheckoutFulfillment fulfill,
+        IConfiguration config, ILogger<SquareFunction> log)
     {
         _sql = sql;
         _square = square;
         _fulfill = fulfill;
+        _config = config;
         _log = log;
     }
 
@@ -805,12 +812,35 @@ INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents
         // moving it inside — or after — this transaction.
         using (var tx = conn.BeginTransaction())
         {
+            // LOCK ORDER: THE MANIFEST ROW FIRST, THEN THE ORDER TABLES. The two
+            // statements are in this order for that reason alone — they are in one
+            // transaction, neither reads what the other writes, and swapping them
+            // changes no outcome. What it changes is which row this transaction
+            // holds while it waits for the next one.
+            //
+            // These used to run the other way round, orders then manifests, which
+            // is the exact inverse of DeletePallet (PalletsFunction): that route
+            // takes the manifest WITH (UPDLOCK, ROWLOCK) first and reaches
+            // checkout_orders afterwards, deliberately, to break a cycle with
+            // CheckoutFulfillment's common path. Invoice-cancel and hard-delete of
+            // the same box therefore formed a cycle of their own.
+            //
+            // Do not go looking for the deadlock in production and conclude it was
+            // never real. It is hard to hit: the invoice route's first statement
+            // seeks checkout_orders on its own index and only reaches the manifest
+            // row afterwards, so the window where both are held in opposite order
+            // is narrow, and BOTH routes are rare staff actions on the SAME box.
+            // That is a property of today's indexes and today's traffic, not of
+            // the code, and the next index change can widen it without anybody
+            // touching this method. Matching the delete route's order costs
+            // nothing and removes the dependency on that, which is why it is done
+            // here rather than written down as a reassurance.
             await conn.ExecuteAsync(@"
+UPDATE dbo.manifests SET invoice_id = NULL, invoice_url = NULL WHERE id = @id;
 UPDATE o SET status = 'canceled', closed_at = SYSUTCDATETIME()
 FROM dbo.checkout_orders o
 WHERE o.kind = 'invoice' AND o.status = 'open'
-  AND EXISTS (SELECT 1 FROM dbo.checkout_order_boxes b WHERE b.square_order_id = o.square_order_id AND b.manifest_id = @id);
-UPDATE dbo.manifests SET invoice_id = NULL, invoice_url = NULL WHERE id = @id",
+  AND EXISTS (SELECT 1 FROM dbo.checkout_order_boxes b WHERE b.square_order_id = o.square_order_id AND b.manifest_id = @id)",
                 new { id }, transaction: tx);
             tx.Commit();
         }
@@ -1791,6 +1821,104 @@ WHERE o.status = 'open' AND o.kind = 'link'
   )";
 
     /// <summary>
+    /// The header the cron presents. Lower-case because header lookup is
+    /// case-insensitive either way and this is the spelling the workflow sends.
+    /// </summary>
+    internal const string CronKeyHeader = "x-nsl-cron-key";
+
+    /// <summary>
+    /// The shared-secret comparison for <see cref="ReconcileTick"/>, pulled out as
+    /// a pure function so the two things that are easy to get wrong can be pinned
+    /// by a test instead of by review.
+    ///
+    /// AN UNCONFIGURED KEY IS NEVER A MATCH. `expected` empty (or absent, or
+    /// whitespace — an app setting saved with a stray space is not a secret)
+    /// returns false rather than matching a caller who also sent nothing. The
+    /// caller does not get that far in practice — the route answers 503 first —
+    /// but the refusal lives here as well, because the 503 is one `if` away from
+    /// being deleted by someone tidying and this is the half that must not be.
+    ///
+    /// The compare is constant-time in the CONTENT. It is not constant-time in the
+    /// LENGTH: FixedTimeEquals answers false immediately when the two differ, so a
+    /// patient attacker can learn how long the key is. That is accepted — the key
+    /// is a 32-byte random value set once (Task 14), and knowing its length buys
+    /// nothing against it.
+    /// </summary>
+    internal static bool CronKeyMatches(string? expected, string? given)
+    {
+        if (string.IsNullOrWhiteSpace(expected)) return false;
+        var a = System.Text.Encoding.UTF8.GetBytes(given ?? "");
+        var b = System.Text.Encoding.UTF8.GetBytes(expected);
+        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(a, b);
+    }
+
+    /// <summary>
+    /// The staff trigger: the Reconcile button on staff/sales.html. /api/* is
+    /// behind the SWA's authenticated role, so the route itself is the auth.
+    /// Body and status code are <see cref="ReconcileCoreAsync"/>'s, unchanged.
+    /// </summary>
+    [Function("SquareReconcile")]
+    public async Task<IActionResult> Reconcile(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "square-reconcile")] HttpRequest req,
+        CancellationToken ct)
+    {
+        if (!_square.Configured)
+            return new ObjectResult(new { error = "Square is not configured." }) { StatusCode = 503 };
+        return await ReconcileCoreAsync(ct);
+    }
+
+    /// <summary>
+    /// The scheduled trigger: the same sweep, called by .github/workflows/square-reconcile.yml.
+    /// /api/public/* is anonymous at the SWA layer (staticwebapp.config.json), so
+    /// the shared secret in <see cref="CronKeyHeader"/> is the only auth there is.
+    ///
+    /// NOT CONFIGURED IS 503, NOT 401. They are different facts and the cron log
+    /// is the only place anyone will read them: 401 means somebody called with the
+    /// wrong key, 503 means RECONCILE_CRON_KEY was never set on the SWA and the
+    /// route cannot authenticate anyone. Answering 401 to both would have the
+    /// rollout's missing app setting look like a bad secret in GitHub.
+    ///
+    /// THE KEY IS NEVER LOGGED, neither the expected one nor what the caller sent
+    /// — a rejected attempt logs that it was rejected and nothing else. A near-miss
+    /// key in Application Insights is the key.
+    ///
+    /// The 401 may not reach the caller AS a 401: staticwebapp.config.json carries
+    /// a responseOverride that turns 401 into a 302 to the AAD login. The cron
+    /// treats every non-200 as a failure, so a wrong key fails the job either way
+    /// — but do not expect to see the number 401 in the workflow output.
+    ///
+    /// Both of the core's response shapes are passed straight through, the 503
+    /// host-shutdown one included; the workflow is written to tolerate both.
+    /// </summary>
+    [Function("ReconcileTick")]
+    public async Task<IActionResult> ReconcileTick(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "public/reconcile-tick")] HttpRequest req,
+        CancellationToken ct)
+    {
+        var expected = _config["RECONCILE_CRON_KEY"];
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            _log.LogError("ReconcileTick: RECONCILE_CRON_KEY is not set on this app — the scheduled sweep cannot authenticate and is not running. Set it (Task 14) or the only unattended reconciliation is the staff button.");
+            return new ObjectResult(new { error = "Cron key not configured." }) { StatusCode = 503 };
+        }
+        if (!CronKeyMatches(expected, req.Headers[CronKeyHeader].FirstOrDefault()))
+        {
+            _log.LogWarning("ReconcileTick: rejected a call with a missing or wrong {Header}.", CronKeyHeader);
+            return new UnauthorizedResult();
+        }
+        if (!_square.Configured)
+            return new ObjectResult(new { error = "Square is not configured." }) { StatusCode = 503 };
+
+        var result = await ReconcileCoreAsync(ct);
+        // The sweep's own counters, in the cron's log, so a scheduled run that did
+        // something is readable without opening Application Insights. ObjectResult
+        // covers both shapes — the OK body and the 503 host-shutdown one.
+        _log.LogInformation("ReconcileTick: {Status} {Result}",
+            (result as ObjectResult)?.StatusCode ?? 200, (result as ObjectResult)?.Value);
+        return result;
+    }
+
+    /// <summary>
     /// Reconciliation sweep (spec §4). SWA-managed Functions have no timers,
     /// so this runs from the staff button and the GitHub Actions cron.
     ///
@@ -1841,15 +1969,22 @@ WHERE o.status = 'open' AND o.kind = 'link'
     /// MERCHANT. A credential pointing at the wrong Square account 404s every
     /// call, and a 404 was trusted twice — as proof of non-payment and as proof
     /// the link was gone. See <see cref="SquareAnswered"/>.
+    ///
+    /// IT RETURNS AN IActionResult AND NOT A BARE RESULT OBJECT, and that is the
+    /// whole reason the split is shaped this way. The sweep has TWO response
+    /// shapes, not one: the ordinary OK body of counters, and a shorter body
+    /// carrying an `aborted` marker with a 503 when the host shuts down mid-run.
+    /// The status code is part of the answer — it is how an unattended caller
+    /// tells a finished sweep from a stopped one — so it travels with the body
+    /// rather than being reconstructed by each trigger from a flag.
+    ///
+    /// The one thing it does NOT do is check <see cref="SquareService.Configured"/>.
+    /// Both triggers do that before calling, because "Square is off" is an answer
+    /// about the deployment rather than a result of a sweep, and the two triggers
+    /// have different things to say before they get that far.
     /// </summary>
-    [Function("SquareReconcile")]
-    public async Task<IActionResult> Reconcile(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "square-reconcile")] HttpRequest req,
-        CancellationToken ct)
+    private async Task<IActionResult> ReconcileCoreAsync(CancellationToken ct)
     {
-        if (!_square.Configured)
-            return new ObjectResult(new { error = "Square is not configured." }) { StatusCode = 503 };
-
         await using var conn = await _sql.OpenAsync(ct);
 
         // ---- 1. Ask Square, BEFORE anything is closed on our own say-so. ----

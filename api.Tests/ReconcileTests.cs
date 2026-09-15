@@ -114,7 +114,7 @@ public class ReconcileTests
         var square = new SquareService(http, cfg, NullLogger<SquareService>.Instance);
         return new SquareFunction(new SqlService(cfg, NullLogger<SqlService>.Instance), square,
             new CheckoutFulfillment(square, NullLogger<CheckoutFulfillment>.Instance),
-            NullLogger<SquareFunction>.Instance);
+            cfg, NullLogger<SquareFunction>.Instance);
     }
 
     // ---- The refusal, before any connection --------------------------------

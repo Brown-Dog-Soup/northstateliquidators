@@ -44,7 +44,7 @@ public class CheckoutEndpointTests
         var square = new SquareService(new ExplodingHttpClientFactory(), cfg, NullLogger<SquareService>.Instance);
         var sql = new SqlService(cfg, NullLogger<SqlService>.Instance);
         var fulfill = new CheckoutFulfillment(square, NullLogger<CheckoutFulfillment>.Instance);
-        return new SquareFunction(sql, square, fulfill, NullLogger<SquareFunction>.Instance);
+        return new SquareFunction(sql, square, fulfill, cfg, NullLogger<SquareFunction>.Instance);
     }
 
     // A distinct address per request. The cart route carries a per-IP rate limit

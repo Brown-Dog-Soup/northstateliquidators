@@ -90,14 +90,18 @@ public sealed class SquareService
     /// Every money figure comes back out of Square's own order totals so our
     /// arithmetic can never disagree with what the buyer is charged, and the
     /// per-line tax means a partial refund can return that box's tax exactly.
+    /// That is now a guarantee rather than an aspiration: there is no local
+    /// fallback left. If Square neither embeds nor returns an order carrying a
+    /// total, a tax and a tax for every line we sent, this THROWS and the sale
+    /// is refused — see the long note at the retrieval below.
     /// </summary>
     public async Task<CartLink> CreateCartPaymentLinkAsync(IReadOnlyList<CartLine> lines, string redirectUrl,
         string idempotencyKey, string referenceId, string paymentNote, DeliveryMethod delivery,
         long deliveryFeeCents, CancellationToken ct)
     {
-        // deliveryFeeCents is what we ASK Square to charge; the deliveryCents
-        // local below is what Square says it DID charge. Distinct names on
-        // purpose — confusing the two here is a money bug.
+        // deliveryFeeCents is what we ASK Square to charge; the delivery figure
+        // read off Square's order below is what it says it DID charge. Distinct
+        // names on purpose — confusing the two here is a money bug.
         var payload = SquarePayloads.CartLink(lines, LocationId, redirectUrl, idempotencyKey, referenceId, paymentNote, SupportEmail, delivery, TaxCatalogId, deliveryFeeCents);
         using var client = Client();
         var resp = await client.PostAsync("/v2/online-checkout/payment-links",
@@ -110,36 +114,86 @@ public sealed class SquareService
         }
         using var doc = JsonDocument.Parse(body);
         var link = doc.RootElement.GetProperty("payment_link");
+        string linkId  = link.GetProperty("id").GetString()!;
+        string orderId = link.GetProperty("order_id").GetString()!;
+        string url     = link.GetProperty("url").GetString()!;
 
-        long total = lines.Sum(l => l.AmountCents);   // only a fallback; Square's number wins
-        long tax = 0, deliveryCents = 0;
+        // Square usually embeds the order it just created. When it does not — or
+        // embeds one it has not priced — ASK for it, and refuse the sale if that
+        // fails too.
+        //
+        // THE FALLBACK THIS REPLACED, because it read as harmless and was not.
+        // It summed OUR line asks into the total, recorded tax and delivery as 0
+        // and every per-box tax as 0, while Square went on charging the buyer
+        // goods + 7.25% + any delivery fee. Every later rule reads those columns
+        // as fact: one box unavailable refunded its price and no tax; nothing
+        // sold refunded goods only, keeping the buyer's tax AND a delivery fee
+        // for a delivery that never happens; the sales-tax figure the owner
+        // reports to NCDOR under-stated what was collected. And it was silent —
+        // the goods-versus-subtotal backstop cannot see it (both sides shrink
+        // together) and needs_refund CLEARS once refunded_cents reaches the
+        // under-paid refund_due_cents (CheckoutFulfillment.ApplyRefundSql), so
+        // the row went green and nobody ever learned.
+        //
+        // An order we cannot price is an order we cannot refund correctly, so
+        // the honest answer is not to take the money: the caller turns this
+        // throw into the same 502 "call us at (919) 526-0112" the shopper gets
+        // for any other Square failure (SquareFunction.TryCreateCartLinkAsync).
+        // A phone call costs one sale; a mispriced order costs a refund nobody
+        // knows is owed.
+        var order = doc.RootElement.TryGetProperty("related_resources", out var rr) &&
+                    rr.TryGetProperty("orders", out var orders) && orders.GetArrayLength() > 0
+            ? ReadOrder(orders[0])
+            : null;
+        if (!IsPriced(order, lines))
+        {
+            _log.LogWarning("Square CreatePaymentLink {LinkId}: the create response did not price order {OrderId} — retrieving the order for its real totals",
+                linkId, orderId);
+            // The sibling parser, not a second reading of the same JSON: this is
+            // exactly what the recovery path in CheckoutFulfillment does with an
+            // order whose create response we never stored. A non-2xx throws from
+            // in here; a 404 comes back unpriced and is refused just below.
+            order = await OrderLinesAsync(orderId, ct);
+        }
+        if (!IsPriced(order, lines))
+        {
+            _log.LogError("Square CreatePaymentLink {LinkId}: order {OrderId} carries no usable totals even on retrieval — refusing the checkout rather than recording an order we cannot price",
+                linkId, orderId);
+            throw new InvalidOperationException($"Square CreatePaymentLink {linkId}: order {orderId} came back unpriced");
+        }
+
         var lineTax = new Dictionary<Guid, long>();
-        if (doc.RootElement.TryGetProperty("related_resources", out var rr) &&
-            rr.TryGetProperty("orders", out var orders) && orders.GetArrayLength() > 0)
-        {
-            var o = orders[0];
-            total         = Money(o, "total_money") ?? total;
-            tax           = Money(o, "total_tax_money") ?? 0;
-            deliveryCents = Money(o, "total_service_charge_money") ?? 0;
-            if (o.TryGetProperty("line_items", out var items))
-                foreach (var li in items.EnumerateArray())
-                    if (li.TryGetProperty("uid", out var uid) && Guid.TryParse(uid.GetString(), out var g))
-                        lineTax[g] = Money(li, "total_tax_money") ?? 0;
-        }
-        else
-        {
-            _log.LogWarning("Square CreatePaymentLink {LinkId}: no related_resources.orders — tax/delivery recorded as 0",
-                link.GetProperty("id").GetString());
-        }
+        foreach (var l in order!.Lines)
+            if (l.TaxCents.HasValue) lineTax[l.ManifestId] = l.TaxCents.Value;
 
-        return new CartLink(
-            link.GetProperty("id").GetString()!,
-            link.GetProperty("order_id").GetString()!,
-            link.GetProperty("url").GetString()!,
-            total, tax, deliveryCents, lineTax);
+        return new CartLink(linkId, orderId, url,
+            order.TotalCents!.Value, order.TaxCents!.Value, order.DeliveryCents ?? 0, lineTax);
+    }
 
-        static long? Money(JsonElement el, string name)
-            => el.TryGetProperty(name, out var m) && m.TryGetProperty("amount", out var a) ? a.GetInt64() : null;
+    /// <summary>
+    /// Is this enough of an order to bill, refund and remit against? Three
+    /// figures have to be Square's own, because nothing downstream can
+    /// reconstruct them:
+    ///
+    ///   * the ORDER TOTAL — what the buyer is charged, and what goes back when
+    ///     an order sells nothing at all;
+    ///   * the ORDER TAX — what is owed to NCDOR rather than to NSL, and what
+    ///     checkout_orders.subtotal_cents is derived by subtracting;
+    ///   * a PER-LINE TAX for every box we sent — what a partial refund returns
+    ///     with the one box the buyer did not get (spec §8.8). A box recorded
+    ///     with tax 0 under-refunds by its own tax and, because the attention
+    ///     flag clears at whatever figure we recorded, does it silently.
+    ///
+    /// Delivery is deliberately NOT required: when Square returns no service
+    /// charge it also did not charge one, so a recorded 0 agrees with the total
+    /// and nothing is under-refunded. Missing money elsewhere is the opposite —
+    /// the buyer was charged and we would be writing down less than they paid.
+    /// </summary>
+    private static bool IsPriced(RecoveredOrder? order, IReadOnlyList<CartLine> lines)
+    {
+        if (order?.TotalCents == null || order.TaxCents == null) return false;
+        var taxed = order.Lines.Where(l => l.TaxCents.HasValue).Select(l => l.ManifestId).ToHashSet();
+        return lines.All(l => taxed.Contains(l.ManifestId));
     }
 
     /// <summary>Manifest ids we stamped as line-item uids on a cart order (webhook fallback correlation).</summary>
@@ -181,11 +235,23 @@ public sealed class SquareService
     /// </summary>
     public async Task<RecoveredOrder> OrderLinesAsync(string orderId, CancellationToken ct)
     {
-        var lines = new List<OrderLine>();
         using var doc = await RetrieveOrderAsync(orderId, ct);
-        if (doc == null || !doc.RootElement.TryGetProperty("order", out var o))
-            return new RecoveredOrder(lines, null, null, null);
+        return doc != null && doc.RootElement.TryGetProperty("order", out var o)
+            ? ReadOrder(o)
+            : new RecoveredOrder(new List<OrderLine>(), null, null, null);
+    }
 
+    /// <summary>
+    /// One Square `order` object, read into our shape. ONE parser, two callers:
+    /// the copy Square embeds in a payment-link create response and the copy it
+    /// returns from RetrieveOrder are the same object, and reading them two
+    /// different ways is how the two recorded different money for the same order.
+    /// Every figure is Square's own or null — null means Square did not say, which
+    /// is never the same as zero (<see cref="IsPriced"/> is where that is judged).
+    /// </summary>
+    private static RecoveredOrder ReadOrder(JsonElement o)
+    {
+        var lines = new List<OrderLine>();
         if (o.TryGetProperty("line_items", out var items))
             foreach (var li in items.EnumerateArray())
             {

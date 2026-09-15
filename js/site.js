@@ -1075,6 +1075,11 @@
   // Rob's delivery radius (spec §8.4), not customer data; the server re-checks
   // every zip on checkout, so this copy is only here to enable/disable a radio
   // without a round trip.
+  // TAX_PCT is the rate quoted until the probe answers, and then whatever
+  // /api/public/checkout-status says. That server value is itself a literal, so
+  // editing the tax object in Square changes what the buyer is CHARGED without
+  // changing what we QUOTE: a rate change is four edits and a deploy (here,
+  // SquareFunction.Status, CheckoutFulfillment.TaxRate, SquarePayloads).
   let TAX_PCT = 7.25, DELIVERY_CENTS = 1000, DELIVERY_ZIPS = [], FLEA_NOTE = '';
   let DELIVERY_FEES = {};
   function checkoutReady() {

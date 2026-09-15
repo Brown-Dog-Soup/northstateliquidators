@@ -154,6 +154,18 @@ this:
   `service_charges[]` line — never `checkout_options.shipping_fee`, which
   Square marks non-taxable. `SalesSummary` reports **goods only**; keep tax
   and delivery out of any revenue/margin figure.
+- **Changing the tax RATE is a deploy, not just a Square edit.** The catalog
+  object decides what the buyer is *charged*, and every money column we store
+  is read back off Square's own order, so those stay right on their own. The
+  rate we *quote* is a literal in four places and they move together:
+  `taxPercent` in `/api/public/checkout-status` (`SquareFunction.Status`),
+  `TAX_PCT` in `js/site.js` (the cart drawer's default until that probe
+  answers), `CheckoutFulfillment.TaxRate` (the recovery path's last-resort
+  per-box tax) and `SquarePayloads.TaxPercent` (the ad-hoc tax used when
+  `SQUARE_TAX_CATALOG_ID` is unset). Edit the object without deploying and the
+  cart quotes a total the hosted page disagrees with — which reaches Rob as a
+  phone call, not a bug report. Serving the rate from the catalog object was
+  considered and rejected: checkout-status is on every page load.
 - **Reconcile has two triggers and only one is dependable.** SWA-managed
   Functions have no timer trigger, so the "sweep open links hourly" line
   this document used to have was never true of the cart build. The staff

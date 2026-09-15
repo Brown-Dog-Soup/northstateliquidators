@@ -548,8 +548,21 @@ consequences:
 2. **Reference the existing tax rather than inventing our own.** Passing
    `applied_taxes: [{ catalog_object_id: "NJMJVQ3TQDEYCNQJJ5MGTCXT" }]` makes a
    web sale land under the *same named tax* as a floor sale in Rob's Square
-   reporting, so his sales-tax total reconciles in one place and a future rate
-   change is one edit in Square rather than a code deploy. Supplying our own
+   reporting, so his sales-tax total reconciles in one place. **A rate change
+   is NOT one edit in Square — this bullet claimed it was, and the code has
+   never matched that claim.** Editing the catalog object does change what the
+   buyer is *charged*, and every money figure we record comes off Square's own
+   order so all of it stays correct. But the rate we *quote* is a literal in
+   four places — `taxPercent` in `/api/public/checkout-status`, `TAX_PCT` in
+   `js/site.js` (the drawer's default before that probe answers),
+   `CheckoutFulfillment.TaxRate` (recovery's last-resort per-box tax) and
+   `SquarePayloads.TaxPercent` (the ad-hoc tax used when no catalog id is
+   set) — so an un-deployed rate change leaves the cart quoting a total the
+   hosted page disagrees with. **A rate change is an edit in Square plus a
+   deploy of those four.** Reading the rate off the catalog object was
+   considered and rejected: checkout-status is hit on every page load and an
+   extra Square call there is a poor trade for a rate that moves about once a
+   decade. Supplying our own
    ad-hoc 7.25% would produce a second, differently-named tax line in the same
    reports for the same legal tax. Prefer the catalog reference; keep the
    ad-hoc shape below as the fallback if the catalog object turns out not to be

@@ -237,6 +237,21 @@ public sealed class SquareFunction
         {
             enabled = _square.CheckoutEnabled && _square.Configured,
             cartMax = CartMax,
+            // THE QUOTED RATE, AND IT IS A DEPLOY. The tax is CHARGED by a Square
+            // catalog object (SQUARE_TAX_CATALOG_ID), so editing that object in
+            // Square changes what the buyer pays and every figure we record off
+            // Square's order stays correct — but it does NOT reach this literal,
+            // and this literal is what the drawer quotes. The cart would then
+            // total a different number from the hosted page, which this codebase
+            // elsewhere calls a phone call to the warehouse rather than a bug
+            // report. The rate is written down in four places and they move
+            // TOGETHER: here, js/site.js TAX_PCT (the drawer's pre-probe
+            // default), CheckoutFulfillment.TaxRate (recovery's last-resort
+            // per-box tax) and SquarePayloads.TaxPercent (the ad-hoc tax used
+            // when no catalog id is configured). Reading the rate off the
+            // catalog object here was considered and rejected: this route is on
+            // every page load, and an extra Square call on it is a poor trade
+            // for a rate that changes about once a decade.
             taxPercent = 7.25m,
             // What to quote BEFORE a zip is known. Once the shopper types one,
             // deliveryFees[zip] is the number they will actually be charged —
@@ -1620,9 +1635,37 @@ GROUP BY p.square_payment_id", new { begin }, cancellationToken: ct))).ToList();
         }
 
         // B1: boxes marked SOLD in admin with no live Square payment on file.
-        // Fake sales (Sold → inventory) are not revenue. Only a COMPLETED*
-        // payments row counts as "already in the Square list" — a refunded or
-        // refund-flagged row must not hide a later real re-sale of the same box.
+        // Fake sales (Sold → inventory) are not revenue.
+        //
+        // WHAT COUNTS AS "already in the Square list" CHANGED WITH THE CART, and
+        // the comment that used to sit here described the predicate before it.
+        // It said only a COMPLETED* payment row counted, so that a refunded OR
+        // FLAGGED row could not hide a later genuine re-sale of the same box.
+        // That is no longer what the NOT EXISTS below does. The test is now the
+        // box's OWN order line reading outcome='sold' on a payment that is not
+        // fully 'REFUNDED' — so a REFUND_FLAGGED, PARTIAL_REFUND_FLAGGED,
+        // PARTIAL_REFUNDED, REFUND_ACKNOWLEDGED or UNMATCHED row DOES hide the
+        // box.
+        //
+        // INTENDED, and it is the join that made it possible rather than a
+        // relaxation. The old row could only name one box (payments.manifest_id),
+        // so "did this box actually sell?" had to be guessed from the payment's
+        // status and flag; a flag raised by a SIBLING box on the same order then
+        // read as "this box did not sell". checkout_order_boxes.outcome answers
+        // the question directly, and a box whose line says 'sold' on a payment
+        // that kept its money IS in the Square loop above — that loop lists every
+        // Square payment in the window whatever our status column says — so
+        // listing it again here would show one sale twice. A fully REFUNDED
+        // payment is the one sale that was undone, and there the box rightly
+        // reappears.
+        //
+        // The residual, named rather than buried: one box hand-refunded out of a
+        // multi-box order leaves its line reading 'sold' (nothing flips it back)
+        // on a PARTIAL_REFUNDED payment, so if that box is then re-sold at the
+        // counter and marked sold in admin it stays hidden from this section. No
+        // money is miscounted — these rows are listed, never added to gross — it
+        // is one missing line in a listing, and flipping the outcome back is the
+        // fix if that ever comes up.
         //
         // These rows are listed but NOT added to gross_cents: a floor sale rung
         // up on the Square terminal has no order link, so it is already in the

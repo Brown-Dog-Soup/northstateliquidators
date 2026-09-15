@@ -97,11 +97,13 @@ public class FulfillMoneyDecisionTests
     }
 
     /// <summary>
-    /// Nothing sold: there is no delivery to make either, so the whole order total
-    /// goes back rather than just the goods and their tax.
+    /// Nothing sold: there is no delivery to make either, so the whole payment
+    /// goes back rather than just the goods. Here it paid the order in full, so
+    /// the two figures are the same number and this says nothing about which one
+    /// was used — the tests below are the ones that separate them.
     /// </summary>
     [Fact]
-    public void Nothing_sold_owes_the_whole_order_total_not_just_the_boxes()
+    public void Nothing_sold_owes_the_whole_payment_not_just_the_boxes()
     {
         var v = Decide(sold: 0, refundDueFromLines: Box + BoxTax);
         Assert.Equal(Total, v.RefundDueCents);
@@ -109,10 +111,104 @@ public class FulfillMoneyDecisionTests
         Assert.Equal("REFUND_FLAGGED", v.Status);
     }
 
-    /// <summary>An order with no recorded total cannot be grossed up to it.</summary>
+    /// <summary>
+    /// THE ROW THAT COULD NEVER BE CLEARED. A split tender, or a legacy link
+    /// migrated at a different price during the deploy window: this payment is
+    /// worth $150.00 against an order recorded at $332.48, and it sold nothing.
+    /// Recording the ORDER total as the debt made the row unclearable by anyone
+    /// — Square cannot refund more than the payment, so refunded_cents can never
+    /// reach refund_due_cents and needs_refund stays up forever; PlanRefund then
+    /// says nothing is outstanding and disables the button, Acknowledge refuses a
+    /// row that has a recorded figure, and "Get amount from Square" refuses a row
+    /// that has a recorded amount. The only exit was editing the database by hand.
+    ///
+    /// NOTE WHAT THIS TEST VARIES, because nothing in this file used to: the
+    /// payment amount. The helper defaults it to the order total, which is the
+    /// one value that hides the bug.
+    /// </summary>
     [Fact]
-    public void Nothing_sold_on_an_order_with_no_total_keeps_the_line_figure()
-        => Assert.Equal(Box + BoxTax, Decide(sold: 0, refundDueFromLines: Box + BoxTax, orderTotalCents: 0).RefundDueCents);
+    public void Nothing_sold_never_owes_more_than_the_payment_that_arrived()
+    {
+        const long Paid = 15_000;                       // a part payment of a 33248 order
+        var v = Decide(sold: 0, refundDueFromLines: Box + BoxTax, paymentAmountCents: Paid);
+        Assert.Equal(Paid, v.RefundDueCents);           // not Total — that debt is unpayable
+        Assert.Equal(Paid, v.RecordedDueCents);
+        Assert.True(v.NeedsRefund);
+        Assert.Equal("REFUND_FLAGGED", v.Status);
+    }
+
+    /// <summary>
+    /// And the other direction, which is quieter and worse. The payment is larger
+    /// than the order we recorded — the same migrated-link window, read the other
+    /// way. Nothing sold, so we are entitled to none of it: recording the smaller
+    /// ORDER figure would let a refund of that figure CLEAR the attention flag
+    /// with the difference still sitting in our account and nobody any the wiser.
+    /// </summary>
+    [Fact]
+    public void Nothing_sold_owes_the_whole_payment_even_when_it_exceeds_the_order()
+    {
+        const long Paid = Total + 5_000;
+        var v = Decide(sold: 0, refundDueFromLines: Box + BoxTax, paymentAmountCents: Paid);
+        Assert.Equal(Paid, v.RefundDueCents);
+        Assert.Equal(Paid, v.RecordedDueCents);
+    }
+
+    /// <summary>
+    /// Some boxes DID sell, so what is owed is the lines’ own figure — but that is
+    /// still a sum over the ORDER, and a payment that only part-paid the order can
+    /// give back no more than it took. Same ceiling, different branch.
+    /// </summary>
+    [Fact]
+    public void A_partial_refund_never_owes_more_than_the_payment_that_arrived()
+    {
+        const long Paid = 5_000;                        // less than the one box owed back
+        var v = Decide(sold: 2, refundDueFromLines: Box + BoxTax, paymentAmountCents: Paid);
+        Assert.Equal(Paid, v.RefundDueCents);
+        Assert.Equal(Paid, v.RecordedDueCents);
+        Assert.Equal("PARTIAL_REFUND_FLAGGED", v.Status);
+    }
+
+    /// <summary>
+    /// A payment whose amount we do not know concludes nothing, so the order total
+    /// is what is left to reason from. (The same ruling this file applies to the
+    /// attention flag: we do not compute against a number we do not have.)
+    /// </summary>
+    [Fact]
+    public void Nothing_sold_on_a_payment_of_unknown_amount_falls_back_to_the_order_total()
+        => Assert.Equal(Total, Decide(sold: 0, refundDueFromLines: Box + BoxTax, paymentAmountCents: null).RefundDueCents);
+
+    /// <summary>
+    /// An order with no recorded total cannot be grossed up to it — but the
+    /// payment can still say what went back. Nothing sold and $332.48 taken means
+    /// $332.48 owed, whatever a legacy order row (total_cents DEFAULT 0) says.
+    /// </summary>
+    [Fact]
+    public void Nothing_sold_on_an_order_with_no_total_still_owes_the_payment()
+        => Assert.Equal(Total, Decide(sold: 0, refundDueFromLines: Box + BoxTax, orderTotalCents: 0).RefundDueCents);
+
+    /// <summary>
+    /// With neither a recorded order total nor a payment amount there is nothing
+    /// to gross up to at all, and the line arithmetic is the only figure anyone
+    /// has. It is reported as owed rather than dropped.
+    /// </summary>
+    [Fact]
+    public void Nothing_sold_with_no_total_and_no_payment_amount_keeps_the_line_figure()
+        => Assert.Equal(Box + BoxTax,
+            Decide(sold: 0, refundDueFromLines: Box + BoxTax, orderTotalCents: 0, paymentAmountCents: null).RefundDueCents);
+
+    /// <summary>
+    /// A zero is not a cap. payments.amount_cents is nullable and a zero-amount
+    /// payment is not a real one, but if one ever arrives, capping the debt to 0
+    /// would erase it AND the attention flag with it — money in, nothing sold,
+    /// nobody told. The zero is ignored and the order total stands.
+    /// </summary>
+    [Fact]
+    public void A_zero_payment_amount_never_caps_the_debt_away()
+    {
+        var v = Decide(sold: 0, refundDueFromLines: Box + BoxTax, paymentAmountCents: 0);
+        Assert.Equal(Total, v.RefundDueCents);
+        Assert.True(v.NeedsRefund);
+    }
 
     [Fact]
     public void A_second_tender_on_a_fulfilled_order_flags_the_whole_of_that_payment()

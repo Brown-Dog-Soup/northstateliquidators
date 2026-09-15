@@ -26,7 +26,17 @@ public sealed record CanceledLink(string OrderId, string? LinkId);
 /// </summary>
 public sealed class CheckoutFulfillment
 {
-    /// <summary>NC + Wake County combined sales tax — the same rate the cart payload quotes.</summary>
+    /// <summary>
+    /// NC + Wake County combined sales tax — the same rate the cart payload
+    /// quotes. Used ONLY as recovery's last resort, for a rebuilt line whose tax
+    /// Square did not return; every other figure in this file is Square's own.
+    ///
+    /// ONE OF FOUR COPIES, and changing the rate means changing all of them plus
+    /// deploying: SquareFunction's <c>taxPercent</c> in the checkout-status
+    /// response, <c>TAX_PCT</c> in js/site.js, and SquarePayloads.TaxPercent.
+    /// Editing the Square catalog tax object changes what the buyer is CHARGED
+    /// and nothing here follows it.
+    /// </summary>
     private const decimal TaxRate = 0.0725m;
 
     private readonly SquareService _square;
@@ -536,7 +546,39 @@ WHERE square_payment_id = @pid",
     ///
     /// refundDueFromLines — the price and tax of the boxes this order could not
     /// deliver. When nothing at all sold there is no delivery to make either, so
-    /// the whole order total goes back rather than just the goods.
+    /// the whole of the PAYMENT goes back rather than just the goods.
+    ///
+    /// paymentAmountCents — and that word is the fix. WHAT THIS RECORDS IS A DEBT
+    /// AGAINST ONE PAYMENT, while the order total is a fact about the ORDER, and
+    /// the two are different numbers on a split tender (which the
+    /// duplicate-tender branch above exists because of) or on a legacy link
+    /// migrated at a different price during a deploy window. This branch used to
+    /// record the order total regardless, and every rule that reads the figure
+    /// back reasons about the payment, so it disagreed in both directions:
+    ///
+    ///   * ORDER TOTAL ABOVE THE PAYMENT — needs_refund clears at
+    ///     refunded_cents >= refund_due_cents (<see cref="ApplyRefundSql"/>) and
+    ///     Square cannot refund more than the payment, so the flag can NEVER come
+    ///     down. PlanRefund clamps what is owed to the payment, so once the whole
+    ///     payment is back it answers "nothing outstanding" and disables the
+    ///     button; Acknowledge refuses a row that HAS a recorded figure; and "Get
+    ///     amount from Square" refuses a row that HAS a recorded amount. The row
+    ///     nags forever and the only way out is a hand-edit of the database — the
+    ///     cry-wolf failure db/hotfix-floor-payments.sql exists to punish,
+    ///     arriving from a third direction.
+    ///   * ORDER TOTAL BELOW THE PAYMENT — quieter and worse: refunding the
+    ///     recorded figure clears the flag with the difference still in our
+    ///     account, and nobody ever learns. Nothing sold means we are entitled to
+    ///     none of this payment.
+    ///
+    /// So the figure is the payment when its amount is known, exactly as the
+    /// duplicate-tender branch has always done, and the order total only as the
+    /// fallback for when it is not. An unknown (null) amount concludes nothing —
+    /// we do not reason from a number we do not have — and neither does a zero,
+    /// which would erase the debt and with it the flag.
+    ///
+    /// The same ceiling applies when some boxes DID sell: what the lines say is
+    /// owed is still a sum over the order, so it is capped at the payment too.
     ///
     /// unaccountedGoodsCents — the backstop (see
     /// <see cref="UnaccountedGoodsCents"/>). It raises the flag and it
@@ -579,7 +621,19 @@ WHERE square_payment_id = @pid",
         if (duplicateTender)
             refundDue = paymentAmountCents ?? refundDue;
         else if (sold == 0 && refundDue > 0)
-            refundDue = orderTotalCents > 0 ? orderTotalCents : refundDue;
+            // Nothing was handed over, so the whole of THIS PAYMENT goes back —
+            // the same sentence, and the same line, as the branch above. The
+            // order total is the fallback for when the payment's amount is not
+            // known, not the answer: it is a fact about the ORDER and this row
+            // is a debt against ONE PAYMENT.
+            refundDue = paymentAmountCents is > 0 ? paymentAmountCents.Value
+                      : orderTotalCents > 0 ? orderTotalCents
+                      : refundDue;
+        else if (paymentAmountCents is > 0 && refundDue > paymentAmountCents.Value)
+            // Some boxes did sell, so what is owed is the lines’ figure — but it
+            // is still a sum over the ORDER, and a payment that only part-paid
+            // that order can give back no more than it took.
+            refundDue = paymentAmountCents.Value;
 
         bool linesMissing = unaccountedGoodsCents > 0 || linesKnownMissing;
         bool needsRefund = refundDue > 0 || duplicateTender || linesMissing;

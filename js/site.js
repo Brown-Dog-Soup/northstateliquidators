@@ -128,7 +128,7 @@
     // Manually-featured boxes (is_hot_deal, staff toggle) win the top slots —
     // newest featured first — so what staff toggle on today shows up front;
     // sale-price boxes fill in after, deepest discount first.
-    hot:  { title: '🔥 Hot Deals', eyebrow: 'Live boxes on sale right now', sub: 'Marked down from the list price. When they go, they go.',
+    hot:  { title: '🔥 Hot Deals', eyebrow: 'Our picks, right now', sub: "This week's picks and everything marked down from the list price. When they go, they go.",
             empty: `No hot deals right now — check back Friday or call ${PHONE}.`,
             test: r => isLive(r) && (!!r.is_on_sale || !!r.is_hot_deal),
             sort: (a, b) => (!!b.is_hot_deal - !!a.is_hot_deal) || (ts(b.hot_deal_at) - ts(a.hot_deal_at)) || (discount(b) - discount(a)) || byLiveDesc(a, b) },

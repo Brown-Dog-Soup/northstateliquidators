@@ -57,7 +57,14 @@ BEGIN
     CREATE TABLE dbo.checkout_order_boxes (
         square_order_id  VARCHAR(64)      NOT NULL
             CONSTRAINT FK_cob_order REFERENCES dbo.checkout_orders (square_order_id),
-        manifest_id      UNIQUEIDENTIFIER NOT NULL,   -- no FK on purpose: DeletePallet cleans up explicitly
+        -- No FK on purpose, and the reason CHANGED in 2026-09: DeletePallet used to
+        -- delete these rows, which silently dropped a deleted box's money out of the
+        -- refund arithmetic -- the buyer paid for a box that no longer existed and the
+        -- payment recorded as complete. It now marks them outcome='unavailable' and
+        -- LEAVES them, so fulfilment's LEFT JOIN still sees the line and owes the buyer
+        -- back. The row therefore OUTLIVES its manifest by design: do not add the FK,
+        -- and do not "tidy up" orphans -- an orphan here is a debt we owe someone.
+        manifest_id      UNIQUEIDENTIFIER NOT NULL,
         amount_cents     BIGINT           NOT NULL,   -- price at link time, EX tax
         tax_cents        BIGINT           NOT NULL CONSTRAINT DF_cob_tax DEFAULT 0,  -- this line's total_tax_money, from Square
         outcome          VARCHAR(16)      NULL,       -- NULL | 'sold' | 'unavailable'

@@ -76,11 +76,13 @@ using Xunit;
 ///    refund replay. Both are branches inside the sweep's own loops, around a
 ///    FulfillResult and an UPDATE that only a database produces. What is checked
 ///    here is the arithmetic and the rules they hang off, not the counters.
-///  * THAT A DELETE 404 STILL CONFIRMS A DELETE. It does, deliberately, in
-///    CheckoutFulfillment.RetireLinksAsync — the sweep no longer calls it without
-///    corroboration, but the staff-action callers (PalletsFunction, InvoiceBox)
-///    still can. Their blast radius is the links of the boxes in that one
-///    request, not every aged order, but it is not zero.
+///  * THAT A DELETE 404 STILL CONFIRMS A DELETE. It no longer does, anywhere.
+///    This sweep's gate (no corroboration, no pass 3) was the first half; the
+///    second is inside CheckoutFulfillment.RetireLinksAsync, which now asks
+///    Square for one order of ours before it stamps link_deleted_at on any
+///    delete — so the staff-action callers (PalletsFunction, InvoiceBox) are
+///    covered by the same rule this file's predicates express, without needing
+///    a run to reason about. Pinned in RetireLinksCorroborationTests.
 /// </summary>
 public class ReconcileTests
 {

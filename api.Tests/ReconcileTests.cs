@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
@@ -22,12 +23,15 @@ using Xunit;
 /// What IS provable without a database or a Square account is pulled out into
 /// pure functions and tested properly below — the verdict rule that decides what
 /// happens to one open order (including the one that must never fire on an
-/// invoice), the predicate that decides whether an order may be CLOSED at all,
-/// and the arithmetic that decides how much of a payment's recorded refunds
-/// never reached its total. Plus the refusal that must answer before any
-/// connection is taken, which a closed SQL port and an exploding HTTP factory
-/// prove between them, and the two SQL texts whose WHERE clauses carry the
-/// money rule, checked as text in the manner of SchemaContractTests.
+/// invoice, and the paid-and-canceled contradiction that must never be stamped
+/// dead), the predicate that decides whether an order may be CLOSED at all
+/// (including the corroboration a 404 needs before it counts as evidence about
+/// our own merchant), the reading of one order object's payment signal, and the
+/// arithmetic that decides how much of a payment's recorded refunds never reached
+/// its total. Plus the refusal that must answer before any connection is taken,
+/// which a closed SQL port and an exploding HTTP factory prove between them, and
+/// the two SQL texts whose WHERE clauses carry the money rule, checked as text in
+/// the manner of SchemaContractTests.
 ///
 /// STILL NOT COVERED, and worth being plain about rather than implying
 /// otherwise:
@@ -43,6 +47,22 @@ using Xunit;
 ///    staged here. Staging pass.
 ///  * The window and delete-queue SAMPLING, the refund-replay cap, and the
 ///    closed_at/link_deleted_at COALESCE — all SQL Server behaviour.
+///  * THAT AN UNCORROBORATED RUN SKIPS PASS 3 ENTIRELY. The predicate that
+///    decides it is tested here and hard; the branch that acts on it sits
+///    between two SqlConnection calls, so what a wrong-credential run actually
+///    does to link_deleted_at is a staging-pass observation. Likewise the
+///    wrong-merchant ERROR line: the condition is tested, the logging is not.
+///  * THE HOST-SHUTDOWN 503. The early return needs a cancellation token tripped
+///    partway through a live Square loop with a database behind it.
+///  * THE HEALED/PAID-NOTHING-SOLD SPLIT and the per-payment containment on the
+///    refund replay. Both are branches inside the sweep's own loops, around a
+///    FulfillResult and an UPDATE that only a database produces. What is checked
+///    here is the arithmetic and the rules they hang off, not the counters.
+///  * THAT A DELETE 404 STILL CONFIRMS A DELETE. It does, deliberately, in
+///    CheckoutFulfillment.RetireLinksAsync — the sweep no longer calls it without
+///    corroboration, but the staff-action callers (PalletsFunction, InvoiceBox)
+///    still can. Their blast radius is the links of the boxes in that one
+///    request, not every aged order, but it is not zero.
 /// </summary>
 public class ReconcileTests
 {
@@ -102,6 +122,7 @@ public class ReconcileTests
     [InlineData("COMPLETED", "link")]
     [InlineData("OPEN", "invoice")]
     [InlineData(null, "link")]      // Square omitted state — paid is still paid
+    [InlineData("CANCELED", "link")]   // and so is a canceled one: see below
     public void A_paid_order_is_healed(string? state, string kind)
         => Assert.Equal(SquareFunction.ReconcileVerdict.Heal,
             SquareFunction.VerdictFor(state, paid: true, kind));
@@ -125,13 +146,19 @@ public class ReconcileTests
             SquareFunction.VerdictFor("CANCELED", paid: false, "invoice"));
 
     /// <summary>
-    /// And not even a PAID one: CANCELED is checked first, so a canceled invoice
-    /// order is reported open for a human rather than swept either way.
+    /// CANCELED AND PAID AT THE SAME TIME, which Square should not produce and
+    /// which the sweep must not resolve in favour of the cancel. The cancel branch
+    /// writes link_deleted_at, and a row that is closed AND stamped matches
+    /// neither arm of the backlog window — so taking that branch here would remove
+    /// the order from the only pass that could still find the payment, silently.
+    /// Money wins: it is healed, whatever kind it is, and nothing stamps it dead.
     /// </summary>
-    [Fact]
-    public void A_canceled_invoice_order_is_not_swept_even_when_paid()
-        => Assert.Equal(SquareFunction.ReconcileVerdict.StillOpen,
-            SquareFunction.VerdictFor("CANCELED", paid: true, "invoice"));
+    [Theory]
+    [InlineData("link")]
+    [InlineData("invoice")]
+    public void A_canceled_order_that_is_also_paid_is_healed_not_retired(string kind)
+        => Assert.Equal(SquareFunction.ReconcileVerdict.Heal,
+            SquareFunction.VerdictFor("CANCELED", paid: true, kind));
 
     /// <summary>An unpaid, uncanceled order is the ordinary case: leave it alone.</summary>
     [Theory]
@@ -249,7 +276,7 @@ public class ReconcileTests
     /// </summary>
     [Fact]
     public void A_paid_order_is_never_closable()
-        => Assert.False(SquareFunction.VerifiedUnpaid(SquareFunction.SquareReply.Order, paid: true));
+        => Assert.False(SquareFunction.VerifiedUnpaid(SquareFunction.SquareReply.Order, paid: true, squareAnswered: true));
 
     /// <summary>
     /// The second half of the same defect. A rate limit, a rotated token, a 5xx
@@ -262,21 +289,193 @@ public class ReconcileTests
     [InlineData(true)]
     [InlineData(false)]
     public void An_order_square_could_not_be_asked_about_is_never_closable(bool paid)
-        => Assert.False(SquareFunction.VerifiedUnpaid(SquareFunction.SquareReply.Unreachable, paid));
+        => Assert.False(SquareFunction.VerifiedUnpaid(SquareFunction.SquareReply.Unreachable, paid, squareAnswered: true));
 
     /// <summary>Square answered, there is no payment on it: this is the case the age rule exists for.</summary>
     [Fact]
     public void An_unpaid_order_square_answered_for_is_closable()
-        => Assert.True(SquareFunction.VerifiedUnpaid(SquareFunction.SquareReply.Order, paid: false));
+        => Assert.True(SquareFunction.VerifiedUnpaid(SquareFunction.SquareReply.Order, paid: false, squareAnswered: true));
 
     /// <summary>
-    /// A 404 counts as established: Square holds no such order, so no tender can
-    /// exist against it. Without this an order Square has forgotten could never
+    /// A 404 counts as established — but only alongside proof that we are looking
+    /// at our own merchant. Without this an order Square has forgotten could never
     /// be retired and would occupy a slot in every future window forever.
     /// </summary>
     [Fact]
-    public void An_order_square_has_no_record_of_is_closable()
-        => Assert.True(SquareFunction.VerifiedUnpaid(SquareFunction.SquareReply.NotFound, paid: false));
+    public void An_order_square_has_no_record_of_is_closable_when_the_run_reached_our_merchant()
+        => Assert.True(SquareFunction.VerifiedUnpaid(SquareFunction.SquareReply.NotFound, paid: false, squareAnswered: true));
+
+    // ---- The wrong merchant: a 404 that is not about us ---------------------
+    //
+    // THE DEFECT THESE EXIST FOR, and it is the same catastrophe as the age rule
+    // reached from the other side. A credential pointed at the wrong Square
+    // merchant — a sandbox token in production, a re-created application, a
+    // location change after a migration — does not move a single cent of anybody's
+    // money. Our buyers' orders and their payments stay exactly where they were.
+    // Only our ability to SEE them moves, and what comes back instead is a 404 on
+    // every call.
+    //
+    // A 404 was then trusted twice: as proof the order was never paid (so pass 2
+    // closed it) and as proof the link was gone (so pass 3 stamped
+    // link_deleted_at). Closed AND stamped matches neither arm of the backlog
+    // window, so the row was unreachable by every pass forever — including after
+    // somebody fixed the credential — while the sweep reported zero errors.
+
+    /// <summary>
+    /// THE ONE THAT MUST NEVER COME BACK. Every call 404s, so there is no readable
+    /// order anywhere in the run to prove the credential reaches our merchant, and
+    /// not one of those orders may be closed.
+    /// </summary>
+    [Fact]
+    public void A_run_where_every_order_404s_closes_nothing()
+        => Assert.Empty(SquareFunction.ClosableOrderIds(new[]
+        {
+            new SquareFunction.OrderCheck("A", SquareFunction.SquareReply.NotFound, false),
+            new SquareFunction.OrderCheck("B", SquareFunction.SquareReply.NotFound, false),
+            new SquareFunction.OrderCheck("C", SquareFunction.SquareReply.NotFound, false),
+        }));
+
+    /// <summary>The same predicate, stated directly: no 404 is evidence on its own.</summary>
+    [Fact]
+    public void An_uncorroborated_404_establishes_nothing()
+        => Assert.False(SquareFunction.VerifiedUnpaid(SquareFunction.SquareReply.NotFound, paid: false, squareAnswered: false));
+
+    /// <summary>
+    /// And the corroboration is a real order, not merely a reply. A run of nothing
+    /// but rate limits and 404s has still never seen our merchant, so its 404s
+    /// stay worthless — an unreachable answer cannot vouch for anything.
+    /// </summary>
+    [Fact]
+    public void Unreachable_replies_do_not_corroborate_a_404()
+    {
+        var checks = new[]
+        {
+            new SquareFunction.OrderCheck("GONE",  SquareFunction.SquareReply.NotFound, false),
+            new SquareFunction.OrderCheck("429-A", SquareFunction.SquareReply.Unreachable, false),
+            new SquareFunction.OrderCheck("429-B", SquareFunction.SquareReply.Unreachable, false),
+        };
+        Assert.False(SquareFunction.SquareAnswered(checks));
+        Assert.Empty(SquareFunction.ClosableOrderIds(checks));
+    }
+
+    /// <summary>
+    /// The other half of the same rule, which is what keeps the fix from being a
+    /// new way to jam the sweep: ONE readable order is enough. A genuinely
+    /// forgotten order alongside orders that answer is still retired on schedule,
+    /// so the ordinary sweep is unchanged.
+    /// </summary>
+    [Fact]
+    public void One_readable_order_is_enough_to_make_the_run_s_404s_count()
+    {
+        var checks = new[]
+        {
+            new SquareFunction.OrderCheck("READABLE", SquareFunction.SquareReply.Order, false),
+            new SquareFunction.OrderCheck("GONE",     SquareFunction.SquareReply.NotFound, false),
+        };
+        Assert.True(SquareFunction.SquareAnswered(checks));
+        Assert.False(SquareFunction.LooksLikeWrongMerchant(checks));
+        Assert.Equal(new[] { "READABLE", "GONE" }, SquareFunction.ClosableOrderIds(checks));
+    }
+
+    /// <summary>
+    /// A PAID order among the readable ones corroborates just as well as an unpaid
+    /// one — the question the flag answers is "can this credential see our
+    /// merchant", not "is anything unpaid". And the paid one is still not closable.
+    /// </summary>
+    [Fact]
+    public void A_paid_order_corroborates_the_run_without_becoming_closable()
+    {
+        var checks = new[]
+        {
+            new SquareFunction.OrderCheck("PAID", SquareFunction.SquareReply.Order, true),
+            new SquareFunction.OrderCheck("GONE", SquareFunction.SquareReply.NotFound, false),
+        };
+        Assert.True(SquareFunction.SquareAnswered(checks));
+        Assert.Equal(new[] { "GONE" }, SquareFunction.ClosableOrderIds(checks));
+    }
+
+    /// <summary>
+    /// THE ALARM, which is the only live misconfiguration detector this system
+    /// has. All-404 with no readable order is a state our own data cannot produce:
+    /// we only ever ask about orders we created.
+    /// </summary>
+    [Fact]
+    public void An_all_404_run_is_reported_as_the_wrong_merchant()
+        => Assert.True(SquareFunction.LooksLikeWrongMerchant(new[]
+        {
+            new SquareFunction.OrderCheck("A", SquareFunction.SquareReply.NotFound, false),
+            new SquareFunction.OrderCheck("B", SquareFunction.SquareReply.NotFound, false),
+        }));
+
+    /// <summary>
+    /// And it must not cry wolf on the two states that look similar and are not: a
+    /// run that asked about nothing at all (an idle floor), and a run where Square
+    /// was simply unreachable (a 429 storm, a 5xx). Neither saw a 404, so neither
+    /// is evidence of a wrong credential — they are just quiet or broken.
+    /// </summary>
+    [Fact]
+    public void A_quiet_or_unreachable_run_is_not_the_wrong_merchant_alarm()
+    {
+        Assert.False(SquareFunction.LooksLikeWrongMerchant(Array.Empty<SquareFunction.OrderCheck>()));
+        Assert.False(SquareFunction.LooksLikeWrongMerchant(new[]
+        {
+            new SquareFunction.OrderCheck("429", SquareFunction.SquareReply.Unreachable, false),
+        }));
+    }
+
+    // ---- PaymentOf: "unpaid" must be evidenced, not merely absent -----------
+    //
+    // The same thesis as SquareReply.Unreachable, one level down. A response we
+    // could not understand tells us nothing about payment — and an order object
+    // carrying neither a tenders array nor a net_amount_due_money is exactly that:
+    // a truncated body, a proxy-mangled response, an empty object. It used to
+    // return a bare false, which the sweep reads as VERIFIED UNPAID and closes on.
+
+    private static JsonElement Order(string json) => JsonDocument.Parse(json).RootElement;
+
+    /// <summary>The ordinary paid link: Square attaches a tender.</summary>
+    [Fact]
+    public void An_order_with_a_tender_is_paid()
+        => Assert.Equal(SquareService.PaymentSignal.Paid,
+            SquareService.PaymentOf(Order("""{"tenders":[{"payment_id":"PAY1"}]}""")));
+
+    /// <summary>
+    /// The GOTCHA this method exists for: a paid payment-link order stays
+    /// state=OPEN forever, so nothing about payment may be read off the state.
+    /// Zero due is the second positive proof of payment.
+    /// </summary>
+    [Fact]
+    public void An_order_with_nothing_left_due_is_paid()
+        => Assert.Equal(SquareService.PaymentSignal.Paid,
+            SquareService.PaymentOf(Order("""{"state":"OPEN","net_amount_due_money":{"amount":0,"currency":"USD"}}""")));
+
+    /// <summary>Money still owed is positive proof of NON-payment. This is the ordinary open link.</summary>
+    [Fact]
+    public void An_order_with_money_still_due_is_unpaid()
+        => Assert.Equal(SquareService.PaymentSignal.Unpaid,
+            SquareService.PaymentOf(Order("""{"state":"OPEN","net_amount_due_money":{"amount":4500,"currency":"USD"}}""")));
+
+    /// <summary>An empty tenders array is Square saying, positively, that nothing was tendered.</summary>
+    [Fact]
+    public void An_order_with_an_empty_tenders_array_is_unpaid()
+        => Assert.Equal(SquareService.PaymentSignal.Unpaid,
+            SquareService.PaymentOf(Order("""{"state":"OPEN","tenders":[]}""")));
+
+    /// <summary>
+    /// THE ONE THAT MUST NOT READ AS UNPAID. Neither signal present — so we know
+    /// nothing, and the sweep must treat it exactly as it treats a 5xx. A bare
+    /// false here is a closable order and a buried charge.
+    /// </summary>
+    [Theory]
+    [InlineData("""{}""")]
+    [InlineData("""{"state":"OPEN"}""")]
+    [InlineData("""{"id":"ORD1","location_id":"LOC1","line_items":[]}""")]
+    [InlineData("""{"net_amount_due_money":{}}""")]
+    [InlineData("""{"net_amount_due_money":{"amount":"4500"}}""")]
+    [InlineData("""[]""")]
+    [InlineData("""null""")]
+    public void An_order_object_with_no_payment_signal_is_unknown(string json)
+        => Assert.Equal(SquareService.PaymentSignal.Unknown, SquareService.PaymentOf(Order(json)));
 
     /// <summary>
     /// The list pass 2's UPDATE is restricted to, over a realistic mixed run:
@@ -348,12 +547,38 @@ public class ReconcileTests
     }
 
     /// <summary>
-    /// And the aged open orders a newest-first window can never reach — the
-    /// invoice that drifts past the cap and would otherwise never heal again.
+    /// And the open orders a newest-first window can never reach — the invoice
+    /// that drifts past the cap and would otherwise never heal again.
+    ///
+    /// OF ANY AGE, which is the gap this round closed. The backlog used to take
+    /// only orders older than the link age limit, so during a burst an order a few
+    /// days old sitting outside the newest-first half was asked about by NEITHER
+    /// half and a missed notification on it waited until it aged in. An age filter
+    /// reappearing here re-opens that gap.
     /// </summary>
     [Fact]
-    public void The_backlog_window_reaches_aged_open_orders()
-        => Assert.Contains("created_at < DATEADD(DAY, -@ageDays", SquareFunction.ReconcileBacklogSql);
+    public void The_backlog_window_reaches_open_orders_of_any_age()
+    {
+        Assert.Contains("status = 'open'", SquareFunction.ReconcileBacklogSql);
+        Assert.DoesNotContain("DATEADD", SquareFunction.ReconcileBacklogSql);
+        Assert.DoesNotContain("@ageDays", SquareFunction.ReconcileBacklogSql);
+    }
+
+    /// <summary>
+    /// The queue-dilution alarm (there is no terminal state to give a link Square
+    /// will never confirm without a schema change, so the pile is made visible
+    /// instead). The threshold has to sit at or below the window that samples the
+    /// queue: past that, one run can no longer reach all of it, which is the point
+    /// where recovery latency starts to stretch rather than the point where it
+    /// already has.
+    /// </summary>
+    [Fact]
+    public void The_retire_queue_warns_before_it_outgrows_the_window_that_samples_it()
+    {
+        Assert.True(SquareFunction.ReconcileRetireQueueWarnAt > 0);
+        Assert.True(SquareFunction.ReconcileRetireQueueWarnAt <= SquareFunction.ReconcileBacklogWindow,
+            "warn no later than the point the backlog window can no longer cover the queue in one run");
+    }
 
     /// <summary>
     /// The budget split, which is the anti-starvation guarantee expressed as a

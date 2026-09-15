@@ -1083,9 +1083,12 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
     /// <summary>
     /// What came back when the sweep asked Square about one order.
     /// <c>Order</c> — Square answered with an order we could read.
-    /// <c>NotFound</c> — 404: Square holds no such order at all.
-    /// <c>Unreachable</c> — rate limit, rotated token, 5xx, or a 2xx whose body
-    /// was not the shape we parse. We learned NOTHING about payment.
+    /// <c>NotFound</c> — 404: Square holds no such order at all. Note that this
+    /// is only evidence about OUR merchant if the run also proved it can see our
+    /// merchant — see <see cref="SquareAnswered"/>.
+    /// <c>Unreachable</c> — rate limit, rotated token, 5xx, a 2xx whose body was
+    /// not the shape we parse, or an order object carrying no payment signal at
+    /// all. We learned NOTHING about payment.
     /// </summary>
     internal enum SquareReply { Order, NotFound, Unreachable }
 
@@ -1104,22 +1107,67 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
     /// this answer, so an order we could not ask about simply stays open and is
     /// asked again next run.
     ///
-    /// A 404 counts as established: Square has no record of the order, so no
-    /// tender can exist against it and there is no payment to bury. (The one way
-    /// that reading is wrong is a token pointing at a different merchant, where
-    /// every order 404s — but then the money is at that other merchant and no
-    /// pass here could ever have found it either.)
+    /// A 404 counts as established ONLY when this run also read at least one real
+    /// order back from Square (<paramref name="squareAnswered"/>). Read the
+    /// corrected reasoning on <see cref="SquareAnswered"/> before relaxing that:
+    /// the earlier version of this comment claimed a wrong-merchant token put the
+    /// money out of reach anyway, and that is simply false.
     /// </summary>
-    internal static bool VerifiedUnpaid(SquareReply reply, bool paid)
-        => reply == SquareReply.NotFound || (reply == SquareReply.Order && !paid);
+    internal static bool VerifiedUnpaid(SquareReply reply, bool paid, bool squareAnswered)
+        => (reply == SquareReply.NotFound && squareAnswered)
+        || (reply == SquareReply.Order && !paid);
+
+    /// <summary>
+    /// CORROBORATION, and the reason a 404 is not self-certifying.
+    ///
+    /// A credential pointed at the wrong merchant — a sandbox token in
+    /// production, a re-created application, a location change after a migration
+    /// — does not move anybody's money. Our buyers' orders and their payments stay
+    /// exactly where they are. Only our ability to SEE them moves, and what we see
+    /// instead is a 404 on every single call.
+    ///
+    /// That mattered because the sweep trusted a 404 twice over: once as proof
+    /// the order was never paid (so pass 2 closed it), and again as proof the
+    /// payment link was gone (so pass 3 stamped link_deleted_at on it). A row that
+    /// is both closed AND stamped matches neither arm of the backlog window, so it
+    /// is unreachable by every pass, permanently — including after somebody fixes
+    /// the credential. One configuration mistake, applied silently to every aged
+    /// order, with zero errors and a clean-looking report.
+    ///
+    /// So: one readable order anywhere in the run is the proof that our credential
+    /// can see our merchant, and a healthy run essentially never fails to get one.
+    /// Without it, no 404 closes anything and no delete is attempted — and the
+    /// run says so out loud (see <see cref="LooksLikeWrongMerchant"/>), which is
+    /// the only live misconfiguration alarm this system has.
+    ///
+    /// The cost is one quiet run's worth of delay in the genuinely rare case where
+    /// every order in a window really has been forgotten by Square. It is retried
+    /// next run, alongside orders that do answer.
+    /// </summary>
+    internal static bool SquareAnswered(IEnumerable<OrderCheck> checks)
+        => checks.Any(c => c.Reply == SquareReply.Order);
+
+    /// <summary>
+    /// The alarm: we asked Square about real orders, Square answered about some of
+    /// them, and every one of those answers was "no such order". That is not a
+    /// state our own data can produce — we only ever ask about orders we created —
+    /// so it means the credential is looking at somebody else's merchant.
+    /// </summary>
+    internal static bool LooksLikeWrongMerchant(IEnumerable<OrderCheck> checks)
+        => checks.Any(c => c.Reply == SquareReply.NotFound) && !SquareAnswered(checks);
 
     /// <summary>
     /// The orders pass 2 is allowed to consider closing: the ones pass 1 proved
-    /// carry no payment. Everything else — unreachable, malformed, or paid — is
-    /// left open for the next run, which is the whole point.
+    /// carry no payment. Everything else — unreachable, malformed, paid, or 404ed
+    /// by a run that never once reached our own merchant — is left open for the
+    /// next run, which is the whole point.
     /// </summary>
-    internal static List<string> ClosableOrderIds(IEnumerable<OrderCheck> checks)
-        => checks.Where(c => VerifiedUnpaid(c.Reply, c.Paid)).Select(c => c.OrderId).Distinct(StringComparer.Ordinal).ToList();
+    internal static List<string> ClosableOrderIds(IReadOnlyCollection<OrderCheck> checks)
+    {
+        bool answered = SquareAnswered(checks);
+        return checks.Where(c => VerifiedUnpaid(c.Reply, c.Paid, answered))
+            .Select(c => c.OrderId).Distinct(StringComparer.Ordinal).ToList();
+    }
 
     /// <summary>
     /// The one rule the Square-facing pass turns on, pulled out so it can be
@@ -1129,9 +1177,18 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
     /// (CancelBoxInvoice) and never by a sweep — closing one here would strand a
     /// real customer holding a real invoice we emailed them, and leave the box
     /// drafted with nothing pointing at it.
+    ///
+    /// PAID IS CHECKED FIRST, AND THAT ORDER IS LOAD-BEARING. CANCELED-and-paid is
+    /// a contradiction Square should not produce, but if it does, the cancel
+    /// branch would write link_deleted_at — and since this fix round made that
+    /// stamp the thing that takes a row OUT of the backlog recovery window, a
+    /// stamped row is a row no pass can ever look at again. Money first: send it
+    /// to Heal, where fulfilment either sells the boxes or flags the refund the
+    /// buyer is owed, and where the caller logs the contradiction at error.
+    /// Nothing stamps a row dead while Square says there is money on it.
     /// </summary>
     internal static ReconcileVerdict VerdictFor(string? squareState, bool paid, string? kind)
-        => squareState != "CANCELED" && paid ? ReconcileVerdict.Heal
+        => paid ? ReconcileVerdict.Heal
          : squareState == "CANCELED" && kind == "link" ? ReconcileVerdict.CancelLink
          : ReconcileVerdict.StillOpen;
 
@@ -1185,9 +1242,21 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
     /// The backlog half of pass 1's window: everything that could be hiding a
     /// payment nothing else will ever look at again.
     ///
-    /// Two sources, both deliberate. AGED OPEN ORDERS, because a newest-first
-    /// window starves its far end and an invoice order is never closed by any
-    /// pass, so without this an invoice that drifts past the cap can never heal.
+    /// Two sources, both deliberate. OPEN ORDERS OF ANY AGE, because a
+    /// newest-first window starves its far end and an invoice order is never
+    /// closed by any pass, so without this an invoice that drifts past the cap can
+    /// never heal. NOT just aged ones: this used to require created_at older than
+    /// the link age limit, which left a gap — during a burst, an order a few days
+    /// old sitting outside the newest-first half was asked about by NEITHER half,
+    /// so a missed notification on it waited until it aged in. The cost of closing
+    /// the gap is that the aged rows now share the sample with the young ones; the
+    /// population is the open set either way, and the young ones were the half
+    /// with a deadline, not the half that could be locked out forever. It also
+    /// means this half can now draw a row the newest-first half already took, and
+    /// a duplicate is dropped rather than replaced, so a run can spend fewer than
+    /// its full budget. That waste is self-limiting: the chance of collision is
+    /// this window over the open set, so it is only material when the open set is
+    /// small enough that both halves together cover all of it anyway.
     /// And CLOSED LINKS WHOSE DELETE SQUARE NEVER CONFIRMED, because that queue
     /// is precisely where a wrongly closed, genuinely paid order surfaces:
     /// Square will not cancel the link of an order that was paid, so the row
@@ -1206,9 +1275,22 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
     /// </summary>
     internal const string ReconcileBacklogSql = @"
 SELECT TOP (@cap) square_order_id, kind, status FROM dbo.checkout_orders
-WHERE (status = 'open' AND created_at < DATEADD(DAY, -@ageDays, SYSUTCDATETIME()))
+WHERE status = 'open'
    OR (status = 'canceled' AND kind = 'link' AND link_deleted_at IS NULL)
 ORDER BY NEWID()";
+
+    /// <summary>
+    /// How big the standing unconfirmed-delete queue may get before the sweep says
+    /// so. A link that is unpaid, not cancelled at Square, and permanently
+    /// unconfirmable never leaves any set — sampling stops it BLOCKING the queue
+    /// but does not give it a terminal state, so these accumulate and dilute both
+    /// samples, which is felt as healing latency on a genuinely paid, wrongly
+    /// closed order. A terminal state needs a per-row attempt counter and this task
+    /// may not touch the schema, so the queue is made VISIBLE instead: past this
+    /// many rows the sample can no longer reach the whole queue in one run, and
+    /// that is the moment worth a warning rather than the moment it hurts.
+    /// </summary>
+    public const int ReconcileRetireQueueWarnAt = ReconcileBacklogWindow;
 
     /// <summary>
     /// Pass 2's close, and the one statement in this sweep that can bury a
@@ -1276,10 +1358,23 @@ WHERE o.status = 'open' AND o.kind = 'link'
     ///
     /// NOTHING SQUARE DOES CAN ABORT THIS RUN. Up to eighty calls a run makes a
     /// 429 ordinary, and a rotated token or a 5xx does the same thing; each is
-    /// contained to the one order that caused it. The refund replay is pure
-    /// database work and runs whatever Square did — it used to be the pass that
-    /// got skipped, because an unhandled throw returned the whole function as an
-    /// error, which on an unattended schedule is a silent dead sweep.
+    /// contained to the one order that caused it, and the refund replay — pure
+    /// database work — still runs. It used to be the pass that got skipped,
+    /// because an unhandled throw returned the whole function as an error, which
+    /// on an unattended schedule is a silent dead sweep.
+    ///
+    /// A HOST SHUTDOWN IS THE ONE THING THAT DOES ABORT IT, and that is deliberate
+    /// rather than incidental. Cancellation reaches every database call in here,
+    /// so once the token is tripped the next command would throw out of the sweep
+    /// anyway; pass 1 therefore stops and the run returns 503 having done only
+    /// what it had already committed. Every pass is idempotent, so the next run
+    /// picks it all up. Do not describe this as "Square cannot abort the run, and
+    /// neither can anything else" — an earlier comment here did, and it was wrong.
+    ///
+    /// AND NOTHING IS CLOSED OR DELETED BY A RUN THAT NEVER REACHED OUR OWN
+    /// MERCHANT. A credential pointing at the wrong Square account 404s every
+    /// call, and a 404 was trusted twice — as proof of non-payment and as proof
+    /// the link was gone. See <see cref="SquareAnswered"/>.
     /// </summary>
     [Function("SquareReconcile")]
     public async Task<IActionResult> Reconcile(
@@ -1306,23 +1401,27 @@ SELECT TOP (@cap) square_order_id, kind, status FROM dbo.checkout_orders
 WHERE status = 'open' ORDER BY created_at DESC",
             new { cap = ReconcileFreshWindow }, cancellationToken: ct))) Take(r);
         foreach (var r in await conn.QueryAsync(new CommandDefinition(ReconcileBacklogSql,
-            new { cap = ReconcileBacklogWindow, ageDays = ReconcileLinkMaxAgeDays }, cancellationToken: ct))) Take(r);
+            new { cap = ReconcileBacklogWindow }, cancellationToken: ct))) Take(r);
         int closedRechecked = window.Count(w => w.Status == "canceled");
 
         var checks = new List<OrderCheck>();
-        int healed = 0, reopened = 0, canceledAtSquare = 0, stillOpen = 0, squareErrors = 0;
+        int healed = 0, paidNothingSold = 0, reopened = 0, canceledAtSquare = 0, stillOpen = 0, squareErrors = 0;
         foreach (var o in window)
         {
-            // A host shutdown stops us making more calls; it does not skip the
-            // database-only pass below.
+            // A host shutdown ends the run, here and below. Cancellation reaches
+            // every database call in this method, so there is no "carry on with
+            // the database-only passes" to be had — the next command would throw
+            // out of the sweep. Stop cleanly and say so instead.
             if (ct.IsCancellationRequested) break;
             try
             {
                 using var doc = await _square.RetrieveOrderAsync(o.OrderId, ct);
                 if (doc == null)
                 {
-                    // 404 — Square holds no such order, so nothing can have been
-                    // paid against it and closing our row buries nothing.
+                    // 404 — Square holds no such order. That is only evidence about
+                    // OUR merchant if this run also read a real order back from
+                    // Square; VerifiedUnpaid applies that corroboration, and a run
+                    // where every call 404s closes nothing and deletes nothing.
                     checks.Add(new OrderCheck(o.OrderId, SquareReply.NotFound, false));
                     if (o.Status != "canceled") stillOpen++;
                     continue;
@@ -1341,7 +1440,21 @@ WHERE status = 'open' ORDER BY created_at DESC",
                 }
 
                 string? state = el.TryGetProperty("state", out var st) ? st.GetString() : null;
-                bool paid = SquareService.IsOrderPaid(el);
+                var signal = SquareService.PaymentOf(el);
+                if (signal == SquareService.PaymentSignal.Unknown)
+                {
+                    // An order object carrying neither a tenders array nor a
+                    // net_amount_due_money — a truncated body, a proxy that mangled
+                    // the response, an empty object. The same rule as the missing
+                    // order key one level up: a response we could not understand
+                    // tells us nothing about payment, so it is unverified and
+                    // nothing is closed on it. It is NOT "verified unpaid".
+                    checks.Add(new OrderCheck(o.OrderId, SquareReply.Unreachable, false));
+                    squareErrors++;
+                    _log.LogWarning("SquareReconcile: Square's order object for {OrderId} carries no payment signal (no tenders, no net_amount_due_money) — treated as unverified; nothing is closed on it this run", o.OrderId);
+                    continue;
+                }
+                bool paid = signal == SquareService.PaymentSignal.Paid;
                 checks.Add(new OrderCheck(o.OrderId, SquareReply.Order, paid));
 
                 switch (VerdictFor(state, paid, o.Kind))
@@ -1355,7 +1468,6 @@ WHERE status = 'open' ORDER BY created_at DESC",
                         var r = await _fulfill.FulfillOrderAsync(conn, o.OrderId, tenderPayment ?? $"reconciled-{o.OrderId}", amt, null, "reconcile", ct);
                         if (r.Outcome == "fulfilled")
                         {
-                            healed++;
                             // Healing a CANCELED row is the recovery of a charge some
                             // earlier run — or a staff cancel — closed while the money
                             // was already at Square. It is louder than an ordinary heal
@@ -1363,14 +1475,43 @@ WHERE status = 'open' ORDER BY created_at DESC",
                             // in which case fulfilment has just flagged a refund the
                             // buyer is genuinely owed (RefundDue).
                             if (o.Status == "canceled") reopened++;
+
+                            // Square says CANCELED and Square says paid, at the same
+                            // time. VerdictFor sends that here rather than to the cancel
+                            // branch precisely so the row is never stamped dead with
+                            // money on it — but it is a contradiction, so say it.
+                            if (state == "CANCELED")
+                                _log.LogError(
+                                    "SquareReconcile: order {OrderId} is CANCELED at Square and PAID at Square at the same time — fulfilled it rather than retiring the link, and left the link unstamped so it stays in the recovery window. Needs a human.",
+                                    o.OrderId);
+
+                            // "Healed" has to mean the sweep delivered something. A
+                            // single-box order whose box was deleted fulfils with Sold
+                            // = 0: we took the money and there is nothing to hand over,
+                            // which is a full refund owed, not a repair. Counting that
+                            // as a heal puts the one number a person reads first on the
+                            // wrong side of the ledger.
+                            //
                             // Sold counts every box this order owns; NewlySold only the ones
                             // THIS call moved. On a later sweep over an order an earlier one
                             // already healed, Sold still reads N while NewlySold reads 0 —
                             // report both, or an ordinary no-op sweep looks like it healed the
                             // same order over and over and a real incident gets dismissed.
-                            _log.Log(o.Status == "canceled" ? LogLevel.Error : LogLevel.Warning,
-                                "SquareReconcile: healed missed webhook — order {OrderId} (our row said {Was}): {Sold} sold ({New} newly), {Unav} unavailable, refund due {Due}c",
-                                o.OrderId, o.Status, r.Sold, r.NewlySold, r.Unavailable, r.RefundDueCents);
+                            if (r.Sold == 0)
+                            {
+                                paidNothingSold++;
+                                _log.LogError(
+                                    "SquareReconcile: order {OrderId} was PAID at Square but NOTHING could be sold (our row said {Was}): 0 sold, {Unav} unavailable, full refund due {Due}c. This is not a heal — the buyer is owed their money back.",
+                                    o.OrderId, o.Status, r.Unavailable, r.RefundDueCents);
+                            }
+                            else
+                            {
+                                healed++;
+                                _log.Log(o.Status == "canceled" ? LogLevel.Error : LogLevel.Warning,
+                                    "SquareReconcile: healed missed webhook — order {OrderId} (our row said {Was}): {Sold} sold ({New} newly), {Unav} unavailable{Partial}, refund due {Due}c",
+                                    o.OrderId, o.Status, r.Sold, r.NewlySold, r.Unavailable,
+                                    r.Unavailable > 0 ? " — PARTIAL, a refund is owed on the rest" : "", r.RefundDueCents);
+                            }
                         }
                         else
                         {
@@ -1429,6 +1570,34 @@ WHERE square_order_id = @oid AND status <> 'paid'",
             }
         }
 
+        // ---- The run's own health, before anything acts on it. ----
+        // A host shutdown stops the sweep here rather than three database calls
+        // later with an OperationCanceledException nobody asked for. Everything
+        // pass 1 committed is committed; every pass is idempotent; the next run
+        // does the rest.
+        if (ct.IsCancellationRequested)
+        {
+            _log.LogWarning("SquareReconcile: the host is shutting down — the sweep stopped after asking Square about {Asked} of {Window} order(s). Nothing was closed, deleted or replayed this run; the next run picks it up.",
+                checks.Count, window.Count);
+            return new ObjectResult(new
+            {
+                aborted = "host shutdown", asked = checks.Count, window = window.Count,
+                healed, paidNothingSold, reopened, canceledAtSquare, stillOpen, squareErrors,
+            })
+            { StatusCode = 503 };
+        }
+
+        // THE MISCONFIGURATION ALARM. Every order Square answered about came back
+        // "no such order" — we only ever ask about orders we created, so our own
+        // data cannot produce that. The credential is looking at another merchant,
+        // and our buyers' money is sitting untouched at ours where this run cannot
+        // see it. Nothing below may close or delete on that evidence.
+        bool squareAnswered = SquareAnswered(checks);
+        if (LooksLikeWrongMerchant(checks))
+            _log.LogError(
+                "SquareReconcile: EVERY one of the {Asked} order(s) Square answered about this run came back 404, and not one readable order came back with them. That is what a token pointed at the wrong Square merchant or location looks like — the orders and the payments are still at ours, we just cannot see them. NOTHING was closed and NO link was deleted this run. Check SQUARE_ENVIRONMENT, the access token and the location id.",
+                checks.Count(c => c.Reply == SquareReply.NotFound));
+
         // ---- 2. Close on database state, restricted to what pass 1 verified. ----
         var closable = ClosableOrderIds(checks);
         var ruleCanceled = closable.Count == 0
@@ -1447,22 +1616,57 @@ WHERE square_order_id = @oid AND status <> 'paid'",
         // RetireLinksAsync stamps link_deleted_at only where Square CONFIRMED the
         // delete, and never throws, so the count is read back from the database
         // rather than from what the calls appeared to return.
-        var retire = new List<CanceledLink>(ruleCanceled);
-        var retireIds = new HashSet<string>(retire.Select(l => l.OrderId), StringComparer.Ordinal);
-        if (retire.Count < ReconcileMaxSquareCalls)
-            foreach (var r in await conn.QueryAsync(new CommandDefinition(@"
+        //
+        // AND NOT AT ALL IF THIS RUN NEVER REACHED OUR OWN MERCHANT. A delete that
+        // 404s is read as confirmation, so at the wrong merchant every delete
+        // "succeeds" and stamps link_deleted_at — which is what takes a row out of
+        // the backlog recovery window for good. The rows in this queue are exactly
+        // the ones a paid-but-closed order hides in, so they are the last rows that
+        // may be retired on an unverified 404. No corroboration, no deletes.
+        // (Skipping costs one run of a dead link staying payable; it is retried
+        // every run. Note this also skips on a run where every Square call failed
+        // outright, which is right for the same reason and costs the same.)
+        // The guard is around BOTH sources on purpose, not just the sample. It
+        // would be true today to guard only the sample — with no corroboration
+        // pass 2 closes nothing, so ruleCanceled is empty anyway — but that makes
+        // the safety of this pass depend on a property of a different pass, which
+        // is exactly the kind of reasoning this round exists to stop trusting.
+        var retire = new List<CanceledLink>();
+        if (squareAnswered)
+        {
+            retire.AddRange(ruleCanceled);
+            var retireIds = new HashSet<string>(retire.Select(l => l.OrderId), StringComparer.Ordinal);
+            if (retire.Count < ReconcileMaxSquareCalls)
+                foreach (var r in await conn.QueryAsync(new CommandDefinition(@"
 SELECT TOP (@cap) square_order_id, square_link_id FROM dbo.checkout_orders
 WHERE status = 'canceled' AND kind = 'link' AND link_deleted_at IS NULL
 ORDER BY NEWID()", new { cap = ReconcileMaxSquareCalls }, cancellationToken: ct)))
-            {
-                if (retire.Count >= ReconcileMaxSquareCalls) break;
-                if (retireIds.Add((string)r.square_order_id))
-                    retire.Add(new CanceledLink((string)r.square_order_id, (string?)r.square_link_id));
-            }
+                {
+                    if (retire.Count >= ReconcileMaxSquareCalls) break;
+                    if (retireIds.Add((string)r.square_order_id))
+                        retire.Add(new CanceledLink((string)r.square_order_id, (string?)r.square_link_id));
+                }
+        }
         await _fulfill.RetireLinksAsync(conn, retire, ct);
         int linksDeleted = retire.Count == 0 ? 0 : await conn.ExecuteScalarAsync<int>(new CommandDefinition(
             "SELECT COUNT(*) FROM dbo.checkout_orders WHERE square_order_id IN @ids AND link_deleted_at IS NOT NULL",
             new { ids = retire.Select(p => p.OrderId).ToArray() }, cancellationToken: ct));
+
+        // The queue this pass samples, measured. A link that is unpaid, not
+        // cancelled at Square and permanently unconfirmable never leaves it — the
+        // random sample stops it blocking the queue but gives it no terminal
+        // state, so the pile grows and dilutes both this sample and the backlog
+        // window. The thing it dilutes is the recovery latency for a genuinely
+        // paid, wrongly closed order, so it has to be visible before it matters
+        // rather than after. A real terminal state wants an attempt counter on the
+        // row, which is a schema change this task may not make.
+        int retireQueue = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT COUNT(*) FROM dbo.checkout_orders WHERE status = 'canceled' AND kind = 'link' AND link_deleted_at IS NULL",
+            cancellationToken: ct));
+        if (retireQueue > ReconcileRetireQueueWarnAt)
+            _log.LogWarning(
+                "SquareReconcile: {Queue} canceled link(s) are still waiting for Square to confirm a delete, more than the {Window}-row backlog window can reach in one run. Every one of them dilutes the sample that finds a wrongly closed paid order, and they have no terminal state — look for links Square will never confirm and clear them by hand.",
+                retireQueue, ReconcileRetireQueueWarnAt);
 
         // ---- 4. Orphaned refunds. ----
         //    A refund can arrive before the payment it belongs to, or for a
@@ -1496,20 +1700,35 @@ JOIN dbo.payment_refunds r ON r.square_payment_id = t.square_payment_id
 ORDER BY r.square_payment_id, r.created_at, r.square_refund_id",
             new { cap = ReconcileMaxRefundReplays }, cancellationToken: ct))).ToList();
 
-        int refundsApplied = 0;
+        int refundsApplied = 0, refundErrors = 0;
         long refundCentsApplied = 0;
         foreach (var plan in PlanRefundReplay(orphanRows))
         {
-            // The guard inside ApplyRecordedRefundAsync is what makes this safe on a
-            // schedule: it refuses to push refunded_cents past the total of the
-            // refunds actually recorded, so a second sweep moves nothing.
-            if (await _fulfill.ApplyRecordedRefundAsync(conn, plan.PaymentId, plan.AmountCents, ct) > 0)
+            // Contained per payment, for the same reason pass 1's loop is: these
+            // payments are independent of one another, so one deadlock or one bad
+            // row must not skip the forty behind it — and must not skip the
+            // needs_refund count below, which is the number staff act on. A host
+            // shutdown still ends the run; it is not this loop's to swallow.
+            try
             {
-                refundsApplied += plan.RefundCount;
-                refundCentsApplied += plan.AmountCents;
-                _log.LogWarning(
-                    "SquareReconcile: applied {Cents}c of refunds recorded against payment {PaymentId} that had never reached its total ({Rows} refund row(s)) — our books and Square agree again",
-                    plan.AmountCents, plan.PaymentId, plan.RefundCount);
+                // The guard inside ApplyRecordedRefundAsync is what makes this safe on a
+                // schedule: it refuses to push refunded_cents past the total of the
+                // refunds actually recorded, so a second sweep moves nothing.
+                if (await _fulfill.ApplyRecordedRefundAsync(conn, plan.PaymentId, plan.AmountCents, ct) > 0)
+                {
+                    refundsApplied += plan.RefundCount;
+                    refundCentsApplied += plan.AmountCents;
+                    _log.LogWarning(
+                        "SquareReconcile: applied {Cents}c of refunds recorded against payment {PaymentId} that had never reached its total ({Rows} refund row(s)) — our books and Square agree again",
+                        plan.AmountCents, plan.PaymentId, plan.RefundCount);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                refundErrors++;
+                _log.LogError(ex,
+                    "SquareReconcile: could not apply {Cents}c of recorded refunds to payment {PaymentId} — our books still under-state what Square refunded on it; it is retried next run",
+                    plan.AmountCents, plan.PaymentId);
             }
         }
 
@@ -1526,6 +1745,14 @@ ORDER BY r.square_payment_id, r.created_at, r.square_refund_id",
             // re-asked about, how many of those turned out to be paid after all,
             // and how many orders Square would not answer for.
             closedRechecked, reopened, squareErrors,
+            // healed means boxes were handed over. paidNothingSold means we took
+            // the money and had nothing left to sell — a full refund owed, not a
+            // repair, and never folded into healed.
+            paidNothingSold, refundErrors,
+            // The standing unconfirmed-delete queue, and whether this run had any
+            // proof at all that our credential can see our own merchant. A false
+            // squareAnswered with a non-zero window is the wrong-merchant alarm.
+            retireQueue, squareAnswered,
         });
     }
 }

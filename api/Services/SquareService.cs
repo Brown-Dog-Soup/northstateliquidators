@@ -213,19 +213,45 @@ public sealed class SquareService
     }
 
     /// <summary>
+    /// What one order object says about its own money.
+    /// <c>Paid</c> / <c>Unpaid</c> are positive readings. <c>Unknown</c> means the
+    /// object carried neither signal and we learned nothing — see
+    /// <see cref="PaymentOf"/> for why that is not the same as unpaid.
+    /// </summary>
+    public enum PaymentSignal { Unknown, Paid, Unpaid }
+
+    /// <summary>
     /// "Paid" for a payment-link order. GOTCHA (Square docs): paid link orders
     /// go DRAFT -> OPEN and stay OPEN forever — never test state=="COMPLETED".
     /// Paid = tenders exist, or net_amount_due_money is zero.
+    ///
+    /// AND UNPAID IS NOT THE ABSENCE OF THOSE TWO KEYS. This used to return a
+    /// bare false when an order object carried neither, which made a truncated
+    /// body, a proxy-mangled response or an empty object read as positive proof
+    /// that nobody had paid — and a caller that closes orders on that reading
+    /// (SquareFunction.Reconcile) would bury the charge. A body with no order key
+    /// at all was already treated as unreachable; this is the same rule applied
+    /// one level down. Non-payment must be EVIDENCED: an empty tenders array, or
+    /// a net_amount_due_money above zero. Anything else is Unknown, and a caller
+    /// must treat Unknown exactly as it treats a 5xx.
     /// </summary>
-    public static bool IsOrderPaid(JsonElement order)
+    public static PaymentSignal PaymentOf(JsonElement order)
     {
-        if (order.TryGetProperty("tenders", out var tenders) &&
-            tenders.ValueKind == JsonValueKind.Array && tenders.GetArrayLength() > 0)
-            return true;
+        if (order.ValueKind != JsonValueKind.Object) return PaymentSignal.Unknown;
+
+        bool hasTenders = order.TryGetProperty("tenders", out var tenders) &&
+                          tenders.ValueKind == JsonValueKind.Array;
+        if (hasTenders && tenders.GetArrayLength() > 0) return PaymentSignal.Paid;
+
         if (order.TryGetProperty("net_amount_due_money", out var due) &&
-            due.TryGetProperty("amount", out var amt) && amt.GetInt64() == 0)
-            return true;
-        return false;
+            due.ValueKind == JsonValueKind.Object &&
+            due.TryGetProperty("amount", out var amt) &&
+            amt.ValueKind == JsonValueKind.Number)
+            return amt.GetInt64() == 0 ? PaymentSignal.Paid : PaymentSignal.Unpaid;
+
+        // An empty tenders array is Square saying, positively, that nothing has
+        // been tendered against this order. That is the ordinary unpaid link.
+        return hasTenders ? PaymentSignal.Unpaid : PaymentSignal.Unknown;
     }
 
     /// <summary>

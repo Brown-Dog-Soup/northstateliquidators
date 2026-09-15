@@ -6,6 +6,9 @@
 -- on). dbo.payments is the audit trail — one row per Square payment, with a
 -- UNIQUE square_payment_id so webhook retries/replays can never double-log.
 -- ----------------------------------------------------------------------------
+-- SUPERSEDED 2026-09: the manifests.checkout_* columns below are replaced by
+-- dbo.checkout_orders / checkout_order_boxes (db/cart-checkout.sql) and dropped
+-- by db/cart-checkout-drop.sql. Do NOT re-apply this file on prod.
 IF COL_LENGTH('dbo.manifests', 'checkout_link_id') IS NULL
     ALTER TABLE dbo.manifests ADD
         checkout_link_id    VARCHAR(64)    NULL,

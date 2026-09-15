@@ -470,6 +470,13 @@ FROM dbo.line_items WHERE manifest_id = @sid",
     /// (PATCH archived=true) is the safer default and is what the admin UI
     /// uses by default. This endpoint exists for the rare "scanned the wrong
     /// thing entirely, never want to see it again" cleanup.
+    ///
+    /// ONE thing is deliberately NOT deleted: the box's dbo.checkout_order_boxes
+    /// rows. Those are money — what a buyer was charged for this box — and they
+    /// are marked 'unavailable' and left behind so a payment that lands after
+    /// the delete is still owed a refund for it. See the comment at that
+    /// statement; the schema note on the missing foreign key
+    /// (db/cart-checkout.sql) describes the cleanup this route used to do.
     /// </summary>
     [Function("DeletePallet")]
     public async Task<IActionResult> Delete(
@@ -493,7 +500,36 @@ FROM dbo.line_items WHERE manifest_id = @sid",
                     return new ConflictObjectResult(new { error = "This box was sold through the website — archive it instead of deleting so the sale record stays intact." });
                 }
                 canceled = await _fulfill.CancelOpenLinksForBoxesAsync(conn, tx, new[] { id }, null);
-                await conn.ExecuteAsync("DELETE FROM dbo.checkout_order_boxes WHERE manifest_id = @id", new { id }, transaction: tx);
+
+                // RETAINED, not deleted, and this is the money line of the whole
+                // route. These rows are what a buyer paid for. Deleting them
+                // destroyed the only record that this box was ever on an order,
+                // and the hole it opened is not hypothetical: a three-box order
+                // whose Square link outlived the cancel above is still payable,
+                // and when it was paid, fulfilment's work list came back with two
+                // survivors, sold both, computed nothing owed for the third —
+                // there was no row left to owe anything for — and recorded the
+                // payment COMPLETED. The buyer paid for a box that no longer
+                // exists and nothing anywhere said so. The order total still
+                // carried its money; only the evidence was gone.
+                //
+                // Marked 'unavailable' the row survives the manifest, fulfilment's
+                // LEFT JOIN work list keeps it, and its price AND tax land in
+                // refund_due_cents with the payment flagged for refund — which is
+                // what the buyer is actually owed.
+                //
+                // WHERE outcome IS NULL, never a blanket SET: a row already
+                // 'sold' or 'unavailable' keeps its own outcome and its original
+                // fulfilled_at. 'sold' should be unreachable — the guard above
+                // refuses the delete — but that guard is an unlocked COUNT under
+                // read-committed snapshot, so a fulfilment committing between it
+                // and here would not be seen by it. The UPDATE's own write lock
+                // does see it, the predicate then matches nothing, and the sale
+                // record survives. Do not "simplify" this predicate away.
+                await conn.ExecuteAsync(@"
+UPDATE dbo.checkout_order_boxes
+SET outcome = 'unavailable', fulfilled_at = SYSUTCDATETIME()
+WHERE manifest_id = @id AND outcome IS NULL", new { id }, transaction: tx);
 
                 // manifest_history has an FK to manifests — clear the audit rows first.
                 await conn.ExecuteAsync(

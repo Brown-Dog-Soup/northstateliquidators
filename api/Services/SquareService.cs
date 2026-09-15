@@ -397,17 +397,76 @@ public sealed class SquareService
             pubInv.TryGetProperty("status", out var st) ? st.GetString() ?? "UNPAID" : "UNPAID");
     }
 
-    /// <summary>Cancel an unpaid invoice (fetches current version first).</summary>
+    /// <summary>
+    /// Is this the Square answer that means "there is nothing here left to
+    /// cancel"? Only two shapes qualify: the invoice is already CANCELED, or
+    /// Square holds no such invoice at all.
+    ///
+    /// Deliberately narrow, and PAID is deliberately NOT in it. An invoice
+    /// Square has taken money on must still fail loudly here, because the only
+    /// caller goes on to clear manifests.invoice_id — on a paid invoice that
+    /// quietly un-links a box from a real payment. "Cancelled" and "we never
+    /// had it" are the two states where clearing our row is the correct and
+    /// complete outcome; everything else is an error as before.
+    /// </summary>
+    internal static bool InvoiceAlreadyCanceled(string? invoiceStatus)
+        => string.Equals(invoiceStatus, "CANCELED", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Cancel an unpaid invoice (fetches current version first).
+    ///
+    /// TOLERATES AN INVOICE SQUARE HAS ALREADY CANCELLED, and that is a
+    /// correctness requirement of the caller, not politeness. CancelBoxInvoice
+    /// calls Square FIRST and only then, in one transaction, closes the order
+    /// row and clears manifests.invoice_id. If that transaction fails — an Azure
+    /// SQL transient failover is routine — Square has cancelled and our box
+    /// still carries the invoice id. The retry re-enters here. While this threw
+    /// on an already-cancelled invoice the retry died before reaching any SQL,
+    /// the box stayed blocked behind its stale invoice_id and NO route could
+    /// clear it: the operator's only move was to edit the row by hand. Answering
+    /// "already cancelled = done" is what makes that retry terminate.
+    ///
+    /// A 404 counts the same way. If Square holds no such invoice then nothing
+    /// is payable against it, and our row pointing at it is precisely the stuck
+    /// state this exists to let the caller clear.
+    ///
+    /// The verdict is taken from the GET's status field and NOWHERE ELSE. The
+    /// obvious-looking alternative — sniff the failed cancel's error body for
+    /// the word "canceled" — was written and deleted: Square refuses a PAID
+    /// invoice with "Invoice with status PAID cannot be canceled", which
+    /// contains the word, so that sniff would swallow the one refusal that must
+    /// never be swallowed and let the caller clear invoice_id off a box with a
+    /// real payment behind it. The narrow cost of reading only the status is the
+    /// race where the invoice is cancelled BETWEEN our GET and our POST: that
+    /// POST still fails and still throws, but the operator's next retry re-reads
+    /// the status, sees CANCELED and completes. The dead end is still closed —
+    /// it just takes one more click in a case that needed one anyway.
+    /// </summary>
     public async Task CancelInvoiceAsync(string invoiceId, CancellationToken ct)
     {
         using var client = Client();
         var gResp = await client.GetAsync($"/v2/invoices/{Uri.EscapeDataString(invoiceId)}", ct);
+        if (gResp.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            _log.LogWarning("Square CancelInvoice {InvoiceId}: Square has no such invoice (404) — nothing to cancel, treating as done so the caller can clear our row", invoiceId);
+            return;
+        }
         var gBody = await gResp.Content.ReadAsStringAsync(ct);
         if (!gResp.IsSuccessStatusCode)
             throw new InvalidOperationException($"Square GetInvoice -> {(int)gResp.StatusCode}");
         int version;
+        string? invoiceStatus;
         using (var gDoc = JsonDocument.Parse(gBody))
-            version = gDoc.RootElement.GetProperty("invoice").GetProperty("version").GetInt32();
+        {
+            var inv = gDoc.RootElement.GetProperty("invoice");
+            version = inv.GetProperty("version").GetInt32();
+            invoiceStatus = inv.TryGetProperty("status", out var s) ? s.GetString() : null;
+        }
+        if (InvoiceAlreadyCanceled(invoiceStatus))
+        {
+            _log.LogInformation("Square CancelInvoice {InvoiceId}: already CANCELED at Square — treating as done (this is the retry of a cancel whose database half failed)", invoiceId);
+            return;
+        }
 
         var cResp = await client.PostAsync($"/v2/invoices/{Uri.EscapeDataString(invoiceId)}/cancel",
             new StringContent(JsonSerializer.Serialize(new { version }), Encoding.UTF8, "application/json"), ct);

@@ -59,6 +59,25 @@ public class SchemaContractTests
     private static bool HasDefault(string s) => Regex.IsMatch(s, @"\bDEFAULT\b", RegexOptions.IgnoreCase);
 
     /// <summary>
+    /// The text BETWEEN the parentheses of CREATE TABLE dbo.{table} — columns
+    /// and table-level constraints, and nothing from any other table.
+    ///
+    /// Everything that reads the schema goes through this, and that is the
+    /// point. The constraint reader used to scan the whole file for the first
+    /// CHECK (col IN (...)) it could find, so a table declared EARLIER with a
+    /// column of the same name — 'status' is not exactly rare — would silently
+    /// re-point the pin at somebody else's constraint and go on passing while
+    /// the one it exists to guard was narrowed underneath it.
+    /// </summary>
+    private static string CreateTableBody(string sql, string table)
+    {
+        var create = Regex.Match(sql, @"CREATE\s+TABLE\s+dbo\." + Regex.Escape(table) + @"\s*\((.*?)\n\s*\);",
+            RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        Assert.True(create.Success, $"No CREATE TABLE dbo.{table} found in {SchemaFile}.");
+        return create.Groups[1].Value;
+    }
+
+    /// <summary>
     /// Every column of <paramref name="table"/> that an INSERT is obliged to
     /// supply: NOT NULL and no DEFAULT. Reads the CREATE TABLE body and the
     /// re-runnable ALTER TABLE ... ADD lines — the latter because adding a column
@@ -76,11 +95,7 @@ public class SchemaContractTests
     {
         var required = new List<string>();
 
-        var create = Regex.Match(sql, @"CREATE\s+TABLE\s+dbo\." + Regex.Escape(table) + @"\s*\((.*?)\n\s*\);",
-            RegexOptions.Singleline | RegexOptions.IgnoreCase);
-        Assert.True(create.Success, $"No CREATE TABLE dbo.{table} found in {SchemaFile}.");
-
-        foreach (var raw in create.Groups[1].Value.Split('\n'))
+        foreach (var raw in CreateTableBody(sql, table).Split('\n'))
         {
             var line = Clean(raw);
             if (line.Length == 0) continue;
@@ -125,11 +140,18 @@ public class SchemaContractTests
         return found;
     }
 
-    /// <summary>The literals a CHECK (col IN ('a','b')) constraint permits.</summary>
-    private static List<string> AllowedValues(string sql, string column)
+    /// <summary>
+    /// The literals dbo.{table}'s own CHECK (col IN ('a','b')) constraint
+    /// permits. Scoped to that table's body — see <see cref="CreateTableBody"/>
+    /// for the re-pointing this prevents. A constraint moved out to an ALTER
+    /// TABLE fails here rather than falling back to a file-wide search: a pin
+    /// that quietly finds something else is worse than one that stops.
+    /// </summary>
+    internal static List<string> AllowedValues(string sql, string table, string column)
     {
-        var m = Regex.Match(sql, @"CHECK\s*\(\s*" + Regex.Escape(column) + @"\s+IN\s*\(([^)]*)\)\s*\)", RegexOptions.IgnoreCase);
-        Assert.True(m.Success, $"No CHECK ({column} IN (...)) constraint found in {SchemaFile}.");
+        var body = CreateTableBody(sql, table);
+        var m = Regex.Match(body, @"CHECK\s*\(\s*" + Regex.Escape(column) + @"\s+IN\s*\(([^)]*)\)\s*\)", RegexOptions.IgnoreCase);
+        Assert.True(m.Success, $"No CHECK ({column} IN (...)) constraint inside CREATE TABLE dbo.{table} in {SchemaFile}.");
         return Regex.Matches(m.Groups[1].Value, @"'([^']*)'").Select(x => x.Groups[1].Value).ToList();
     }
 
@@ -186,7 +208,83 @@ public class SchemaContractTests
     public void The_kind_and_status_constraints_still_allow_what_the_routes_write()
     {
         var sql = File.ReadAllText(Path.Combine(RepoRoot(), SchemaFile));
-        Assert.Equal(new[] { "link", "invoice" }, AllowedValues(sql, "kind"));
-        Assert.Equal(new[] { "open", "paid", "canceled" }, AllowedValues(sql, "status"));
+        Assert.Equal(new[] { "link", "invoice" }, AllowedValues(sql, "checkout_orders", "kind"));
+        Assert.Equal(new[] { "open", "paid", "canceled" }, AllowedValues(sql, "checkout_orders", "status"));
+    }
+
+    /// <summary>
+    /// The constraint reader, against a schema written to trip it: two tables,
+    /// each with a 'status' check, the DECOY DECLARED FIRST. Fed as a string
+    /// because the real db/cart-checkout.sql does not currently contain a second
+    /// such table — and a scoping guard that is only exercised by a file that
+    /// cannot exercise it is not a guard at all. The day someone adds one is
+    /// exactly the day the old file-wide search would have started quietly
+    /// pinning the wrong constraint.
+    /// </summary>
+    [Fact]
+    public void A_check_constraint_on_another_table_cannot_be_mistaken_for_ours()
+    {
+        const string twoTables = @"
+IF OBJECT_ID('dbo.decoy', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.decoy (
+        id     INT          NOT NULL,
+        status VARCHAR(16)  NOT NULL,
+        CONSTRAINT CK_decoy_status CHECK (status IN ('wrong','answer'))
+    );
+END;
+GO
+
+IF OBJECT_ID('dbo.checkout_orders', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.checkout_orders (
+        square_order_id VARCHAR(64) NOT NULL,
+        status          VARCHAR(16) NOT NULL CONSTRAINT DF_s DEFAULT 'open',
+        CONSTRAINT CK_checkout_orders_status CHECK (status IN ('open','paid','canceled'))
+    );
+END;
+GO
+";
+        Assert.Equal(new[] { "open", "paid", "canceled" }, AllowedValues(twoTables, "checkout_orders", "status"));
+        Assert.Equal(new[] { "wrong", "answer" }, AllowedValues(twoTables, "decoy", "status"));
+    }
+
+    /// <summary>
+    /// The INSERTs this file exists to guard, pinned BY FILE AND COUNT — the
+    /// other half of the anti-vacuity the column parse already has.
+    ///
+    /// Assert.NotEmpty(inserts) above is not that. It says some INSERT was found
+    /// somewhere under api/, which two of the three satisfy on their own. The
+    /// finder's pattern — INSERT INTO dbo.{table} ( up to the first close paren —
+    /// would miss a bracketed table name ([checkout_orders]), a column list
+    /// containing a parenthesis, or an INSERT with no column list at all. Reformat
+    /// the invoice route's statement into any of those and it drops silently out
+    /// of the scan while this file goes on reporting green off the other two.
+    /// That statement is the one whose failure mode is a real Square invoice
+    /// already emailed to a real customer with nothing on our side recording it,
+    /// so "we are still looking at it" has to be asserted, not assumed.
+    ///
+    /// Adding a genuinely new INSERT is expected to fail this test. Read the new
+    /// statement, satisfy yourself it names every mandatory column, and move the
+    /// number.
+    /// </summary>
+    [Theory]
+    [InlineData("checkout_orders")]
+    [InlineData("checkout_order_boxes")]
+    public void The_inserts_this_test_guards_are_all_still_being_found(string table)
+    {
+        var byFile = InsertsInto(RepoRoot(), table)
+            .GroupBy(i => i.File.Replace(Path.DirectorySeparatorChar, '/'))
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        // SquareFunction.cs holds two: the cart route's and the invoice route's.
+        // CheckoutFulfillment.cs holds the recovery path's one.
+        Assert.Equal(
+            new Dictionary<string, int>
+            {
+                ["api/Functions/SquareFunction.cs"] = 2,
+                ["api/Services/CheckoutFulfillment.cs"] = 1,
+            },
+            byFile);
     }
 }

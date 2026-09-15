@@ -79,7 +79,7 @@ WHERE NOT EXISTS (SELECT 1 FROM dbo.payments WHERE square_payment_id = @pid)",
                 }
 
                 var order = await conn.QueryFirstOrDefaultAsync(
-                    "SELECT kind, status, total_cents FROM dbo.checkout_orders WHERE square_order_id = @oid",
+                    "SELECT kind, status, total_cents, subtotal_cents FROM dbo.checkout_orders WHERE square_order_id = @oid",
                     new { oid = orderId }, transaction: tx);
 
                 if (order == null)
@@ -157,7 +157,7 @@ WHERE square_order_id = @oid",
                     _log.LogWarning("Fulfill: recovered order {OrderId} from {N} Square lines ({Derived} missing money, priced from the box instead)",
                         orderId, recovered.Lines.Count, derivedLines);
                     order = await conn.QueryFirstOrDefaultAsync(
-                        "SELECT kind, status, total_cents FROM dbo.checkout_orders WHERE square_order_id = @oid",
+                        "SELECT kind, status, total_cents, subtotal_cents FROM dbo.checkout_orders WHERE square_order_id = @oid",
                         new { oid = orderId }, transaction: tx);
                 }
 
@@ -177,6 +177,22 @@ WHERE square_order_id = @oid",
 
                 string kind = (string)order.kind;
                 string? orderStatus = (string?)order.status;
+
+                // A payment against an order WE had already closed. Until now the
+                // only status this method looked at was 'paid' (the split-tender
+                // test below), so this arrived looking exactly like an ordinary
+                // first payment on an open order and left no trace of the one
+                // thing that makes it interesting: something on our side — a
+                // staff cancel, a price change, a box sold elsewhere, a sweep —
+                // decided this order was dead while the link was still payable at
+                // Square, and it was paid anyway. The boxes have very likely moved
+                // on since, so the refund arithmetic below is the part that
+                // matters; this line is what tells whoever reads it WHY. Logged,
+                // not refused: the money is real and fulfilment is still the right
+                // thing to attempt.
+                if (orderStatus == "canceled")
+                    _log.LogError("Fulfill: payment {PaymentId} landed on order {OrderId}, which our row already had CANCELED — the link outlived our cancel and was paid. Fulfilling anyway; anything no longer available below is a refund the buyer is owed.",
+                        paymentId, orderId);
                 // ORDER BY manifest_id is deadlock safety, not cosmetics: every
                 // fulfilment locks the boxes of an order in the same sequence, so two
                 // concurrent orders that share a box queue behind one another instead
@@ -185,20 +201,33 @@ WHERE square_order_id = @oid",
                 // per box against a locked re-read inside the loop (see below).
                 //
                 // LEFT JOIN, and that is the money-safe direction, not a style
-                // choice. dbo.checkout_order_boxes has no FK to manifests on
-                // purpose, so a hard-deleted box leaves its order line behind. An
-                // inner join DROPPED that line from this list entirely: on a
+                // choice. dbo.checkout_order_boxes has no FK to manifests, so an
+                // order line can outlive the box it names — three ways, all of
+                // them real:
+                //   * PalletsFunction.Delete marks these rows 'unavailable' and
+                //     leaves them (it used to delete them, which is the hole this
+                //     join and that change close between them);
+                //   * ops scripts delete manifests and never touch order lines
+                //     (db/reset-test-inventory.sql, db/ghost-backstock-category-filter.sql);
+                //   * anything else that removes a manifest row by hand.
+                // An inner join DROPPED such a line from this list entirely: on a
                 // multi-box order whose link outlived our cancel, fulfilment would
                 // sell the survivors, compute nothing owed for the box that no
                 // longer exists, and record the payment COMPLETED — the buyer paid
-                // for a box they can never get and only a log warning on the
-                // amount mismatch marked it. Kept in the list, the row falls
-                // through the locked re-read below (which finds no manifest), is
-                // marked 'unavailable' and its money — price AND tax — is added to
-                // refundDue, which is what the buyer is actually owed. Its
-                // pallet_number comes back NULL: a deleted manifest has no BOX #
-                // to report, so it is omitted from the reported numbers while the
-                // counts and the refund total still include it (see AddPallet).
+                // for a box they can never get and NOTHING marked it. (Not even
+                // the amount-mismatch warning below: that compares the payment
+                // against the ORDER total, and the buyer paid the order total
+                // exactly.) Kept in the list, the row falls through the locked
+                // re-read below (which finds no manifest), is marked 'unavailable'
+                // and its money — price AND tax — is added to refundDue, which is
+                // what the buyer is actually owed. Its pallet_number comes back
+                // NULL: a deleted manifest has no BOX # to report, so it is
+                // omitted from the reported numbers while the counts and the
+                // refund total still include it (see AddPallet).
+                //
+                // This join can only defend a line that still EXISTS. The shape
+                // where the line itself is gone is caught by the goods-accounted
+                // backstop after the loop, which needs no line at all.
                 var boxes = (await conn.QueryAsync(@"
 SELECT b.manifest_id, b.amount_cents, b.tax_cents, b.outcome, m.pallet_number
 FROM dbo.checkout_order_boxes b LEFT JOIN dbo.manifests m ON m.id = b.manifest_id
@@ -317,6 +346,17 @@ WHERE id = @mid",
                 }
 
                 long total = (long)order.total_cents;
+
+                // THE BACKSTOP. Everything above reasons from the order lines we
+                // can see; this one asks whether they are all still there, and it
+                // needs no line to do it. The order's own goods figure still
+                // carries the money for a line that has since vanished — a
+                // hand-edit, an ops script, a row lost to something nobody
+                // anticipated — and without this, that shortfall is invisible: the
+                // buyer paid, the survivors sold, refundDue came out 0 and the
+                // payment recorded COMPLETED.
+                long unaccountedGoods = UnaccountedGoodsCents(
+                    (long)order.subtotal_cents, boxes.Select(b => (long)b.amount_cents));
                 // I1: a SECOND, distinct payment id against an order we already
                 // fulfilled. Every box reads 'sold' — sold by US, on the earlier
                 // payment — so nothing transitioned here and the naive arithmetic
@@ -326,28 +366,21 @@ WHERE id = @mid",
                 // automatically: clearing a flag is one click, silently keeping a
                 // double charge is not.
                 bool duplicateTender = newlySold == 0 && sold > 0 && orderStatus == "paid";
+                var verdict = DecidePaymentOutcome(duplicateTender, sold, refundDue, total, unaccountedGoods, amountCents);
+                refundDue = verdict.RefundDueCents;
                 if (duplicateTender)
-                {
-                    refundDue = amountCents ?? refundDue;
                     _log.LogError("Fulfill: payment {PaymentId} sold NOTHING new on order {OrderId}, already paid — possible double charge or split tender, flagged for review ({Amt}c)",
                         paymentId, orderId, amountCents);
-                }
-                else if (sold == 0 && refundDue > 0)
-                {
-                    // Nothing sold: there is no delivery to make either, so the
-                    // delivery fee and its own tax go back too. total_cents is
-                    // Square's total_money, so this is the whole payment.
-                    refundDue = total > 0 ? total : refundDue;
-                }
-                bool needsRefund = refundDue > 0 || duplicateTender;
-                string status = duplicateTender ? "REFUND_FLAGGED"
-                    : refundDue == 0 ? "COMPLETED"
-                    : (sold == 0 ? "REFUND_FLAGGED" : "PARTIAL_REFUND_FLAGGED");
+                if (unaccountedGoods > 0)
+                    _log.LogError(
+                        "Fulfill: order {OrderId} payment {PaymentId} is SHORT {Missing}c of goods — its {N} remaining line(s) account for {Accounted}c of a recorded {Recorded}c subtotal. A box this buyer paid for has no order line left at all, so nothing above could owe them for it. FLAGGED for a human; refund_due_cents now reads {Due}. Do not treat that as the bill — the line data is incomplete, so no figure computed from it is the whole debt. Work out what is owed from the Square receipt.",
+                        orderId, paymentId, unaccountedGoods, boxes.Count, (long)order.subtotal_cents - unaccountedGoods, (long)order.subtotal_cents,
+                        (object?)verdict.RecordedDueCents ?? "(unset, on purpose)");
                 Guid? single = boxes.Count == 1 ? (Guid)boxes[0].manifest_id : null;
                 await conn.ExecuteAsync(@"
 UPDATE dbo.payments SET manifest_id = @mid, refund_due_cents = @due, needs_refund = @flag, status = @status
 WHERE square_payment_id = @pid",
-                    new { mid = single, due = refundDue > 0 ? refundDue : (long?)null, flag = needsRefund, status, pid = paymentId },
+                    new { mid = single, due = verdict.RecordedDueCents, flag = verdict.NeedsRefund, status = verdict.Status, pid = paymentId },
                     transaction: tx);
                 await conn.ExecuteAsync(
                     "UPDATE dbo.checkout_orders SET status = 'paid', closed_at = SYSUTCDATETIME() WHERE square_order_id = @oid",
@@ -378,6 +411,129 @@ WHERE square_payment_id = @pid",
 
         await RetireLinksAsync(conn, canceled, ct);
         return result;
+    }
+
+    /// <summary>
+    /// How much of the order's recorded GOODS figure no surviving order line
+    /// accounts for. Zero means every cent of it is on a line fulfilment just
+    /// looked at; a positive number means at least one line the buyer paid for is
+    /// no longer in dbo.checkout_order_boxes at all.
+    ///
+    /// WHY GOODS AND NOT THE ORDER TOTAL, which is the obvious comparison and the
+    /// one the fix was asked for. The total is subtotal + tax + delivery, and
+    /// checking against it means reconstructing the tax and the delivery tax on
+    /// this side. Neither is ours to reconstruct. Delivery goes to Square as a
+    /// taxed service charge (SquarePayloads.CartLink), so checkout_orders.tax_cents
+    /// is Square's total_tax_money INCLUDING the tax on that charge, while the per
+    /// box tax_cents cover only the line items — the difference has to be guessed
+    /// at 7.25% and rounded, and Square's rounding is not ours to predict. A check
+    /// that is off by a cent on every delivery order is a check nobody reads.
+    /// The goods figure needs none of that: it is tax-free and delivery-free on
+    /// both sides.
+    ///
+    /// AND IT IS EXACT, on every path that writes these rows — this is what makes
+    /// a zero tolerance honest rather than optimistic:
+    ///   * cart link — subtotal is written as Square's total MINUS its tax MINUS
+    ///     its service charge, which is Square's own arithmetic on the very
+    ///     line amounts we sent and stored per box. Integers throughout.
+    ///   * cart link with no related_resources.orders — tax and delivery record
+    ///     as 0 and subtotal falls back to the sum of our own line amounts.
+    ///   * invoice — one box, subtotal written as the same figure as the line.
+    ///   * recovery, Square gave an order-level tax — subtotal is total - tax -
+    ///     delivery, the boxes are Square's own line amounts.
+    ///   * recovery, no order-level tax — subtotal is SET to SUM(amount_cents)
+    ///     over these very rows.
+    ///   * the pre-cart migration backfill (db/cart-checkout.sql) — writes the
+    ///     order and its single box from the same expression.
+    ///
+    /// THE ONE WAY IT CAN OVERSTATE, and it is why the caller only flags. On the
+    /// recovery path a line whose money Square did not return is priced from the
+    /// box's CURRENT ask instead. If that ask has dropped since the link was
+    /// minted, the stored line is smaller than the buyer's share of the subtotal
+    /// and this reads as a shortfall with nothing actually missing. That is not
+    /// rounding and no tolerance bounds it, so a positive answer here is a reason
+    /// to LOOK, never a figure to refund. The same call already logs "recovered
+    /// order ... N missing money", which is what a reader will find next to it.
+    ///
+    /// Negative differences are clamped to zero and never flag anything. They are
+    /// the harmless direction — lines summing to more than the recorded subtotal
+    /// is nobody owed anything — and they are how rows predating the
+    /// subtotal_cents column (added with DEFAULT 0) read. A legacy order whose
+    /// subtotal is 0 must not be reported as fully unaccounted for.
+    /// </summary>
+    internal static long UnaccountedGoodsCents(long recordedSubtotalCents, IEnumerable<long> lineAmountsCents)
+    {
+        long accounted = 0;
+        foreach (var a in lineAmountsCents) accounted += a;
+        long missing = recordedSubtotalCents - accounted;
+        return missing > 0 ? missing : 0;
+    }
+
+    /// <summary>
+    /// What we write on dbo.payments once the boxes have been walked: the refund
+    /// arithmetic, the attention flag and the status, in one place with no
+    /// database behind it so the decisions can be tested rather than described.
+    /// </summary>
+    /// <param name="RefundDueCents">What the lines say is owed — reported on
+    /// <see cref="FulfillResult"/> and logged.</param>
+    /// <param name="RecordedDueCents">What goes in payments.refund_due_cents, which
+    /// is NOT always the same number: see <see cref="DecidePaymentOutcome"/>.</param>
+    internal readonly record struct PaymentVerdict(long RefundDueCents, long? RecordedDueCents, bool NeedsRefund, string Status);
+
+    /// <summary>
+    /// The money decision, pure. Three inputs can each raise the attention flag
+    /// and they do not mean the same thing:
+    ///
+    /// duplicateTender — a second payment id on an order every box of which we
+    /// already sold. The whole of THIS payment is the candidate refund and it is
+    /// a complete figure, so it is recorded as owed.
+    ///
+    /// refundDueFromLines — the price and tax of the boxes this order could not
+    /// deliver. When nothing at all sold there is no delivery to make either, so
+    /// the whole order total goes back rather than just the goods.
+    ///
+    /// unaccountedGoodsCents — the backstop (see
+    /// <see cref="UnaccountedGoodsCents"/>). It raises the flag and it
+    /// deliberately does NOT raise refund_due_cents. Two reasons, and the second
+    /// is the one that matters:
+    ///
+    ///   1. The figure can overstate. Its one failure mode inflates it, and an
+    ///      inflated owed-figure is a figure a human might pay out. A person
+    ///      refunding an amount they can see on the Square receipt is a fine
+    ///      outcome; our books quoting them a number we cannot stand behind is
+    ///      not.
+    ///   2. Recording the SMALLER, line-derived figure instead would be worse
+    ///      than recording nothing. payments.needs_refund clears automatically
+    ///      once refunded_cents reaches COALESCE(refund_due_cents, amount_cents)
+    ///      — so quoting a debt we already know is incomplete would let a partial
+    ///      refund satisfy it and switch the flag off with money still owed.
+    ///      Leaving it NULL makes the whole payment the bar, which is the same
+    ///      "we decline to conclude anything from a number we do not have" this
+    ///      file applies to a payment of unknown amount.
+    ///
+    /// duplicateTender keeps its figure regardless: it is the payment amount, not
+    /// a sum over lines, so missing lines cannot make it incomplete.
+    /// </summary>
+    internal static PaymentVerdict DecidePaymentOutcome(
+        bool duplicateTender, int sold, long refundDueFromLines, long orderTotalCents,
+        long unaccountedGoodsCents, long? paymentAmountCents)
+    {
+        long refundDue = refundDueFromLines;
+        if (duplicateTender)
+            refundDue = paymentAmountCents ?? refundDue;
+        else if (sold == 0 && refundDue > 0)
+            refundDue = orderTotalCents > 0 ? orderTotalCents : refundDue;
+
+        bool linesMissing = unaccountedGoodsCents > 0;
+        bool needsRefund = refundDue > 0 || duplicateTender || linesMissing;
+        string status = duplicateTender ? "REFUND_FLAGGED"
+            : refundDue > 0 ? (sold == 0 ? "REFUND_FLAGGED" : "PARTIAL_REFUND_FLAGGED")
+            : linesMissing ? "PARTIAL_REFUND_FLAGGED"
+            : "COMPLETED";
+
+        long? recorded = refundDue > 0 ? refundDue : (long?)null;
+        if (linesMissing && !duplicateTender) recorded = null;
+        return new PaymentVerdict(refundDue, recorded, needsRefund, status);
     }
 
     /// <summary>

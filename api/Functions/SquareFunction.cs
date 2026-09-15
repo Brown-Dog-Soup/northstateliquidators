@@ -792,11 +792,17 @@ INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents
         // to be a single statement and could not land half-applied; as an
         // unwrapped two-statement batch each one auto-commits on its own, and an
         // Azure SQL transient failover between them (routine, not exotic) would
-        // close the order row while the box still carried its invoice id. The
-        // retry is then a dead end: cancelling an already-cancelled invoice at
-        // Square returns an error and throws before ever reaching this SQL, so the
-        // box stays blocked — no route can clear it — until someone edits the
-        // row by hand. Both land or neither does.
+        // close the order row while the box still carried its invoice id. Both
+        // land or neither does.
+        //
+        // That alone only NARROWED the dead end, it did not close it. Square is
+        // called before this transaction and is not rolled back with it, so a
+        // transaction that fails entirely still leaves the invoice cancelled at
+        // Square and the id on our box. Closing it took the other half:
+        // CancelInvoiceAsync now answers "already CANCELED at Square" (and 404)
+        // as success rather than throwing, so this retry reaches the SQL below
+        // and clears the box. Do not make that call strict again without also
+        // moving it inside — or after — this transaction.
         using (var tx = conn.BeginTransaction())
         {
             await conn.ExecuteAsync(@"

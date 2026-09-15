@@ -660,11 +660,12 @@ WHERE square_payment_id = @pid
 
     /// <summary>
     /// POST /api/pallets/{id}/invoice — wholesale flow: email a real Square
-    /// invoice (card or ACH) for this box. The invoice's order_id lands in the
-    /// same checkout_order_id column the webhook matches, so payment.updated
-    /// COMPLETED marks the box SOLD with no new logic (ACH-safe: PENDING
-    /// doesn't sell the box; a failed ACH never completes). Invoicing retires
-    /// any public Buy link and parks the box in draft (reserved, off-site).
+    /// invoice (card or ACH) for this box. The invoice's Square order is
+    /// recorded in dbo.checkout_orders like any other checkout order, which is
+    /// how the webhook recognises it, so payment.updated COMPLETED marks the box
+    /// SOLD with no new logic (ACH-safe: PENDING doesn't sell the box; a failed
+    /// ACH never completes). Invoicing retires every open cart link holding the
+    /// box and parks it in draft (reserved, off-site).
     /// </summary>
     [Function("InvoiceBox")]
     public async Task<IActionResult> InvoiceBox(
@@ -749,8 +750,9 @@ INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents
     }
 
     /// <summary>
-    /// POST /api/pallets/{id}/invoice-cancel — cancel the outstanding invoice
-    /// and clear the correlation so the box can go back on the site.
+    /// POST /api/pallets/{id}/invoice-cancel — cancel the outstanding invoice,
+    /// close its checkout_orders row and clear the box's invoice fields so it
+    /// can go back on the site.
     /// </summary>
     [Function("CancelBoxInvoice")]
     public async Task<IActionResult> CancelBoxInvoice(

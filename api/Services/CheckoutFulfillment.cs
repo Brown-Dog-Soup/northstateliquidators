@@ -580,13 +580,20 @@ WHERE square_payment_id = @pid";
     /// Settled-only is honoured upstream, by construction: the webhook records a
     /// payment_refunds row ONLY for a COMPLETED refund with a positive amount, so
     /// a PENDING, FAILED or REJECTED refund has no row here to replay.
+    ///
+    /// <paramref name="ct"/> is not optional and has no default: this is called
+    /// from a sweep that runs unattended on a schedule, and a host shutdown that
+    /// cannot cancel the database half of it leaves the process waiting on SQL
+    /// with nothing left to wait for. Cancelling mid-statement is safe here
+    /// precisely because the statement is a single guarded UPDATE — it either
+    /// committed or it did not, and the next sweep re-plans whatever did not.
     /// </summary>
     /// <returns>rows affected: 1 if the payment was repaired, 0 if it was already square.</returns>
-    public Task<int> ApplyRecordedRefundAsync(SqlConnection conn, string paymentId, long amountCents)
-        => conn.ExecuteAsync(ApplyRefundSql + @"
+    public Task<int> ApplyRecordedRefundAsync(SqlConnection conn, string paymentId, long amountCents, CancellationToken ct)
+        => conn.ExecuteAsync(new CommandDefinition(ApplyRefundSql + @"
   AND refunded_cents + @amt <= (SELECT COALESCE(SUM(amount_cents), 0)
                                 FROM dbo.payment_refunds WHERE square_payment_id = @pid)",
-            new { pid = paymentId, amt = amountCents });
+            new { pid = paymentId, amt = amountCents }, cancellationToken: ct));
 
     /// <summary>
     /// DB-first fence: mark every OTHER open cart link that contains any of
@@ -613,6 +620,14 @@ WHERE o.status = 'open' AND o.kind = 'link'
     /// Best-effort Square deletes for DB-canceled links. link_deleted_at is
     /// stamped ONLY when Square confirms; anything else is left for Reconcile.
     /// Never throws — the sale is already committed.
+    ///
+    /// <paramref name="ct"/> reaches the Square call and deliberately NOT the
+    /// stamp below, which is the one database call in the sweep that should
+    /// finish regardless: by the time it runs, Square has already deleted the
+    /// link, and the row is the only record that it happened. Cancelling it
+    /// buys a few milliseconds of shutdown and costs a wasted delete call on
+    /// the next run. (Nothing breaks either way — a missing stamp re-deletes,
+    /// Square answers 404, and 404 confirms.)
     /// </summary>
     public async Task RetireLinksAsync(SqlConnection conn, IEnumerable<CanceledLink> links, CancellationToken ct)
     {

@@ -448,7 +448,7 @@
         <label class="deliv-opt"><input type="radio" name="nsl-deliv" value="pickup" checked>
           <span class="deliv-label">Pick up at our Wake Forest warehouse</span><span class="deliv-price">Free</span></label>
         <label class="deliv-opt" id="deliv-opt-delivery"><input type="radio" name="nsl-deliv" value="delivery" disabled>
-          <span class="deliv-label">Delivered to you<span class="deliv-to" id="deliv-to"></span></span><span class="deliv-price">${dollars(DELIVERY_CENTS)}</span></label>
+          <span class="deliv-label">Delivered to you<span class="deliv-to" id="deliv-to"></span></span><span class="deliv-price">${dollars(deliveryFeeFor(storedZip()))}</span></label>
         <div class="deliv-zip" id="deliv-zip-row">
           <label for="deliv-zip">Your zip</label>
           <input id="deliv-zip" inputmode="numeric" maxlength="5" autocomplete="postal-code" placeholder="27587">
@@ -593,7 +593,7 @@
     if (!/^\d{5}$/.test(z)) { cartNotice('Enter a 5-digit zip code.'); c.deliv.zip.focus(); return; }
     try { localStorage.setItem('nsl.zip', z); } catch { /* ignore */ }
     if (zipQualifies(z)) {
-      cartNotice(`Good news — we deliver to ${z} for ${dollars(DELIVERY_CENTS)}.`);
+      cartNotice(`Good news — we deliver to ${z} for ${dollars(deliveryFeeFor(z))}.`);
       setDeliveryChoice('delivery');
     } else {
       cartNotice(`We can't reach ${z} on our own truck — pickup and the Friday flea-market drop are both free.`);
@@ -616,14 +616,14 @@
     const c = mountCart();
     const choice = deliveryChoice();
     // No goods, no delivery: an empty cart must read $0, not $10 + tax on the fee.
-    const del = (goodsCents > 0 && choice === 'delivery') ? DELIVERY_CENTS : 0;
+    const del = (goodsCents > 0 && choice === 'delivery') ? deliveryFeeFor(storedZip()) : 0;
     const taxCents = goodsLines.reduce((sum, cents) => sum + lineTax(cents), 0) + (del ? lineTax(del) : 0);
     // The drawer is mounted before /api/public/checkout-status answers, so the
     // rate and the fee baked into its markup are the defaults. Re-state both
     // from the live config: a label quoting a rate we are not charging is a
     // number we have told the shopper that isn't true.
     c.receipt.taxLabel.textContent = `Sales tax (${TAX_PCT}%)`;
-    c.deliv.price.textContent = dollars(DELIVERY_CENTS);
+    c.deliv.price.textContent = dollars(deliveryFeeFor(storedZip()));
     c.receipt.sub.textContent = dollars(goodsCents);
     c.receipt.delLine.hidden = del === 0;
     c.receipt.del.textContent = dollars(del);
@@ -1059,6 +1059,7 @@
   // every zip on checkout, so this copy is only here to enable/disable a radio
   // without a round trip.
   let TAX_PCT = 7.25, DELIVERY_CENTS = 1000, DELIVERY_ZIPS = [], FLEA_NOTE = '';
+  let DELIVERY_FEES = {};
   function checkoutReady() {
     if (!checkoutProbe) {
       checkoutProbe = fetch('/api/public/checkout-status', { credentials: 'omit' })
@@ -1069,6 +1070,15 @@
           if (Number(cs.taxPercent) > 0) TAX_PCT = Number(cs.taxPercent);
           if (Number(cs.deliveryCents) > 0) DELIVERY_CENTS = Number(cs.deliveryCents);
           DELIVERY_ZIPS = Array.isArray(cs.deliveryZips) ? cs.deliveryZips.map(String) : [];
+          // Per-zip overrides. Absent/malformed map (older deploys, or a failed
+          // zip query) must leave DELIVERY_CENTS as the fallback, not $NaN.
+          DELIVERY_FEES = {};
+          if (cs.deliveryFees && typeof cs.deliveryFees === 'object' && !Array.isArray(cs.deliveryFees)) {
+            Object.keys(cs.deliveryFees).forEach(z => {
+              const v = Number(cs.deliveryFees[z]);
+              if (Number.isFinite(v) && v > 0) DELIVERY_FEES[z] = v;
+            });
+          }
           FLEA_NOTE = cs.fleaNote || '';
           return window.nslCheckoutEnabled;
         })
@@ -1084,6 +1094,11 @@
   function storedZip()  { try { return localStorage.getItem('nsl.zip')  || ''; } catch { return ''; } }
   function storedAddr() { try { return localStorage.getItem('nsl.addr') || ''; } catch { return ''; } }
   function zipQualifies(z) { return /^\d{5}$/.test(z) && DELIVERY_ZIPS.includes(z); }
+  // Eligibility is the zip list; price is the map. A zip with no fee entry
+  // still qualifies — the server's flat default is a valid price for it.
+  function deliveryFeeFor(z) {
+    return Object.prototype.hasOwnProperty.call(DELIVERY_FEES, z) ? DELIVERY_FEES[z] : DELIVERY_CENTS;
+  }
   function deliveryChoice() {
     let d = 'pickup';
     try { d = localStorage.getItem(DELIV_KEY) || 'pickup'; } catch { /* private mode */ }

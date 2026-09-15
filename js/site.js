@@ -176,19 +176,31 @@
     const blurb = p.public_description
       ? (p.public_description.length > 120 ? p.public_description.slice(0, 120) + '…' : p.public_description)
       : '';
-    // Price figures (§6.3). Off sale the card is unchanged: ask price, the
-    // struck MSRP, and the % badge. On sale it must still show the MSRP the
-    // badge is computed from, so the markdown reads against both the
+    // Price figures (§6.3). Off sale and unbadged the card is unchanged: ask
+    // price, the struck MSRP, and the % badge — a struck retail number next to
+    // our price, which is what it plainly is. On sale it must still show the
+    // MSRP the badge is computed from, so the markdown reads against both the
     // manufacturer's price and what this box was listed at before — those two
     // go on their own labelled row so the live price stays dominant.
-    const struck  = onSale ? null : p.total_msrp;
+    //
+    // A hand-picked Hot Deal (is_hot_deal, staff toggle) that was never marked
+    // down is the third case, and it is the reason this is not just `onSale`.
+    // The card now carries the 🔥 badge, and the badge is what makes a bare
+    // struck number read as "was this, now that" rather than "retail vs ours" —
+    // a markdown claim we cannot back, because there was no markdown. So it
+    // takes the same labelled treatment the sale card uses: the retail figure
+    // says MSRP on it. No new style, and no unexplained struck number under a
+    // red badge.
+    const featured = live && !!p.is_hot_deal && !onSale;
+    const labelPrior = onSale || featured;
+    const struck  = labelPrior ? null : p.total_msrp;
     const askVal  = num(p.ask_price);
     const msrpVal = num(p.total_msrp);
     const wasVal  = onSale ? num(p.list_price) : null;
     const showMsrp = msrpVal != null && msrpVal > 0;
     // A "was" that is not above the ask is not a markdown — never label one.
     const showWas  = wasVal != null && wasVal > 0 && (askVal == null || wasVal > askVal);
-    const priorHtml = onSale && (showMsrp || showWas)
+    const priorHtml = labelPrior && (showMsrp || showWas)
       ? `<span class="price-prior">`
         + (showMsrp ? `<span class="prior"><span class="prior-lbl">MSRP</span><s>${money(msrpVal)}</s></span>` : '')
         + (showWas  ? `<span class="prior"><span class="prior-lbl">Was</span><s>${money(wasVal)}</s></span>` : '')
@@ -206,7 +218,7 @@
     <div class="box-top"><span class="box-no">BOX #${esc(p.pallet_number)}</span><span class="box-cat">${esc(p.category || 'Mixed Goods')}</span></div>
     <h3 class="box-name">${esc(name)}</h3>
     <div class="box-stats">${p.unit_count || 0} units · ${p.item_count || 0} items${weight ? ' · ~' + esc(weight) + ' lb' : ''}</div>
-    <div class="box-price${onSale ? ' is-sale' : ''}">
+    <div class="box-price${onSale ? ' is-sale' : ''}${priorHtml ? ' has-prior' : ''}">
       <span class="price">${money(p.ask_price)}</span>
       ${num(struck) ? `<span class="msrp">${money(struck)}</span>` : ''}
       <span class="pct">${esc(pctOfMsrp(p.ask_price, p.total_msrp))}</span>${priorHtml}

@@ -418,11 +418,29 @@ async function showDetail(id) {
     stiBtn.title = blocked ? 'Only for Live or Draft real boxes' : '';
   }
 
-  // Hot Deals manual toggle — label + style reflect state.
+  // Hot Deals manual toggle — label + style reflect state, and the button
+  // refuses to promise something the website cannot keep. The Hot Deals page
+  // reads dbo.v_public_pallets, which lists ONLY publish_state = 'live' boxes
+  // that are not archived; feature a draft/ghost/sold/archived box and the save
+  // succeeds, the button says "Featured", and the public site shows nothing.
+  // So featuring is blocked wherever it could not show, exactly like
+  // Sold → inventory above. Un-featuring stays available in every state, or a
+  // box featured before it was drafted could never be cleared again.
   const hdBtn = $('#hot-deal-toggle');
   if (hdBtn) {
     const featured = !!current.is_hot_deal;
-    hdBtn.textContent = featured ? '🔥 Featured — click to remove' : '🔥 Feature in Hot Deals';
+    const canShow  = current.publish_state === 'live' && !current.archived_at;
+    const blocked  = !canShow && !featured;
+    hdBtn.disabled = blocked;
+    hdBtn.style.opacity = blocked ? '0.45' : '';
+    // A disabled button may not surface a tooltip, so the reason is in the
+    // label as well as the title.
+    hdBtn.title = blocked ? 'Only Live, unarchived boxes show on the Hot Deals page' : '';
+    hdBtn.textContent = featured
+      ? (canShow ? '🔥 Featured — click to remove'
+                 : '🔥 Featured, but not Live — click to remove')
+      : (canShow ? '🔥 Feature in Hot Deals'
+                 : '🔥 Feature in Hot Deals — Live boxes only');
     hdBtn.classList.toggle('btn-yellow', featured);
     hdBtn.classList.toggle('btn', !featured);
   }

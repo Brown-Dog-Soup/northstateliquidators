@@ -11,9 +11,27 @@
 -- v_pallets to manifests on manifest_id = id; PublicPallets joins
 -- v_public_pallets to manifests the same way).
 --
--- Idempotent. Safe to apply any time, independent of the code deploy — these
--- are a nullable column and a defaulted column, so adding them changes
--- nothing for the currently running code.
+-- ORDER MATTERS: RUN THIS SQL FIRST, THEN DEPLOY THE CODE. Never the other
+-- way round, and never "we'll run the SQL later" — merging to the default
+-- branch IS the deploy here, so later means after the fact.
+--
+-- Why this direction is not optional. The deployed code names is_hot_deal and
+-- hot_deal_at in GET /api/public/pallets (PalletsFunction.PublicPallets), the
+-- anonymous feed that index.html, shop.html and faq.html all load through
+-- js/site.js. Against a database without these columns that SELECT throws, and
+-- what breaks is not the new toggle quietly doing nothing — it is every
+-- inventory grid, the recently-sold strip, the live counts bar and the cart
+-- drawer's box check, on every page, for every visitor, until somebody runs
+-- this file by hand. The staff admin list, detail and PATCH paths go with it.
+--
+-- The other direction is genuinely safe, which is the whole reason SQL goes
+-- first: is_hot_deal is BIT NOT NULL with a DEFAULT 0 and hot_deal_at is a
+-- nullable DATETIME2, so a database that has these columns while the old code
+-- is still running behaves exactly as before. There is no window to lose.
+--
+-- Idempotent, so re-running it costs nothing. Both columns are ALREADY APPLIED
+-- to production; this ordering note is for the next environment that needs
+-- them — staging, a restored copy, a fresh build.
 -- ============================================================================
 SET NOCOUNT ON;
 

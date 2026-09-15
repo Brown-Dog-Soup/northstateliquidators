@@ -469,15 +469,8 @@ WHERE NOT EXISTS (SELECT 1 FROM dbo.payment_refunds WHERE square_refund_id = @ri
         // OWED — with both refund_due_cents and amount_cents NULL there is no
         // figure that could have been satisfied, so no arithmetic against a total
         // we do not know is allowed to clear the flag.
-        var matched = await conn.ExecuteAsync(@"
-UPDATE dbo.payments SET
-    refunded_cents = refunded_cents + @amt,
-    status = CASE WHEN amount_cents IS NOT NULL AND refunded_cents + @amt >= amount_cents
-                  THEN 'REFUNDED' ELSE 'PARTIAL_REFUNDED' END,
-    needs_refund = CASE WHEN COALESCE(refund_due_cents, amount_cents) IS NOT NULL
-                         AND refunded_cents + @amt >= COALESCE(refund_due_cents, amount_cents)
-                  THEN 0 ELSE needs_refund END
-WHERE square_payment_id = @pid", new { pid = paymentId, amt = amountCents }, transaction: tx);
+        var matched = await conn.ExecuteAsync(ApplyRefundSql,
+            new { pid = paymentId, amt = amountCents }, transaction: tx);
 
         // `transaction: tx` is not optional here and not merely tidy. SqlClient
         // REFUSES to run a command with no transaction on a connection that has a
@@ -506,6 +499,69 @@ WHERE square_payment_id = @pid", new { pid = paymentId, amt = amountCents }, tra
                 refundId, amountCents, paymentId);
         return true;
     }
+
+    /// <summary>
+    /// The money half of a refund, and the ONLY copy of it. Both the webhook
+    /// (<see cref="RecordRefundAsync"/>) and Reconcile's orphan replay
+    /// (<see cref="ApplyRecordedRefundAsync"/>) run this exact statement, so the
+    /// cumulative total, the REFUNDED/PARTIAL_REFUNDED rule and the
+    /// clear-the-flag test cannot drift apart between the two paths.
+    ///
+    /// Note what this does NOT do: default the owed figure to zero. With both
+    /// refund_due_cents and amount_cents NULL there is no total that could have
+    /// been satisfied, so the flag stays up for a human rather than being cleared
+    /// by arithmetic against a number we do not have. The long comment above the
+    /// call site in RecordRefundAsync is the history of that.
+    /// </summary>
+    private const string ApplyRefundSql = @"
+UPDATE dbo.payments SET
+    refunded_cents = refunded_cents + @amt,
+    status = CASE WHEN amount_cents IS NOT NULL AND refunded_cents + @amt >= amount_cents
+                  THEN 'REFUNDED' ELSE 'PARTIAL_REFUNDED' END,
+    needs_refund = CASE WHEN COALESCE(refund_due_cents, amount_cents) IS NOT NULL
+                         AND refunded_cents + @amt >= COALESCE(refund_due_cents, amount_cents)
+                  THEN 0 ELSE needs_refund END
+WHERE square_payment_id = @pid";
+
+    /// <summary>
+    /// Reconcile only: apply refunds that are recorded in dbo.payment_refunds but
+    /// were never added to the payment's running total — the refund that arrived
+    /// before its payment row existed. <see cref="RecordRefundAsync"/> recorded
+    /// the row (unconditionally, on purpose), the payments UPDATE matched nothing,
+    /// and because the refund id is now claimed no later delivery can ever replay
+    /// it. Without this method that row is evidence nobody acts on while our books
+    /// and Square's disagree about money a customer already has back.
+    ///
+    /// IDEMPOTENCE, and why it is a property of the statement rather than of the
+    /// caller. The webhook's dedupe is the INSERT: a second delivery inserts
+    /// nothing and never reaches the money. A replay has no INSERT to dedupe on —
+    /// the row is already there by definition — so the guard below is its
+    /// substitute, and it is a compare-and-swap, not a pre-check the caller makes
+    /// and then hopes is still true. refunded_cents may never exceed the total of
+    /// the refunds we have actually recorded for that payment, which is the
+    /// invariant this whole pass exists to restore: after the first apply the two
+    /// are equal, so a second apply of the same amount fails the test, matches
+    /// zero rows and moves no money. Two sweeps racing each other land the same
+    /// way — the loser reads the winner's committed total under the UPDATE's own
+    /// lock and backs off. A single UPDATE is atomic, so no transaction is opened
+    /// here; there is nothing to tie together.
+    ///
+    /// The guard is deliberately NOT added to the webhook's path. There the row
+    /// was inserted in the same transaction moments earlier, so the guard would
+    /// always pass and could only ever misfire — and a misfire there would look
+    /// like the UNATTRIBUTABLE-refund warning, which means something entirely
+    /// different.
+    ///
+    /// Settled-only is honoured upstream, by construction: the webhook records a
+    /// payment_refunds row ONLY for a COMPLETED refund with a positive amount, so
+    /// a PENDING, FAILED or REJECTED refund has no row here to replay.
+    /// </summary>
+    /// <returns>rows affected: 1 if the payment was repaired, 0 if it was already square.</returns>
+    public Task<int> ApplyRecordedRefundAsync(SqlConnection conn, string paymentId, long amountCents)
+        => conn.ExecuteAsync(ApplyRefundSql + @"
+  AND refunded_cents + @amt <= (SELECT COALESCE(SUM(amount_cents), 0)
+                                FROM dbo.payment_refunds WHERE square_payment_id = @pid)",
+            new { pid = paymentId, amt = amountCents });
 
     /// <summary>
     /// DB-first fence: mark every OTHER open cart link that contains any of

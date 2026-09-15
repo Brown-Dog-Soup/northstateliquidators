@@ -572,14 +572,26 @@ INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents
                     // owed" — RecordRefundAsync will never clear the flag there, so
                     // re-raising it cannot contradict a settled payment, and the
                     // REFUND_FAILED status is what tells staff why it is standing.
-                    await rconn.ExecuteAsync(@"
+                    var reflagged = await rconn.ExecuteAsync(@"
 UPDATE dbo.payments SET needs_refund = 1, status = 'REFUND_' + @rs
 WHERE square_payment_id = @pid
   AND (COALESCE(refund_due_cents, amount_cents) IS NULL
        OR refunded_cents < COALESCE(refund_due_cents, amount_cents))",
                         new { pid = refund.PaymentId, rs = refund.Status });
-                    _log.LogError("SquareWebhook: refund {RefundId} {Status} for payment {PaymentId} — re-flagged",
-                        refund.RefundId, refund.Status, refund.PaymentId);
+                    // Say which of the two actually happened. That UPDATE is now
+                    // DESIGNED to match nothing in the ordinary case — a stale FAILED
+                    // event for a payment that has since been made whole — so logging
+                    // "re-flagged" unconditionally, at Error, would report a re-flag
+                    // that did not happen on precisely the scenario the owed-based
+                    // guard exists to create. Someone reading the logs during a real
+                    // incident would chase it. A genuine re-flag stays Error; the
+                    // no-op is the system working.
+                    if (reflagged > 0)
+                        _log.LogError("SquareWebhook: refund {RefundId} {Status} for payment {PaymentId} — attention flag re-raised, money is still owed",
+                            refund.RefundId, refund.Status, refund.PaymentId);
+                    else
+                        _log.LogInformation("SquareWebhook: refund {RefundId} {Status} for payment {PaymentId} — ignored: nothing is owed on that payment (or we hold no payment row for it), so no flag was raised",
+                            refund.RefundId, refund.Status, refund.PaymentId);
                 }
             }
             return new OkObjectResult(new { refund = refund.Status, recorded });
@@ -728,9 +740,16 @@ WHERE p.manifest_id = @id", new { id });
             await conn.ExecuteAsync(@"
 UPDATE dbo.manifests SET invoice_id = @iid, invoice_url = @iurl WHERE id = @id",
                 new { id, iid = inv.InvoiceId, iurl = inv.PublicUrl }, transaction: tx);
+            // subtotal_cents carries the same figure as total_cents, not the column
+            // default of zero: an invoice has no delivery fee and no tax in this
+            // table, so the schema's invariant (total = subtotal + tax + delivery)
+            // only holds if the goods figure is the whole figure. A consumer that
+            // sums subtotal_cents for a goods column — the sales dashboard — would
+            // otherwise under-report every invoice by its entire value, and that
+            // reads as missing revenue rather than as a bug.
             await conn.ExecuteAsync(@"
-INSERT INTO dbo.checkout_orders (square_order_id, kind, url, status, total_cents)
-VALUES (@oid, 'invoice', @url, 'open', @total)",
+INSERT INTO dbo.checkout_orders (square_order_id, kind, url, status, subtotal_cents, total_cents)
+VALUES (@oid, 'invoice', @url, 'open', @total, @total)",
                 new { oid = inv.OrderId, url = inv.PublicUrl, total = (long)Math.Round(price.Value * 100m) }, transaction: tx);
             await conn.ExecuteAsync(@"
 INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents) VALUES (@oid, @mid, @amt)",
@@ -1011,11 +1030,92 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
         DateTimeOffset.TryParse(iso, System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.AssumeUniversal, out var dt) ? dt : DateTimeOffset.MinValue;
 
+    /// <summary>How many orders one sweep may ask Square about, per pass.</summary>
+    public const int ReconcileMaxSquareCalls = 40;
+
+    /// <summary>What the sweep should do with one open order, given what Square says about it.</summary>
+    internal enum ReconcileVerdict { Heal, CancelLink, StillOpen }
+
     /// <summary>
-    /// Reconciliation sweep — SWA-managed Functions are HTTP-only (no timers),
-    /// so this runs when staff hit it (falls under authenticated /api/*).
-    /// Heals missed webhooks: any live box with an open link whose order is
-    /// paid gets marked SOLD; links on archived/pulled boxes are deleted.
+    /// The one rule the Square-facing pass turns on, pulled out so it can be
+    /// tested without a Square account. Note the asymmetry: a paid order is
+    /// healed whatever its kind, but only a LINK is ever closed because Square
+    /// says CANCELED. An invoice is canceled by explicit staff action
+    /// (CancelBoxInvoice) and never by a sweep — closing one here would strand a
+    /// real customer holding a real invoice we emailed them, and leave the box
+    /// drafted with nothing pointing at it.
+    /// </summary>
+    internal static ReconcileVerdict VerdictFor(string? squareState, bool paid, string? kind)
+        => squareState != "CANCELED" && paid ? ReconcileVerdict.Heal
+         : squareState == "CANCELED" && kind == "link" ? ReconcileVerdict.CancelLink
+         : ReconcileVerdict.StillOpen;
+
+    /// <summary>One recorded refund, carried with its payment's two running totals.</summary>
+    internal sealed record RecordedRefund(string PaymentId, string RefundId, long AmountCents,
+        long RecordedCents, long AppliedCents);
+
+    /// <summary>One payment to repair: cents to add, and how many refund rows that accounts for.</summary>
+    internal sealed record RefundReplay(string PaymentId, long AmountCents, int RefundCount);
+
+    /// <summary>
+    /// Work out which payments have recorded refunds that never reached their
+    /// running total, and how much each is short. Pure, so the arithmetic is
+    /// testable; the money itself moves in
+    /// <see cref="CheckoutFulfillment.ApplyRecordedRefundAsync"/>.
+    ///
+    /// The amount is always the payment-level shortfall — recorded minus
+    /// applied — never the sum of the rows below, because those two differ
+    /// whenever some of a payment's refunds DID apply. Getting that backwards
+    /// would return the same money to the books twice.
+    ///
+    /// The row COUNT is reporting only, and it reads the rows oldest-first. That
+    /// is not arbitrary: an orphan is by definition a refund recorded while the
+    /// payments row did not exist yet, and once that row exists no later refund
+    /// for the same payment can orphan — so the unapplied ones are the oldest.
+    /// Where that assumption could be violated the count may over-report by a
+    /// row; the cents never can, because they come from the totals.
+    /// </summary>
+    internal static List<RefundReplay> PlanRefundReplay(IEnumerable<RecordedRefund> rowsOldestFirst)
+    {
+        var plans = new List<RefundReplay>();
+        foreach (var g in rowsOldestFirst.GroupBy(r => r.PaymentId))
+        {
+            var first = g.First();
+            long shortfall = first.RecordedCents - first.AppliedCents;
+            if (shortfall <= 0) continue;   // already square — run this as often as you like
+            long covered = 0;
+            int rows = 0;
+            foreach (var r in g)
+            {
+                rows++;
+                covered += r.AmountCents;
+                if (covered >= shortfall) break;
+            }
+            plans.Add(new RefundReplay(first.PaymentId, shortfall, rows));
+        }
+        return plans;
+    }
+
+    /// <summary>
+    /// Reconciliation sweep (spec §4). SWA-managed Functions have no timers,
+    /// so this runs from the staff button and the GitHub Actions cron.
+    /// 1. DB-only pass: cancel open cart links whose boxes are no longer
+    ///    available, whose amounts drifted from the current ask, or that are
+    ///    older than 7 days (Square links never expire — we must).
+    /// 2. Delete at Square every canceled link not yet confirmed deleted.
+    /// 3. RetrieveOrder the remaining open orders, newest first (capped):
+    ///    paid → fulfil (heals a missed webhook); CANCELED at Square → mark.
+    /// 4. Replay refunds recorded against a payment row that did not exist at
+    ///    the time — including any row pass 3 has just created.
+    /// Invoice orders are never canceled here (explicit staff action only):
+    /// pass 1 filters on kind = 'link', and pass 3 closes an order only on the
+    /// CancelLink verdict, which <see cref="VerdictFor"/> reserves for links.
+    ///
+    /// Every pass is idempotent and this is expected to run on a schedule, so
+    /// the healthy result is all zeros. The database — not Square's answer to a
+    /// delete — is the source of truth for whether a link is dead: linksDeleted
+    /// is read back from link_deleted_at, and an unconfirmed delete is simply
+    /// swept again next time.
     /// </summary>
     [Function("SquareReconcile")]
     public async Task<IActionResult> Reconcile(
@@ -1026,62 +1126,134 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
             return new ObjectResult(new { error = "Square is not configured." }) { StatusCode = 503 };
 
         await using var conn = await _sql.OpenAsync(ct);
-        // Fake-sold boxes (Sold → inventory) are included so a Buy link that
-        // could not be retired at the time (Square unconfigured / hiccup) is
-        // swept here instead of staying payable forever.
+
+        // 1. Set-based cancel (no Square calls).
+        var ruleCanceled = (await conn.QueryAsync(@"
+UPDATE o SET status = 'canceled', closed_at = SYSUTCDATETIME()
+OUTPUT inserted.square_order_id, inserted.square_link_id
+FROM dbo.checkout_orders o
+WHERE o.status = 'open' AND o.kind = 'link'
+  AND (
+        o.created_at < DATEADD(DAY, -7, SYSUTCDATETIME())
+     OR EXISTS (SELECT 1
+                FROM dbo.checkout_order_boxes b
+                JOIN dbo.manifests m ON m.id = b.manifest_id
+                LEFT JOIN dbo.v_pallets v ON v.manifest_id = m.id
+                WHERE b.square_order_id = o.square_order_id
+                  AND (m.publish_state <> 'live' OR m.archived_at IS NOT NULL OR m.is_ghost = 1 OR m.invoice_id IS NOT NULL
+                       OR b.amount_cents <> CAST(ROUND(COALESCE(v.sale_price, v.list_price, v.total_wholesale, 0) * 100, 0) AS BIGINT)))
+     OR EXISTS (SELECT 1 FROM dbo.checkout_order_boxes b
+                WHERE b.square_order_id = o.square_order_id
+                  AND NOT EXISTS (SELECT 1 FROM dbo.manifests m WHERE m.id = b.manifest_id))
+  )")).Select(r => new CanceledLink((string)r.square_order_id, (string?)r.square_link_id)).ToList();
+
+        // 2. Square deletes for anything canceled but not confirmed (includes step 1's rows).
+        //    RetireLinksAsync stamps link_deleted_at only where Square CONFIRMED the
+        //    delete, and never throws, so the count is read back from the database
+        //    rather than from what the calls appeared to return.
+        var pending = (await conn.QueryAsync(@"
+SELECT TOP (@cap) square_order_id, square_link_id FROM dbo.checkout_orders
+WHERE status = 'canceled' AND kind = 'link' AND link_deleted_at IS NULL
+ORDER BY closed_at ASC", new { cap = ReconcileMaxSquareCalls }))
+            .Select(r => new CanceledLink((string)r.square_order_id, (string?)r.square_link_id)).ToList();
+        await _fulfill.RetireLinksAsync(conn, pending, ct);
+        int linksDeleted = pending.Count == 0 ? 0 : await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM dbo.checkout_orders WHERE square_order_id IN @ids AND link_deleted_at IS NOT NULL",
+            new { ids = pending.Select(p => p.OrderId).ToArray() });
+
+        // 3. Check the remaining open orders at Square, newest first.
         var open = (await conn.QueryAsync(@"
-SELECT TOP 50 id, pallet_number, publish_state, archived_at, checkout_link_id, checkout_order_id, invoice_id
-FROM dbo.manifests
-WHERE checkout_order_id IS NOT NULL
-  AND (publish_state <> 'sold' OR sold_to_inventory_at IS NOT NULL)
-ORDER BY checkout_created_at ASC")).ToList();
+SELECT TOP (@cap) square_order_id, kind FROM dbo.checkout_orders
+WHERE status = 'open' ORDER BY created_at DESC", new { cap = ReconcileMaxSquareCalls })).ToList();
 
-        int healed = 0, retired = 0, stillOpen = 0;
-        foreach (var b in open)
+        int healed = 0, canceledAtSquare = 0, stillOpen = 0;
+        foreach (var o in open)
         {
-            using var order = await _square.RetrieveOrderAsync((string)b.checkout_order_id, ct);
-            if (order == null) continue;
+            string oid = (string)o.square_order_id;
+            using var order = await _square.RetrieveOrderAsync(oid, ct);
+            if (order == null) { stillOpen++; continue; }
             var el = order.RootElement.GetProperty("order");
+            var state = el.TryGetProperty("state", out var st) ? st.GetString() : null;
 
-            if (SquareService.IsOrderPaid(el))
+            switch (VerdictFor(state, SquareService.IsOrderPaid(el), (string?)o.kind))
             {
-                // Paid but never marked sold — the webhook we missed.
-                await conn.ExecuteAsync("EXEC dbo.sp_SetPublishState @manifest_id = @mid, @publish_state = 'sold'",
-                    new { mid = (Guid)b.id });
-                await PalletsFunction.InsertHistoryAsync(conn, (Guid)b.id, "publish_state", (string?)b.publish_state, "sold", "square");
-                var tenderPayment = el.TryGetProperty("tenders", out var tenders) && tenders.GetArrayLength() > 0 &&
-                                    tenders[0].TryGetProperty("payment_id", out var tp) ? tp.GetString() : $"reconciled-{b.checkout_order_id}";
-                await conn.ExecuteAsync(@"
-INSERT INTO dbo.payments (square_payment_id, square_order_id, manifest_id, status, event_json)
-SELECT @pid, @oid, @mid, 'COMPLETED_RECONCILED', NULL
-WHERE NOT EXISTS (SELECT 1 FROM dbo.payments WHERE square_payment_id = @pid)",
-                    new { pid = tenderPayment, oid = (string)b.checkout_order_id, mid = (Guid)b.id });
-                _log.LogWarning("SquareReconcile: healed missed webhook — BOX #{Num} marked SOLD", (object?)b.pallet_number);
-                healed++;
+                case ReconcileVerdict.Heal:
+                {
+                    var tenderPayment = el.TryGetProperty("tenders", out var tenders) && tenders.GetArrayLength() > 0 &&
+                                        tenders[0].TryGetProperty("payment_id", out var tp) ? tp.GetString() : null;
+                    long? amt = el.TryGetProperty("total_money", out var tm) && tm.TryGetProperty("amount", out var ta) ? ta.GetInt64() : null;
+                    var r = await _fulfill.FulfillOrderAsync(conn, oid, tenderPayment ?? $"reconciled-{oid}", amt, null, "reconcile", ct);
+                    if (r.Outcome == "fulfilled")
+                    {
+                        healed++;
+                        // Sold counts every box this order owns; NewlySold only the ones
+                        // THIS call moved. On a later sweep over an order an earlier one
+                        // already healed, Sold still reads N while NewlySold reads 0 —
+                        // report both, or an ordinary no-op sweep looks like it healed the
+                        // same order over and over and a real incident gets dismissed.
+                        _log.LogWarning("SquareReconcile: healed missed webhook — order {OrderId}: {Sold} sold ({New} newly), {Unav} unavailable", oid, r.Sold, r.NewlySold, r.Unavailable);
+                    }
+                    else stillOpen++;   // duplicate payment row but order still open: leave for a human/log
+                    break;
+                }
+                case ReconcileVerdict.CancelLink:
+                    // Square says the order is dead, so the link died with it:
+                    // link_deleted_at is stamped on Square's own word rather than on a
+                    // delete call we would only make to be told the same thing.
+                    await conn.ExecuteAsync(
+                        "UPDATE dbo.checkout_orders SET status = 'canceled', closed_at = SYSUTCDATETIME(), link_deleted_at = SYSUTCDATETIME() WHERE square_order_id = @oid",
+                        new { oid });
+                    canceledAtSquare++;
+                    break;
+                default:
+                    stillOpen++;
+                    break;
             }
-            else if (b.invoice_id != null)
-            {
-                // Outstanding wholesale invoice, unpaid — the reserved-in-draft
-                // state is intentional; cancellation is explicit, never swept.
-                stillOpen++;
-            }
-            else if ((DateTime?)b.archived_at != null || (string)b.publish_state != "live")
-            {
-                // Box was pulled after a link existed — retire the link so it can't be paid.
-                if (b.checkout_link_id != null)
-                    await _square.DeletePaymentLinkAsync((string)b.checkout_link_id, ct);
-                await conn.ExecuteAsync(@"
-UPDATE dbo.manifests SET checkout_link_id = NULL, checkout_order_id = NULL,
-       checkout_url = NULL, checkout_created_at = NULL WHERE id = @mid",
-                    new { mid = (Guid)b.id });
-                _log.LogInformation("SquareReconcile: retired link for pulled BOX #{Num}", (object?)b.pallet_number);
-                retired++;
-            }
-            else stillOpen++;
         }
 
-        var flagged = await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM dbo.payments WHERE needs_refund = 1");
-        return new OkObjectResult(new { healed, retired, stillOpen, needsRefund = flagged });
+        // 4. Orphaned refunds. A refund can arrive before the payment it belongs
+        //    to, or for a payment we never recorded at all — a Dashboard refund
+        //    against a counter sale carries no application_details, so nothing
+        //    filters it out. RecordRefundAsync writes the audit row regardless
+        //    (dropping it would lose a real refund forever), the payments UPDATE
+        //    then matches nothing, and the claimed refund id means no redelivery
+        //    can ever replay it. This pass runs AFTER pass 3 on purpose: a heal
+        //    there may have just created the payments row that makes one
+        //    attributable, and before the needs_refund count below, so the number
+        //    staff are shown reflects the flags this sweep just cleared.
+        var orphanRows = (await conn.QueryAsync<RecordedRefund>(@"
+SELECT r.square_payment_id AS PaymentId, r.square_refund_id AS RefundId, r.amount_cents AS AmountCents,
+       t.recorded_cents AS RecordedCents, p.refunded_cents AS AppliedCents
+FROM dbo.payment_refunds r
+JOIN dbo.payments p ON p.square_payment_id = r.square_payment_id
+JOIN (SELECT square_payment_id, SUM(amount_cents) AS recorded_cents
+      FROM dbo.payment_refunds GROUP BY square_payment_id) t
+  ON t.square_payment_id = r.square_payment_id
+WHERE t.recorded_cents > p.refunded_cents
+ORDER BY r.square_payment_id, r.created_at, r.square_refund_id")).ToList();
+
+        int refundsApplied = 0;
+        long refundCentsApplied = 0;
+        foreach (var plan in PlanRefundReplay(orphanRows))
+        {
+            // The guard inside ApplyRecordedRefundAsync is what makes this safe on a
+            // schedule: it refuses to push refunded_cents past the total of the
+            // refunds actually recorded, so a second sweep moves nothing.
+            if (await _fulfill.ApplyRecordedRefundAsync(conn, plan.PaymentId, plan.AmountCents) > 0)
+            {
+                refundsApplied += plan.RefundCount;
+                refundCentsApplied += plan.AmountCents;
+                _log.LogWarning(
+                    "SquareReconcile: applied {Cents}c of refunds recorded against payment {PaymentId} that had never reached its total ({Rows} refund row(s)) — our books and Square agree again",
+                    plan.AmountCents, plan.PaymentId, plan.RefundCount);
+            }
+        }
+
+        var flagged = await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM dbo.payments WHERE needs_refund = 1");
+        return new OkObjectResult(new
+        {
+            canceledByRule = ruleCanceled.Count, linksDeleted, healed, canceledAtSquare, stillOpen,
+            refundsApplied, refundCentsApplied, needsRefund = flagged,
+        });
     }
 }

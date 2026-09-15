@@ -19,5 +19,6 @@ builder.Services.AddSingleton<BlobService>();
 builder.Services.AddSingleton<ManifestParser>();
 builder.Services.AddSingleton<UpcLookupService>();
 builder.Services.AddSingleton<SquareService>();
+builder.Services.AddSingleton<MailService>();
 
 builder.Build().Run();

@@ -14,8 +14,21 @@ on:
     branches: [main]
 
 jobs:
+  test_api:
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+    runs-on: ubuntu-latest
+    name: API unit tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: dotnet test
+        run: dotnet test api.Tests/api.Tests.csproj --nologo
+
   build_and_deploy_job:
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+    needs: test_api
     runs-on: ubuntu-latest
     name: Build and Deploy
     steps:

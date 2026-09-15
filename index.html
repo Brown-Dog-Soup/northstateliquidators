@@ -651,12 +651,12 @@
 </section>
 
 <!-- COUNTS -->
-<div class="counts">
+<div class="counts" id="counts-bar">
   <div class="inner">
-    <div><div class="num">14</div><div class="lbl">Boxes &amp; pallets live</div></div>
-    <div><div class="num">2,410</div><div class="lbl">Units available</div></div>
-    <div><div class="num">$14.3K</div><div class="lbl">Total price today</div></div>
-    <div><div class="num">76%</div><div class="lbl">Off retail, avg</div></div>
+    <div><div class="num" id="count-boxes">—</div><div class="lbl">Boxes &amp; pallets live</div></div>
+    <div><div class="num" id="count-units">—</div><div class="lbl">Units available</div></div>
+    <div><div class="num" id="count-price">—</div><div class="lbl">Total price today</div></div>
+    <div><div class="num" id="count-pct">—</div><div class="lbl">Off retail, avg</div></div>
   </div>
 </div>
 
@@ -814,6 +814,7 @@
   NSL.initPage({ joinTrigger: '#join-open' });
   NSL.renderJustDropped({ mount: '#just-dropped-grid', limit: 8, countLine: '#pallet-count-line' });
   NSL.renderRecentlySold({ mount: '#sold-grid', section: '#sold-section', limit: 8 });
+  NSL.renderCounts();
 </script>
 
 </body>

@@ -477,8 +477,19 @@ UPDATE dbo.payments SET
     needs_refund = CASE WHEN COALESCE(refund_due_cents, amount_cents) IS NOT NULL
                          AND refunded_cents + @amt >= COALESCE(refund_due_cents, amount_cents)
                   THEN 0 ELSE needs_refund END
-WHERE square_payment_id = @pid", new { pid = paymentId, amt = amountCents });
+WHERE square_payment_id = @pid", new { pid = paymentId, amt = amountCents }, transaction: tx);
 
+        // `transaction: tx` is not optional here and not merely tidy. SqlClient
+        // REFUSES to run a command with no transaction on a connection that has a
+        // pending local one ("requires the command to have a transaction when the
+        // connection ... is in a pending local transaction"), so omitting it does
+        // not quietly leave this statement outside the transaction — it throws
+        // InvalidOperationException on EVERY completed refund. That is not a
+        // SqlException, so the duplicate-key filter above does not catch it; it
+        // escapes the webhook as a 500 and Square retries about eleven times over
+        // 24 hours while no refund is ever recorded at all. Caught in review: the
+        // whole 203-test suite was green, because nothing executes this SQL.
+        //
         // The claim and the money land together. Past this line the refund is
         // durably recorded AND accumulated, so a later delivery that returns false
         // is telling the truth.

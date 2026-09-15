@@ -103,12 +103,15 @@ public class CancelOnChangeTests
     }
 
     /// <summary>
-    /// The other direction: nothing to delete at Square (a row with no link id is
-    /// confirmed dead on sight), so the only work left is the link_deleted_at
-    /// stamp — and the database is unreachable. Still not an exception.
+    /// The other direction: a row with no link id, which there is nothing to
+    /// delete for and — since the deletion stamp became what removes a row from
+    /// the sweep's backlog window — nothing to stamp either. It is not an
+    /// exception whichever way that branch goes, which is all this asserts. That
+    /// the row is left UNSTAMPED, and why, is pinned in
+    /// RetireLinksCorroborationTests.
     /// </summary>
     [Fact]
-    public async Task A_stamp_that_cannot_reach_sql_is_swallowed()
+    public async Task A_row_with_no_link_id_does_not_throw()
     {
         await using var conn = new SqlConnection(DeadSql);
         await Fulfill(new ExplodingHttpClientFactory()).RetireLinksAsync(
@@ -124,7 +127,10 @@ public class CancelOnChangeTests
     /// never stamped. RetireLinksAsync swallows everything, so an implementation
     /// that wrongly attempted the stamp would fail against the dead connection,
     /// have the error swallowed, still make zero Square calls, and pass this test
-    /// unchanged. The stamp-only-on-confirmation half needs a real database.
+    /// unchanged. RetireLinksCorroborationTests closes that gap without a
+    /// database by reading the swallowed error back off a captured logger — the
+    /// ATTEMPT is observable even though the write is not. What still needs a
+    /// real database is the write itself.
     /// </summary>
     [Fact]
     public async Task An_unconfigured_square_touches_neither_square_nor_sql()

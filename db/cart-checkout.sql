@@ -205,4 +205,23 @@ GO
 GRANT SELECT, INSERT ON dbo.payment_refunds TO nsl_api;
 GO
 
-PRINT 'cart-checkout: checkout_orders + checkout_order_boxes + delivery_zips + payments.refund columns + payment_refunds ready.';
+-- A payment whose debt we DECLINED TO PRICE. Fulfilment leaves refund_due_cents
+-- NULL when the order lines cannot account for what the buyer paid, because no
+-- figure derived from those lines is the whole debt -- so the staff page refuses
+-- to offer a number and the refund endpoint refuses to send one. Staff settle it
+-- by hand in the Square Dashboard and then acknowledge the row here.
+--
+-- WHY THESE TWO COLUMNS AND NOT JUST THE STATUS: "we declined to price this" was
+-- previously recorded only IN the status, so the first partial refund overwrote
+-- it and the fact was erased -- after which the endpoint would once again offer
+-- the rest of the payment on a row nobody could price. acknowledged_at is a
+-- FACT ABOUT THE ROW, not a stage it passes through, so it survives every later
+-- status change. acknowledged_by is who took responsibility: this clears a debt
+-- without moving money, and the one question afterwards is always who decided.
+IF COL_LENGTH('dbo.payments', 'acknowledged_at') IS NULL
+    ALTER TABLE dbo.payments ADD acknowledged_at DATETIME2 NULL;
+IF COL_LENGTH('dbo.payments', 'acknowledged_by') IS NULL
+    ALTER TABLE dbo.payments ADD acknowledged_by NVARCHAR(200) NULL;
+GO
+
+PRINT 'cart-checkout: checkout_orders + checkout_order_boxes + delivery_zips + payments.refund columns + payment_refunds + acknowledge columns ready.';

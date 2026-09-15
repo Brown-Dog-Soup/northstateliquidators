@@ -20,7 +20,8 @@
 - Cart cap: **20** boxes. Kill switch `SQUARE_CHECKOUT_ENABLED` gates every cart control and the checkout endpoint (503).
 - localStorage key: `nsl.cart` (JSON array of manifest_id strings). Thanks page query: `?boxes=12,14` (legacy `?box=N` still accepted).
 - Square: `checkout_options.enable_coupon=false`, `allow_tipping=false`, `ask_for_shipping_address` omitted, **`shipping_fee` never sent**; line item `uid` = manifest_id (max 60), `name` ≤ 512, `payment_note` ≤ 500; refund `idempotency_key` ≤ **45 chars**; `DeletePaymentLink` only counts as confirmed when the response has `cancelled_order_id`.
-- **Tax:** one `order.taxes[]` entry, `uid = "NC-SALES-725"`, `name = "NC sales tax (7.25%)"`, `percentage = "7.25"` (a *string*), `type = "ADDITIVE"`, `scope = "LINE_ITEM"`. Every line item gets `applied_taxes: [{ tax_uid: "NC-SALES-725" }]`. LINE_ITEM scope — not ORDER — because an ORDER-scope tax does not reach a service charge and NC taxes the delivery fee (spec §8.1).
+- **Tax (AMENDED 2026-09-15 — read the amendment in Task 2 before writing the payload):** the live Square account already carries a catalog tax **"NC & Wake County Sales Tax"** (`catalog_object_id` `NJMJVQ3TQDEYCNQJJ5MGTCXT`, 7.25%, ADDITIVE, enabled, Wake Forest location). When the app setting `SQUARE_TAX_CATALOG_ID` is present the order references **that object** so web and floor sales reconcile under one named tax in Rob's reporting and a rate change is an edit in Square rather than a deploy. When it is absent the code falls back to the ad-hoc entry described next — a differently-named line in reporting is bad, but refusing to sell is worse, and the buyer is charged the right 7.25% either way.
+- **Tax (ad-hoc fallback shape):** one `order.taxes[]` entry, `uid = "NC-SALES-725"`, `name = "NC sales tax (7.25%)"`, `percentage = "7.25"` (a *string*), `type = "ADDITIVE"`, `scope = "LINE_ITEM"`. Every line item gets `applied_taxes: [{ tax_uid: "NC-SALES-725" }]`. LINE_ITEM scope — not ORDER — because an ORDER-scope tax does not reach a service charge and NC taxes the delivery fee (spec §8.1).
 - **Delivery:** `DELIVERY_CENTS = 1000`. For `delivery_method='delivery'` only, one `order.service_charges[]` entry `uid = "NSL-DELIVERY"`, `calculation_phase = "SUBTOTAL_PHASE"`, `scope = "ORDER"`, `treatment_type = "LINE_ITEM_TREATMENT"`, `taxable = true`, `applied_taxes: [{ tax_uid: "NC-SALES-725" }]`. Omit the array entirely for `pickup` and `flea`.
 - **Never compute the authoritative tax.** `total_cents` / `tax_cents` / `delivery_cents` and every per-box `tax_cents` come out of the create response's `related_resources.orders[0]` (`total_money`, `total_tax_money`, `total_service_charge_money`, `line_items[].total_tax_money` matched on `uid`). Browser-side tax is display only.
 - **Amount checks compare to `checkout_orders.total_cents`** (Square's `total_money`, tax and delivery included), never to the sum of box prices.
@@ -245,6 +246,34 @@ git commit -m "db: checkout_orders + checkout_order_boxes (additive cart migrati
 ---
 
 ### Task 2: Square payloads (pure) + SquareService cart/refund/delete changes
+
+> **AMENDMENT 2026-09-15 (supersedes the tax parts of the code and tests below where they differ).**
+> Verified against the live Square account: it already carries a catalog tax
+> `NJMJVQ3TQDEYCNQJJ5MGTCXT` — "NC & Wake County Sales Tax", 7.25%, ADDITIVE,
+> enabled, Wake Forest location, `present_at_all_locations: false`. Build the tax
+> entry **two ways**, selected by one optional app setting:
+>
+> - `SquareService` reads `SQUARE_TAX_CATALOG_ID` (optional) and exposes it as
+>   `public string? TaxCatalogId { get; }`. Pass it into the payload builder.
+> - `SquarePayloads.CartLink(...)` gains a `string? taxCatalogId` parameter.
+>   When it is non-empty, the single `order.taxes[]` entry is
+>   `{ uid = TaxUid, catalog_object_id = taxCatalogId, scope = "LINE_ITEM" }` —
+>   no `name`, `percentage` or `type`, which come from the catalog object.
+>   When it is null/empty, emit the ad-hoc entry exactly as written below.
+> - **Everything else is identical in both shapes**: the same `uid` (`TaxUid`),
+>   so every line item and the delivery service charge keep referencing it via
+>   `applied_taxes: [{ tax_uid: TaxUid }]`, and the scope stays `LINE_ITEM` so
+>   the tax reaches the delivery service charge (an ORDER-scope tax does not).
+> - Tests: keep every existing assertion for the ad-hoc shape (call with
+>   `taxCatalogId: null`), and add two more — one asserting that with a catalog
+>   id the entry carries `catalog_object_id` and **no** `percentage`, and one
+>   asserting the `tax_uid` wiring on line items and the service charge is the
+>   same in both shapes.
+> - Rollout note for Task 14: set `SQUARE_TAX_CATALOG_ID=NJMJVQ3TQDEYCNQJJ5MGTCXT`
+>   on the SWA, and on the first live order confirm the Square page shows a single
+>   tax line named "NC & Wake County Sales Tax" (not two lines, and not the
+>   ad-hoc name) — that also proves the object is present at this location.
+
 
 **Files:**
 - Create: `api/Services/SquarePayloads.cs`

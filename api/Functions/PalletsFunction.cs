@@ -28,7 +28,7 @@ public sealed class PalletsFunction
 {
     private readonly SqlService _sql;
     private readonly BlobService _blob;
-    private readonly SquareService _square;
+    private readonly CheckoutFulfillment _fulfill;
     private readonly string _storageAccount;
     private readonly ILogger<PalletsFunction> _log;
 
@@ -53,11 +53,12 @@ public sealed class PalletsFunction
     /// <summary>The audited fields (B7) as read straight off dbo.manifests.</summary>
     private sealed record AuditSnapshot(string? publish_state, decimal? list_price, decimal? sale_price, string? box_size, string? sell_mode);
 
-    public PalletsFunction(SqlService sql, BlobService blob, SquareService square, IConfiguration config, ILogger<PalletsFunction> log)
+    public PalletsFunction(SqlService sql, BlobService blob, CheckoutFulfillment fulfill,
+        IConfiguration config, ILogger<PalletsFunction> log)
     {
         _sql = sql;
         _blob = blob;
-        _square = square;
+        _fulfill = fulfill;
         _storageAccount = config["StorageAccountName"] ?? "";
         _log = log;
     }
@@ -330,6 +331,28 @@ WHERE li.manifest_id = @id ORDER BY li.created_at DESC";
         var after = await conn.QueryFirstOrDefaultAsync<AuditSnapshot>(AuditSnapshotSql, new { id });
         await WriteHistoryAsync(conn, id, before, after, ClientPrincipal.UserDetails(req));
 
+        // Cart links (spec §4): a price change, leaving 'live', or archiving
+        // retires every open cart link that holds this box — DB first, Square
+        // best-effort. A shopper holding an old link sees Square refuse it;
+        // the drawer re-validates on open.
+        bool priceChanged = before?.list_price != after?.list_price || before?.sale_price != after?.sale_price;
+        bool leftLive = before?.publish_state == "live" && after?.publish_state != "live";
+        bool archivedNow = body?.archived == true;
+        if (priceChanged || leftLive || archivedNow)
+        {
+            List<CanceledLink> canceled;
+            using (var tx = conn.BeginTransaction())
+            {
+                canceled = await _fulfill.CancelOpenLinksForBoxesAsync(conn, tx, new[] { id }, null);
+                tx.Commit();
+            }
+            if (canceled.Count > 0)
+            {
+                _log.LogInformation("UpdatePallet {Id}: canceled {N} open cart link(s) (price/state change)", id, canceled.Count);
+                await _fulfill.RetireLinksAsync(conn, canceled, ct);
+            }
+        }
+
         var updated = await conn.QueryFirstOrDefaultAsync(
             "SELECT * FROM dbo.v_pallets WHERE manifest_id = @id", new { id });
         if (updated != null) SignRowPhotos((object)updated);
@@ -447,6 +470,19 @@ FROM dbo.line_items WHERE manifest_id = @sid",
     /// (PATCH archived=true) is the safer default and is what the admin UI
     /// uses by default. This endpoint exists for the rare "scanned the wrong
     /// thing entirely, never want to see it again" cleanup.
+    ///
+    /// ONE thing is deliberately NOT deleted: the box's dbo.checkout_order_boxes
+    /// rows. Those are money — what a buyer was charged for this box — and they
+    /// are marked 'unavailable' and left behind so a payment that lands after
+    /// the delete is still owed a refund for it. See the comment at that
+    /// statement; the schema note on the missing foreign key
+    /// (db/cart-checkout.sql) describes the cleanup this route used to do.
+    ///
+    /// And a box that has ALREADY been sold through the website is not deleted at
+    /// all — see the two checks below. There are two of them, before and after,
+    /// because one of them alone is a race: retaining the order line keeps the
+    /// SALE record, but it does not keep the BOX, and hard-deleting a box a
+    /// customer bought seconds earlier loses its items and its history with it.
     /// </summary>
     [Function("DeletePallet")]
     public async Task<IActionResult> Delete(
@@ -455,30 +491,202 @@ FROM dbo.line_items WHERE manifest_id = @sid",
         CancellationToken ct)
     {
         await using var conn = await _sql.OpenAsync(ct);
-        using var tx = conn.BeginTransaction();
-        try
+        List<CanceledLink> canceled;
+        int itemRows, palletRows;
+        using (var tx = conn.BeginTransaction())
         {
-            // manifest_history has an FK to manifests — clear the audit rows first.
-            await conn.ExecuteAsync(
-                "DELETE FROM dbo.manifest_history WHERE manifest_id = @id",
-                new { id }, transaction: tx);
-            var itemRows = await conn.ExecuteAsync(
-                "DELETE FROM dbo.line_items WHERE manifest_id = @id",
-                new { id }, transaction: tx);
-            var palletRows = await conn.ExecuteAsync(
-                "DELETE FROM dbo.manifests WHERE id = @id",
-                new { id }, transaction: tx);
-            tx.Commit();
+            try
+            {
+                // CLAIM THE BOX BEFORE LOOKING AT ITS MONEY, and claim it on the
+                // MANIFEST row, which is not where the money is. That is the whole
+                // point: dbo.manifests is where a fulfilment makes its decision —
+                // it re-reads this exact row WITH (UPDLOCK, ROWLOCK) before it
+                // sells the box (see "C1" in CheckoutFulfillment) — so taking the
+                // same lock first is what puts this route and that one in a queue
+                // instead of a race.
+                //
+                // Without it the guard below is an unlocked COUNT, and Azure SQL
+                // runs READ_COMMITTED_SNAPSHOT: a fulfilment that has sold this box
+                // and not yet committed is INVISIBLE to that COUNT. It passes, and
+                // the delete goes on to destroy a box a customer bought seconds
+                // ago, with its line items and its whole history. (The order line
+                // itself survives — the UPDATE below is guarded — so the outcome of
+                // that race was the sale record kept and the inventory record
+                // destroyed. Half a guard.)
+                //
+                // Second thing it buys, and it is not a side benefit: LOCK ORDER.
+                // This route used to take checkout_orders first (the cancel below)
+                // and manifests last. Fulfilment's COMMON path takes the manifest
+                // first and touches the order tables only inside the loop that
+                // follows it, so the cycle those two used to form — the textbook
+                // one, and the one reachable on an ordinary sale — is gone.
+                //
+                // ONE ORDERING IS DELIBERATELY LEFT INVERTED. Do not read the above
+                // as "both paths now start at the manifest": fulfilment's RECOVERY
+                // branch does not. When we never saw the link-create response the
+                // order row is rebuilt from Square's own figures, and that branch
+                // INSERTs dbo.checkout_orders and then dbo.checkout_order_boxes
+                // BEFORE its loop ever reaches the manifest lock (CheckoutFulfillment,
+                // the order == null block). Against this route that is a real cycle:
+                // recovery holds uncommitted order-line rows for this box and then
+                // wants the manifest; we hold the manifest and then want those rows,
+                // at the cancel and the settling UPDATE below.
+                //
+                // TOLERATED, and that is a decision rather than an oversight. The
+                // consequence is a deadlock VICTIM, never corruption: whichever
+                // transaction SQL Server picks rolls back whole. If fulfilment
+                // loses, its payment anchor rolls back with it and Square retries;
+                // by then this delete has committed, the box is gone, the retry's
+                // recovery INSERT writes no row for it, and the rowcount shortfall
+                // (recoveredLinesWithNoBox) flags the payment for refund — which is
+                // the answer we want. If this route loses, a staff member sees a
+                // server error and nothing was deleted. Reaching it at all needs a
+                // recovery fulfilment — already the rare path — racing a hard delete
+                // of one of that same order's boxes.
+                //
+                // Why it is not simply fixed: the fix is to take the manifest locks
+                // BEFORE the recovery inserts, and to be safe those pre-locks have
+                // to be acquired in the same order the fulfilment loop walks, which
+                // is SQL Server's ORDER BY over uniqueidentifier — NOT .NET's Guid
+                // ordering, which sorts the bytes differently. A wrong comparator
+                // there quietly creates a NEW deadlock between two fulfilments that
+                // share a box. That is a subtle, database-only ordering dependency
+                // added to the money path to remove a deadlock that is already safe
+                // in both directions and cannot be tested without a database. Not
+                // worth it. If it is ever done it belongs beside the C1 lock in
+                // CheckoutFulfillment, sorted with SqlGuid, not here.
+                //
+                // The result is deliberately discarded. A row that is already gone
+                // is still handled the old way — by the rowcount of the DELETE at
+                // the bottom — so that deleting an already-deleted box goes on
+                // cancelling any open links its SURVIVING order lines are still on.
+                // Returning 404 from here instead would quietly drop that.
+                _ = await conn.ExecuteScalarAsync<Guid?>(
+                    "SELECT id FROM dbo.manifests WITH (UPDLOCK, ROWLOCK) WHERE id = @id",
+                    new { id }, transaction: tx);
 
-            if (palletRows == 0) return new NotFoundResult();
-            _log.LogInformation("DeletePallet {Id}: removed pallet + {N} item(s)", id, itemRows);
-            return new OkObjectResult(new { id, deleted = true, items_deleted = itemRows });
+                var webSold = await conn.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM dbo.checkout_order_boxes WHERE manifest_id = @id AND outcome = 'sold'",
+                    new { id }, transaction: tx);
+                if (webSold > 0)
+                {
+                    tx.Rollback();
+                    return new ConflictObjectResult(new { error = "This box was sold through the website — archive it instead of deleting so the sale record stays intact." });
+                }
+                canceled = await _fulfill.CancelOpenLinksForBoxesAsync(conn, tx, new[] { id }, null);
+
+                // RETAINED, not deleted, and this is the money line of the whole
+                // route. These rows are what a buyer paid for. Deleting them
+                // destroyed the only record that this box was ever on an order,
+                // and the hole it opened is not hypothetical: a three-box order
+                // whose Square link outlived the cancel above is still payable,
+                // and when it was paid, fulfilment's work list came back with two
+                // survivors, sold both, computed nothing owed for the third —
+                // there was no row left to owe anything for — and recorded the
+                // payment COMPLETED. The buyer paid for a box that no longer
+                // exists and nothing anywhere said so. The order total still
+                // carried its money; only the evidence was gone.
+                //
+                // Marked 'unavailable' the row survives the manifest, fulfilment's
+                // LEFT JOIN work list keeps it, and its price AND tax land in
+                // refund_due_cents with the payment flagged for refund — which is
+                // what the buyer is actually owed.
+                //
+                // WHERE outcome IS NULL, never a blanket SET: a row already
+                // 'sold' or 'unavailable' keeps its own outcome and its original
+                // fulfilled_at. 'sold' is refused by the guard above and again by
+                // the one below, but this predicate is the last line of defence
+                // and costs nothing: whatever else goes wrong, a settled row is
+                // never overwritten here. Do not "simplify" it away.
+                await conn.ExecuteAsync(@"
+UPDATE dbo.checkout_order_boxes
+SET outcome = 'unavailable', fulfilled_at = SYSUTCDATETIME()
+WHERE manifest_id = @id AND outcome IS NULL", new { id }, transaction: tx);
+
+                // LOOK AGAIN — and this is the check that actually REFUSES the
+                // delete, which is the guard's entire stated purpose. The one at
+                // the top decides before anything is locked; this one decides
+                // after the UPDATE above has taken a write lock on every one of
+                // this box's order lines, so no sale can still be in flight behind
+                // it. If one appeared anyway — the claim above did not hold, or
+                // something wrote 'sold' without going through the manifest row —
+                // the box is NOT destroyed.
+                //
+                // THE RESIDUAL, stated precisely because a vague one is worthless.
+                // No RUNTIME writer sets outcome = 'sold' without first deciding
+                // under this manifest row's lock: fulfilment is the only one, and
+                // it writes that value one statement after its own UPDLOCK read of
+                // the same row ("C1" in CheckoutFulfillment). What is NOT covered
+                // by that sentence, and exists in this repository, is the
+                // deploy-time backfill in db/cart-checkout.sql, which copies the
+                // old per-box model forward and sets outcome = 'sold' from
+                // manifests.publish_state with no manifest lock at all. It is
+                // guarded by NOT EXISTS, runs once at deploy, and would in practice
+                // block on this transaction's uncommitted rows anyway — so the risk
+                // is negligible. It is still a writer, and the residual has to say
+                // so rather than say "nothing".
+                //
+                // Rolling back takes the 'unavailable' marks and the link cancels
+                // with it, which is exactly right: nothing was deleted, so nothing
+                // is unavailable and no link should have been retired. The delete
+                // simply did not happen, and the caller is told so.
+                var soldNow = await conn.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM dbo.checkout_order_boxes WHERE manifest_id = @id AND outcome = 'sold'",
+                    new { id }, transaction: tx);
+                if (soldNow > 0)
+                {
+                    tx.Rollback();
+                    // ERROR, not warning. This fires only when a genuine sale
+                    // committed mid-delete — the exact event the two checks exist
+                    // for — and every other money-relevant surprise on this path
+                    // (CheckoutFulfillment's unmatched, zero-box, paid-after-cancel
+                    // and missing-line cases) is an error. A person watching the
+                    // error stream is the person who needs to see this one.
+                    _log.LogError("DeletePallet {Id}: a website sale landed while this delete was in flight — refused, box and sale both kept", id);
+                    return new ConflictObjectResult(new { error = "This box was sold through the website — archive it instead of deleting so the sale record stays intact." });
+                }
+
+                // manifest_history has an FK to manifests — clear the audit rows first.
+                await conn.ExecuteAsync(
+                    "DELETE FROM dbo.manifest_history WHERE manifest_id = @id",
+                    new { id }, transaction: tx);
+                itemRows = await conn.ExecuteAsync(
+                    "DELETE FROM dbo.line_items WHERE manifest_id = @id",
+                    new { id }, transaction: tx);
+                palletRows = await conn.ExecuteAsync(
+                    "DELETE FROM dbo.manifests WHERE id = @id",
+                    new { id }, transaction: tx);
+                tx.Commit();
+            }
+            catch
+            {
+                // Guarded: if the throw came OUT of Commit the transaction may
+                // already be done, and an unguarded Rollback would throw over the
+                // top of the real exception and destroy it.
+                try { tx.Rollback(); } catch { /* already finished */ }
+                throw;
+            }
         }
-        catch
-        {
-            tx.Rollback();
-            throw;
-        }
+
+        // Everything below is post-commit and deliberately OUTSIDE the try. There
+        // is nothing left to roll back here, so a throw from RetireLinksAsync must
+        // not reach a catch that would call Rollback() on a completed transaction:
+        // that call throws in turn and the original exception is lost. The helper
+        // is documented never to throw, and is tested from every failure direction
+        // — but the whole point of that guarantee is that nobody reading this route
+        // should have to know it.
+        if (palletRows == 0) return new NotFoundResult();
+        // The ordering buys exactly one thing: on a not-found delete we do not go
+        // on to delete links at SQUARE for a box that still exists. It does NOT
+        // mean nothing was cancelled — CancelOpenLinksForBoxesAsync ran and
+        // committed above, so those orders are already marked canceled in our
+        // tables either way. Reachability is near nil (the row would have to
+        // vanish between this request and the DELETE) and marking an order
+        // canceled without killing its Square link is the safe direction, so this
+        // is the behaviour we want; it is just not the invariant it used to claim.
+        await _fulfill.RetireLinksAsync(conn, canceled, ct);
+        _log.LogInformation("DeletePallet {Id}: removed pallet + {N} item(s)", id, itemRows);
+        return new OkObjectResult(new { id, deleted = true, items_deleted = itemRows });
     }
 
     /// <summary>
@@ -499,34 +707,31 @@ FROM dbo.line_items WHERE manifest_id = @sid",
 
         // What the original looked like BEFORE — the proc validates the rest.
         var orig = await conn.QueryFirstOrDefaultAsync(
-            "SELECT publish_state, checkout_link_id, invoice_id FROM dbo.manifests WHERE id = @id", new { id });
+            "SELECT publish_state, invoice_id FROM dbo.manifests WHERE id = @id", new { id });
         if (orig == null) return new NotFoundResult();
         if (orig.invoice_id != null && (string?)orig.publish_state != "sold")
             return new ConflictObjectResult(new { error = "This box has an outstanding Square invoice — cancel the invoice first, or wait for it to be paid." });
         string? prevState = (string?)orig.publish_state;
-        string? linkId = (string?)orig.checkout_link_id;
 
-        // Retire the public Buy link on the original FIRST (same as
-        // SquareReconcile's "pulled box" branch) so nobody can pay for a box
-        // that reads SOLD. Done before the proc so a Square failure leaves the
-        // box untouched — there is nothing to undo and staff simply retry.
-        // (Once the box is sold, the invoice route refuses it and Reconcile
-        // only sweeps fake-sold rows, so this is the one reliable moment.)
-        if (linkId != null && _square.Configured)
+        // Retire every open cart link holding this box BEFORE it reads SOLD.
+        // The DB cancel is the fence; Square deletes are best-effort after.
+        //
+        // DELIBERATELY UNCONDITIONAL, and committed BEFORE the proc runs. Do not
+        // "fix" this by moving it after sp_SoldToInventory or making it depend on
+        // the proc succeeding. The proc can still refuse — a ghost box, an
+        // archived one, one already sold — and on a refusal the box is untouched
+        // while every open cart link on it is already marked canceled here and
+        // never retired at Square (the retire below only runs on success). That
+        // is a silent lost sale for a shopper mid-checkout, and it is the price of
+        // the safe direction: the alternative, cancelling only after the proc
+        // succeeds, leaves a window where the box reads SOLD and a live link can
+        // still be paid. The earlier fail-closed version of this — refuse the sale
+        // if Square hiccuped — rejected perfectly good boxes, which is worse.
+        List<CanceledLink> canceled;
+        using (var tx = conn.BeginTransaction())
         {
-            try
-            {
-                await _square.DeletePaymentLinkAsync(linkId, ct);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _log.LogError(ex, "SoldToInventory: could not retire Square link {Link} on BOX {Id} — box left as-is", linkId, id);
-                return new ObjectResult(new { error = "Could not retire the Square Buy link on this box — try again in a moment." }) { StatusCode = 502 };
-            }
-            await conn.ExecuteAsync(@"
-UPDATE dbo.manifests SET checkout_link_id = NULL, checkout_order_id = NULL,
-       checkout_url = NULL, checkout_created_at = NULL WHERE id = @id", new { id });
-            _log.LogInformation("SoldToInventory: retired Square link {Link} on BOX {Id}", linkId, id);
+            canceled = await _fulfill.CancelOpenLinksForBoxesAsync(conn, tx, new[] { id }, null);
+            tx.Commit();
         }
 
         dynamic? row;
@@ -541,6 +746,8 @@ UPDATE dbo.manifests SET checkout_link_id = NULL, checkout_order_id = NULL,
             return new ConflictObjectResult(new { error = ex.Message });
         }
         if (row == null) return new ObjectResult(new { error = "sp_SoldToInventory returned no rows" }) { StatusCode = 500 };
+
+        await _fulfill.RetireLinksAsync(conn, canceled, ct);
 
         Guid originalId = (Guid)row.original_id;
         Guid cloneId    = (Guid)row.clone_id;

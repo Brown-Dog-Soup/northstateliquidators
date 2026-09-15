@@ -31,6 +31,22 @@
     .chan.floor { background:#ece5da; color:#6a5b3a; }
     .chan.admin { background:#FDE7E7; color:#8a1f1f; }
     .flag { color:#b42318; font-weight:700; }
+    .tag { font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:700; letter-spacing:0.06em;
+           text-transform:uppercase; padding:1px 6px; background:#e7ecf6; color:#002868; }
+    .tnote { margin:8px 0 0; font-size:12px; color:#777; }
+    .stable td .flag { font-weight:400; }
+    /* The one cell allowed to wrap: a full sentence of nowrap pushed the Refund
+       button off the right edge of the table, which is where it matters most. */
+    .stable td.why { white-space:normal; min-width:200px; max-width:340px; font-weight:400; line-height:1.35; }
+    /* The explanatory line under a sale. nowrap made one admin note stretch the
+       Box column past 500px and push Our cost and Margin off a 1280px screen. */
+    .stable td .subnote { white-space:normal; max-width:400px; font-size:11px; color:#888; line-height:1.35; margin-top:2px; }
+    @media (max-width: 640px) {
+      /* Phone: give the sentence less room and the rows tighter padding, so the
+         Refund button is a shorter swipe from the left edge of the table. */
+      .stable th, .stable td { padding:7px 8px; }
+      .stable td.why { min-width:150px; max-width:190px; }
+    }
     .sect { margin:34px 0 10px; font-family:Anton; letter-spacing:0.03em; text-transform:uppercase; font-size:20px; }
     .range button.active { background:#002868; color:#fff; }
     .twrap { overflow-x:auto; }
@@ -64,12 +80,13 @@
 
     <div id="attention" hidden>
       <div class="sect" style="color:#b42318;">⚠ Needs attention</div>
-      <p style="margin:0 0 10px;font-size:13px;color:#666;">Payments that landed on an already-sold box (or matched no box). Refund sends the full amount back through Square.</p>
+      <p style="margin:0 0 10px;font-size:13px;color:#666;">Payments that landed on a box that was already sold (partial refunds for carts) or matched no box. Refund sends the amount owed &mdash; the box price plus the sales tax the buyer paid on it &mdash; back through Square, and the server re-reads that figure as it sends, so a row someone else has part-refunded since this page loaded is refused rather than over-refunded. Read the <b>Why</b> column before clicking: not every flagged row means the buyer is owed anything.</p>
       <div class="twrap"><table class="stable" id="attention-table"></table></div>
     </div>
 
     <div class="sect">Sales</div>
     <div class="twrap"><table class="stable" id="sales-table"></table></div>
+    <p class="tnote">Amount and margin are goods only &mdash; sales tax is held for NCDOR and the delivery fee covers the truck.</p>
 
     <div class="sect">Bank deposits (payouts)</div>
     <div class="twrap"><table class="stable" id="payouts-table"></table></div>

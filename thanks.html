@@ -32,16 +32,22 @@
     <p><strong>Payment received.</strong> We'll reach out shortly using the contact info
        from your Square receipt to arrange pickup in Wake Forest, Friday delivery to the Raleigh Flea Market, or local delivery.</p>
     <p>Questions right now? Call <a href="tel:+19195260112">(919)&nbsp;526-0112</a>.</p>
-    <a class="home" href="/">← Back to the inventory</a>
+    <a class="home" href="/shop.html?view=all">← Back to the inventory</a>
     <p class="fine">Your receipt comes from Square, the same payment company we use in person.</p>
   </div>
   <script>
-    const n = new URLSearchParams(location.search).get('box');
-    if (n && /^\d+$/.test(n)) {
+    // Square appends orderId/transactionId in production (nothing in sandbox);
+    // we only read our own boxes= (legacy box=) and never decide sold-ness here.
+    const q = new URLSearchParams(location.search);
+    const raw = q.get('boxes') || q.get('box') || '';
+    if (/^\d+(,\d+)*$/.test(raw)) {
+      const nums = raw.split(',');
       const el = document.getElementById('boxno');
-      el.textContent = 'BOX #' + n;
+      el.textContent = nums.length === 1 ? 'BOX #' + nums[0] : nums.map(n => 'BOX #' + n).join('  ·  ');
       el.hidden = false;
+      if (nums.length > 1) document.querySelector('h1').textContent = "They're yours!";
     }
+    try { localStorage.removeItem('nsl.cart'); } catch { /* private mode */ }
   </script>
 </body>
 </html>

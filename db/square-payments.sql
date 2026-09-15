@@ -6,6 +6,9 @@
 -- on). dbo.payments is the audit trail — one row per Square payment, with a
 -- UNIQUE square_payment_id so webhook retries/replays can never double-log.
 -- ----------------------------------------------------------------------------
+-- SUPERSEDED 2026-09: the manifests.checkout_* columns below are replaced by
+-- dbo.checkout_orders / checkout_order_boxes (db/cart-checkout.sql) and dropped
+-- by db/cart-checkout-drop.sql. Do NOT re-apply this file on prod.
 IF COL_LENGTH('dbo.manifests', 'checkout_link_id') IS NULL
     ALTER TABLE dbo.manifests ADD
         checkout_link_id    VARCHAR(64)    NULL,
@@ -20,7 +23,12 @@ BEGIN
         id                UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
         square_payment_id VARCHAR(64)      NOT NULL,
         square_order_id   VARCHAR(64)      NULL,
-        manifest_id       UNIQUEIDENTIFIER NULL,       -- box it sold; NULL = unmatched (needs attention)
+        -- Box it sold, kept only for single-box orders. NULL no longer means
+        -- "unmatched": since db/cart-checkout.sql a cart order can hold several
+        -- boxes and this column is NULL for every one of them. The boxes an order
+        -- sold are dbo.checkout_order_boxes; "needs attention" is needs_refund = 1
+        -- or status = 'UNMATCHED', never a NULL here.
+        manifest_id       UNIQUEIDENTIFIER NULL,
         amount_cents      BIGINT           NULL,
         currency          VARCHAR(8)       NULL,
         status            VARCHAR(40)      NOT NULL,   -- COMPLETED | REFUND_FLAGGED | ...

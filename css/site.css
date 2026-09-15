@@ -149,6 +149,14 @@ a { color: inherit; }
 .box-price .msrp { font-family: 'Anton', sans-serif; font-size: 24px; color: #777; text-decoration: line-through; line-height: 1; }
 .box-price .pct { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #1B7E3A; background: #E6F4EA; padding: 2px 7px; border-radius: 2px; }
 .box-price .pct:empty { display: none; }
+/* On-sale cards carry three figures. The live ask stays the dominant mark; the
+   manufacturer's MSRP and the pre-markdown list price drop to a labelled row of
+   their own so two struck numbers are never left unexplained side by side. */
+.box-price.is-sale { row-gap: 6px; }
+.box-price .price-prior { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; min-width: 0; }
+.box-price .prior { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+.box-price .prior-lbl { font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #8A8A8A; }
+.box-price .prior s { font-family: 'Anton', sans-serif; font-size: 16px; color: #777; text-decoration: line-through; line-height: 1; }
 .box-cond { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #555; }
 .box-cond .cond-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .box-cond .cond-count { font-weight: 700; color: var(--ink); }
@@ -159,6 +167,12 @@ a { color: inherit; }
 .view:hover { text-decoration: underline; }
 .view.buy { color: #fff; background: var(--nc-navy); padding: 8px 12px; }
 .view.buy:hover { background: #001a45; text-decoration: none; }
+
+/* Cart control on cards + manifest modal (spec §3) */
+.cart-btn { background: var(--nc-navy); color: #fff; border: 0; cursor: pointer; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 9px 12px; min-height: 40px; }
+.cart-btn:hover { background: #001a45; }
+.cart-btn[aria-pressed="true"] { background: var(--warehouse-yellow); color: var(--ink); }
+.box-card[data-in-cart] { outline: 3px solid var(--warehouse-yellow); outline-offset: -3px; }
 @media (max-width: 900px) { .box-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 560px) { .box-grid { grid-template-columns: 1fr; } }
 
@@ -254,3 +268,62 @@ details.faq .faq-body p:last-child { margin-bottom: 0; }
 .cond-def .nsl-def { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #8A4A0B; background: #FDF0E0; padding: 2px 6px; border-radius: 2px; }
 .cond-def .expect { font-size: 14px; color: #555; }
 details.faq { scroll-margin-top: 100px; }
+
+/* ============================================================================
+   Cart drawer, phone bottom bar, delivery choice + receipt (spec §3, §8.3)
+   ========================================================================== */
+/* Header cart button (desktop) */
+.cart-head-btn { background: var(--nc-navy); color: #fff; border: 0; cursor: pointer; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 8px 12px; white-space: nowrap; }
+.cart-head-btn[hidden] { display: none; }
+.cart-head-btn .cart-count { display: inline-block; min-width: 20px; margin-left: 4px; padding: 1px 6px; border-radius: 10px; background: var(--warehouse-yellow); color: var(--ink); text-align: center; }
+/* Fixed bottom bar — the header is not sticky on phones (shop/faq), so this is the always-visible path to checkout */
+.cart-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 900; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; background: var(--nc-navy); color: #fff; box-shadow: 0 -6px 20px rgba(0,0,0,0.25); font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+.cart-bar[hidden] { display: none; }
+.cart-bar-open { background: var(--warehouse-yellow); color: var(--ink); border: 0; cursor: pointer; font-family: 'Anton', sans-serif; font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; padding: 10px 16px; white-space: nowrap; }
+@media (min-width: 901px) { .cart-bar { display: none; } }
+body:has(.cart-bar:not([hidden])) { padding-bottom: 64px; }
+/* Drawer — reuses .mf-* but slides in from the right */
+.cart-overlay { justify-content: flex-end; padding: 0; }
+.cart-box { max-width: 420px; height: 100%; max-height: none; border-radius: 0; }
+@media (max-width: 560px) { .cart-box { max-width: 100%; } }
+.cart-list { list-style: none; margin: 0; padding: 0; }
+.cart-row { display: grid; grid-template-columns: 56px 1fr auto 32px; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid #F0EAD9; }
+.cart-row:first-child { border-top: 0; }
+.cart-thumb { width: 56px; height: 42px; border-radius: 3px; background: #EFE9D8 center/cover no-repeat; }
+.cart-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cart-info .box-no { font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.cart-name { font-size: 14px; font-weight: 600; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.cart-price { font-family: 'Anton', sans-serif; font-size: 18px; color: var(--nc-red); white-space: nowrap; }
+.cart-remove { background: none; border: 0; font-size: 26px; line-height: 1; color: #999; cursor: pointer; width: 32px; height: 40px; }
+.cart-remove:hover { color: var(--nc-red); }
+.cart-foot { flex-direction: column; align-items: stretch; }
+.cart-total { display: flex; justify-content: space-between; align-items: baseline; font-family: 'JetBrains Mono', monospace; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #555; }
+.cart-total strong { font-family: 'Anton', sans-serif; font-size: 26px; color: var(--nc-navy); letter-spacing: 0; }
+.cart-checkout { width: 100%; text-align: center; min-height: 48px; }
+.cart-checkout[disabled] { opacity: 0.55; cursor: not-allowed; }
+.cart-notice { margin: 0; padding: 10px 12px; background: #FFF3C4; color: #7a5a00; font-size: 14px; border-left: 3px solid var(--warehouse-yellow); }
+.cart-notice[hidden] { display: none; }
+
+/* delivery choice (spec §8.3) */
+.cart-deliv { border: 1px solid #e3e3e3; border-radius: 6px; margin: 0; padding: 10px 12px 12px; }
+.cart-deliv[hidden] { display: none; }
+.cart-deliv legend { font-weight: 700; font-size: 14px; padding: 0 4px; }
+.deliv-opt { display: flex; align-items: center; gap: 10px; padding: 9px 2px; min-height: 44px; cursor: pointer; }
+.deliv-opt .deliv-label { flex: 1; font-size: 15px; }
+.deliv-opt .deliv-price { font-weight: 700; white-space: nowrap; }
+.deliv-opt.is-off { opacity: .55; cursor: default; }
+.deliv-to { color: #666; font-weight: 400; }
+.deliv-zip, .deliv-addr { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 2px 2px 8px 28px; }
+.deliv-zip[hidden], .deliv-addr[hidden] { display: none; }
+.deliv-zip label, .deliv-addr label { font-size: 13px; color: #555; }
+.deliv-zip input { width: 7em; }
+.deliv-addr input { flex: 1; min-width: 12em; }
+.deliv-zip input, .deliv-addr input { min-height: 40px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; }
+
+/* receipt block */
+.cart-receipt { margin: 10px 0 0; font-size: 14px; }
+.cart-receipt div { display: flex; justify-content: space-between; padding: 3px 0; }
+.cart-receipt div[hidden] { display: none; }
+.cart-receipt dt { color: #555; }
+.cart-receipt dd { margin: 0; }
+.cart-empty { color: #555; font-size: 15px; padding: 24px 0; text-align: center; line-height: 1.6; }

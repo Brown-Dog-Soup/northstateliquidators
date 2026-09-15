@@ -84,7 +84,23 @@ export const apiClient = {
   // Square: sales dashboard, payment audit, refunds, reconcile, wholesale invoices
   salesSummary:     (days = 30) => api('GET', `/api/sales-summary?days=${days}`),
   squarePayments:   () => api('GET',  '/api/square-payments'),
-  squareRefund:     (paymentId, reason = null) => api('POST', '/api/square-refund', { paymentId, reason }),
+  // amountCents is a CEILING TO CHECK, not an instruction. Omitted, the server
+  // sends what is OWED (refund_due_cents less anything already refunded);
+  // supplied, it must be at or below that figure or the call is refused with a
+  // sentence naming both. The caller's number is a snapshot; the server's is
+  // read at the moment the money moves, and that is the one that binds.
+  squareRefund:     (paymentId, reason = null, amountCents = null) =>
+    api('POST', '/api/square-refund', { paymentId, reason, amountCents }),
+  // Fills in a payment we recorded with no amount, from Square. Refunds nothing.
+  squarePaymentAmount: (paymentId) => api('POST', '/api/square-payment-amount', { paymentId }),
+  // Lowers the attention flag on the one row that can never clear itself — the
+  // payment whose debt fulfilment declined to price. Refunds nothing and moves
+  // no money; it records WHO settled it outside this page and WHEN, on the row
+  // itself. That stamp, not the status, is what stops /api/square-refund ever
+  // offering the rest of the payment here again: a status is a stage the row
+  // passes through and the next refund rewrites it, while acknowledged_at is a
+  // fact about the row and nothing clears it.
+  squareAcknowledge: (paymentId) => api('POST', '/api/square-acknowledge', { paymentId }),
   squareReconcile:  () => api('POST', '/api/square-reconcile'),
   invoiceBox:       (id, email, name = null, price = null) => api('POST', `/api/pallets/${id}/invoice`, { email, name, price }),
   cancelBoxInvoice: (id) => api('POST', `/api/pallets/${id}/invoice-cancel`),

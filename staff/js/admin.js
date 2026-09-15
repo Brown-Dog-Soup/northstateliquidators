@@ -418,6 +418,15 @@ async function showDetail(id) {
     stiBtn.title = blocked ? 'Only for Live or Draft real boxes' : '';
   }
 
+  // Hot Deals manual toggle — label + style reflect state.
+  const hdBtn = $('#hot-deal-toggle');
+  if (hdBtn) {
+    const featured = !!current.is_hot_deal;
+    hdBtn.textContent = featured ? '🔥 Featured — click to remove' : '🔥 Feature in Hot Deals';
+    hdBtn.classList.toggle('btn-yellow', featured);
+    hdBtn.classList.toggle('btn', !featured);
+  }
+
   // History panel: collapse + forget so a different box fetches fresh on open.
   const hist = $('#history');
   if (hist) { hist.open = false; $('#history-list').innerHTML = ''; historyLoadedFor = null; }
@@ -689,6 +698,18 @@ $('#sold-to-inventory')?.addEventListener('click', async () => {
     location.hash = '#/pallet/' + r.cloneId;   // jump to the Draft copy
   } catch (e) { toast(`Sold → inventory failed: ${e.data?.error || e.message}`, 'err', 5000); }
   finally { btn.disabled = false; btn.textContent = 'Sold → inventory'; }
+});
+
+// Hot Deals manual toggle: staff feature/unfeature a box so it shows on the
+// Hot Deals page even without a sale price — "keep it fresh every couple of
+// days" (Rob, 2026-09-14).
+$('#hot-deal-toggle')?.addEventListener('click', async () => {
+  if (!current) return;
+  try {
+    await apiClient.patchPallet(current.manifest_id, { isHotDeal: !current.is_hot_deal });
+    toast(current.is_hot_deal ? 'Removed from Hot Deals' : 'Featured in Hot Deals', 'ok');
+    await showDetail(current.manifest_id);
+  } catch (e) { toast(`Update failed: ${e.data?.error || e.message}`, 'err', 4000); }
 });
 
 // Listing status (#6): Live / Draft / Ghost / Sold.

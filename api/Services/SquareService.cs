@@ -174,6 +174,13 @@ public sealed class SquareService
     /// or the link is already gone (404). Square has been seen returning 200
     /// without cancelled_order_id and leaving the link payable — callers
     /// must treat false as "still open, re-check later", never as deleted.
+    ///
+    /// A 2xx NEVER throws, whatever the body is. The whole premise here is that
+    /// Square misbehaves on success responses, so an empty or non-JSON body is
+    /// just another flavour of "not confirmed" — throwing a JsonException out of
+    /// a method callers read as a bool would turn a soft "re-check later" into a
+    /// hard failure at call sites that don't catch (SquareFunction.cs:262, :604).
+    /// Only a non-2xx that isn't 404 still throws.
     /// </summary>
     public async Task<bool> DeletePaymentLinkAsync(string linkId, CancellationToken ct)
     {
@@ -186,9 +193,27 @@ public sealed class SquareService
             _log.LogError("Square DeletePaymentLink {LinkId} failed {Status}: {Body}", linkId, (int)resp.StatusCode, body);
             throw new InvalidOperationException($"Square DeletePaymentLink -> {(int)resp.StatusCode}");
         }
-        using var doc = JsonDocument.Parse(body);
-        var confirmed = doc.RootElement.TryGetProperty("cancelled_order_id", out var c) &&
-                        c.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(c.GetString());
+
+        var confirmed = false;
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            // no-op: falls through to the "still open" warning below
+        }
+        else
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                confirmed = doc.RootElement.ValueKind == JsonValueKind.Object &&
+                            doc.RootElement.TryGetProperty("cancelled_order_id", out var c) &&
+                            c.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(c.GetString());
+            }
+            catch (JsonException)
+            {
+                confirmed = false;
+            }
+        }
+
         if (!confirmed)
             _log.LogWarning("Square DeletePaymentLink {LinkId}: 200 without cancelled_order_id — treating as still open", linkId);
         return confirmed;

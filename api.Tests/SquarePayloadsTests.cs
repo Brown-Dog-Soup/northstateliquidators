@@ -204,6 +204,70 @@ public class SquarePayloadsTests
         Assert.True(SquarePayloads.PaymentNote(Enumerable.Range(100000, 200)).Length <= 500);
     }
 
+    // ── DeliveryMethods (Task 4 feeds TryParse untrusted request input) ───
+    //
+    // The contract is deliberately two-channel and a future "cleanup" would be
+    // very likely to flatten it: the return value says "did I recognise this?",
+    // the out param says "what should you charge?". They disagree on purpose for
+    // unrecognised input. Both directions of getting this wrong cost real money —
+    // a typo must never silently become a $10 delivery charge, and a genuine
+    // delivery must never silently become free.
+
+    [Theory]
+    [InlineData(DeliveryMethod.Pickup, "pickup")]
+    [InlineData(DeliveryMethod.Delivery, "delivery")]
+    [InlineData(DeliveryMethod.Flea, "flea")]
+    public void ToDb_maps_every_member_to_its_db_token(DeliveryMethod m, string expected)
+        => Assert.Equal(expected, DeliveryMethods.ToDb(m));
+
+    [Theory]
+    [InlineData("pickup", DeliveryMethod.Pickup)]
+    [InlineData("delivery", DeliveryMethod.Delivery)]
+    [InlineData("flea", DeliveryMethod.Flea)]
+    public void ToDb_round_trips_through_TryParse(string token, DeliveryMethod expected)
+    {
+        Assert.True(DeliveryMethods.TryParse(token, out var m));
+        Assert.Equal(expected, m);
+        Assert.Equal(token, DeliveryMethods.ToDb(m));
+    }
+
+    [Theory]
+    // null and "" are RECOGNISED (true), not rejected — "the buyer didn't choose"
+    // is a legitimate request and pickup is the free, safe default.
+    [InlineData(null, DeliveryMethod.Pickup)]
+    [InlineData("", DeliveryMethod.Pickup)]
+    [InlineData("   ", DeliveryMethod.Pickup)]
+    [InlineData("pickup", DeliveryMethod.Pickup)]
+    [InlineData("delivery", DeliveryMethod.Delivery)]
+    [InlineData("flea", DeliveryMethod.Flea)]
+    // Case and surrounding whitespace are normalised away, so the wire format
+    // being shouty or padded is not a silent downgrade to free pickup.
+    [InlineData("DELIVERY", DeliveryMethod.Delivery)]
+    [InlineData("Delivery", DeliveryMethod.Delivery)]
+    [InlineData("  delivery  ", DeliveryMethod.Delivery)]
+    [InlineData("FLEA", DeliveryMethod.Flea)]
+    [InlineData("Pickup", DeliveryMethod.Pickup)]
+    public void TryParse_accepts_known_values_in_any_case(string? input, DeliveryMethod expected)
+    {
+        Assert.True(DeliveryMethods.TryParse(input, out var m));
+        Assert.Equal(expected, m);
+    }
+
+    [Theory]
+    [InlineData("nonsense")]
+    [InlineData("ship")]
+    [InlineData("shipping")]
+    [InlineData("deliver")]      // near-miss typo — must NOT become a $10 charge
+    [InlineData("deliveryy")]
+    [InlineData("0")]
+    public void TryParse_rejects_unknown_values_but_still_hands_back_pickup(string input)
+    {
+        // Both halves matter. false lets the caller reject the request; Pickup
+        // means a caller that ignores the bool still can't charge for delivery.
+        Assert.False(DeliveryMethods.TryParse(input, out var m));
+        Assert.Equal(DeliveryMethod.Pickup, m);
+    }
+
     [Fact]
     public void RefundKey_is_deterministic_45_chars_and_amount_sensitive()
     {

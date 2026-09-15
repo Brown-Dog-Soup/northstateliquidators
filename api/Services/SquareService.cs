@@ -21,8 +21,10 @@ namespace NSL.Api.Services;
 ///   SQUARE_WEBHOOK_URL            the exact notification URL registered with
 ///                                 Square — the HMAC signs url+body, so this
 ///                                 must match character-for-character
-///   SQUARE_PUBLIC_BASE_URL        site origin for redirect URLs (preview slots differ)
-///   SQUARE_SUPPORT_EMAIL          merchant support address on the hosted page
+///   SQUARE_{SANDBOX|PROD}_WEBHOOK_SIGNATURE_KEY / _WEBHOOK_URL  per-environment
+///                                 (fall back to the unsuffixed names)
+///   SQUARE_PUBLIC_BASE_URL        site origin used in redirect URLs
+///   SQUARE_SUPPORT_EMAIL          merchant_support_email on the hosted page
 ///   SQUARE_TAX_CATALOG_ID         the account's own NC/Wake sales-tax catalog
 ///                                 object; ABSENT falls back to the ad-hoc tax,
 ///                                 a WRONG value just fails the link create
@@ -58,8 +60,9 @@ public sealed class SquareService
         _token     = (IsProduction ? cfg["SQUARE_PROD_ACCESS_TOKEN"] : cfg["SQUARE_SANDBOX_ACCESS_TOKEN"]) ?? "";
         LocationId = (IsProduction ? cfg["SQUARE_PROD_LOCATION_ID"]  : cfg["SQUARE_SANDBOX_LOCATION_ID"])  ?? "";
         CheckoutEnabled = string.Equals(cfg["SQUARE_CHECKOUT_ENABLED"], "true", StringComparison.OrdinalIgnoreCase);
-        _webhookSignatureKey = cfg["SQUARE_WEBHOOK_SIGNATURE_KEY"] ?? "";
-        _webhookUrl          = cfg["SQUARE_WEBHOOK_URL"] ?? "";
+        string env = IsProduction ? "PROD" : "SANDBOX";
+        _webhookSignatureKey = cfg[$"SQUARE_{env}_WEBHOOK_SIGNATURE_KEY"] ?? cfg["SQUARE_WEBHOOK_SIGNATURE_KEY"] ?? "";
+        _webhookUrl          = cfg[$"SQUARE_{env}_WEBHOOK_URL"]           ?? cfg["SQUARE_WEBHOOK_URL"]           ?? "";
         SupportEmail = cfg["SQUARE_SUPPORT_EMAIL"] ?? "hello@northstateliquidators.com";
         TaxCatalogId = cfg["SQUARE_TAX_CATALOG_ID"];
         PublicBaseUrl = (cfg["SQUARE_PUBLIC_BASE_URL"] ?? "https://northstateliquidators.com").TrimEnd('/');
@@ -160,9 +163,21 @@ public sealed class SquareService
     public sealed record RecoveredOrder(List<OrderLine> Lines, long? TotalCents, long? TaxCents, long? DeliveryCents);
 
     /// <summary>
-    /// Retrieve an order and pull out every line we stamped with a manifest-id uid,
-    /// with its money, plus the order totals. Lines whose uid isn't one of our
-    /// manifest ids are skipped. Returns an empty result on 404 / unconfigured.
+    /// Retrieve an order and pull out every line whose uid parses as a GUID, with
+    /// its money, plus the order totals. Returns an empty result on 404 / unconfigured.
+    ///
+    /// A PARSEABLE GUID IS NOT PROOF THE LINE IS ONE OF OUR MANIFEST IDS — this
+    /// method has no database and cannot check that. It used to be documented as
+    /// skipping anything that isn't one of our manifest ids, which was never what
+    /// the code did; that went unnoticed while a non-matching line was simply
+    /// dropped, harmlessly. It is not harmless now: the caller
+    /// (CheckoutFulfillment, recovery path) resolves every surviving line against
+    /// dbo.v_pallets itself, and a line that matches no box there raises a refund
+    /// flag for a human instead of being dropped. So the comment is load-bearing
+    /// and was wrong; this fixes the comment rather than the code, because the
+    /// manifest check belongs — and already lives — in the caller that owns the
+    /// database connection, not in this REST client. Only a missing uid or one
+    /// that isn't a GUID at all is skipped here.
     /// </summary>
     public async Task<RecoveredOrder> OrderLinesAsync(string orderId, CancellationToken ct)
     {
@@ -456,6 +471,18 @@ public sealed class SquareService
     /// is payable against it, and our row pointing at it is precisely the stuck
     /// state this exists to let the caller clear.
     ///
+    /// THAT 404 RULE IS NOT PROVABLY SCOPED TO THIS MERCHANT. A 404 also covers
+    /// the case where invoiceId is real but belongs to a different Square
+    /// environment or a different merchant account — sandbox credentials asked
+    /// about a production invoice id, say — and this method cannot tell that
+    /// apart from "we genuinely never had it," so it clears our row on it just
+    /// the same, on an invoice that may still be holding money elsewhere. This
+    /// is deliberately left as a documentation gap rather than a code change:
+    /// the realistic trigger is a sandbox-versus-production credential
+    /// mix-up, which breaks every other call this service makes just as
+    /// badly, so a caller in that state has far larger problems than one
+    /// invoice_id clearing early.
+    ///
     /// The verdict is taken from the GET's status field and NOWHERE ELSE. The
     /// obvious-looking alternative — sniff the failed cancel's error body for
     /// the word "canceled" — was written and deleted: Square refuses a PAID
@@ -480,19 +507,23 @@ public sealed class SquareService
         var gBody = await gResp.Content.ReadAsStringAsync(ct);
         if (!gResp.IsSuccessStatusCode)
             throw new InvalidOperationException($"Square GetInvoice -> {(int)gResp.StatusCode}");
-        int version;
-        string? invoiceStatus;
-        using (var gDoc = JsonDocument.Parse(gBody))
-        {
-            var inv = gDoc.RootElement.GetProperty("invoice");
-            version = inv.GetProperty("version").GetInt32();
-            invoiceStatus = inv.TryGetProperty("status", out var s) ? s.GetString() : null;
-        }
+
+        // Status first, via the accessor that never throws, and version only
+        // once we know we still need it: GetProperty("version") throws
+        // KeyNotFoundException — not the InvalidOperationException the rest of
+        // this method raises — if Square ever omits it. Every fixture supplies
+        // version today so this is defensive only, but reading status first
+        // costs nothing and means an already-CANCELED invoice never has to
+        // touch that accessor at all.
+        using var gDoc = JsonDocument.Parse(gBody);
+        var inv = gDoc.RootElement.GetProperty("invoice");
+        string? invoiceStatus = inv.TryGetProperty("status", out var s) ? s.GetString() : null;
         if (InvoiceAlreadyCanceled(invoiceStatus))
         {
             _log.LogInformation("Square CancelInvoice {InvoiceId}: already CANCELED at Square — treating as done (this is the retry of a cancel whose database half failed)", invoiceId);
             return;
         }
+        int version = inv.GetProperty("version").GetInt32();
 
         var cResp = await client.PostAsync($"/v2/invoices/{Uri.EscapeDataString(invoiceId)}/cancel",
             new StringContent(JsonSerializer.Serialize(new { version }), Encoding.UTF8, "application/json"), ct);
@@ -526,6 +557,30 @@ public sealed class SquareService
         {
             _log.LogError("Square RefundPayment {PaymentId} failed {Status}: {Body}", paymentId, (int)resp.StatusCode, body);
             throw new InvalidOperationException($"Square RefundPayment -> {(int)resp.StatusCode}");
+        }
+        return JsonDocument.Parse(body);
+    }
+
+    /// <summary>
+    /// One payment, straight from Square — the raw payment JSON, or null on 404.
+    ///
+    /// Exists for exactly one caller: the staff "look up the amount" action on a
+    /// payment we recorded with amount_cents NULL. Square can omit amount_money
+    /// from a payment webhook, and an unknown total concludes nothing — no refund
+    /// is allowed to clear the attention flag on it — so without a way to ASK,
+    /// such a row is flagged forever even after a human has refunded it by hand
+    /// in the Square Dashboard. This is that way to ask.
+    /// </summary>
+    public async Task<JsonDocument?> RetrievePaymentAsync(string paymentId, CancellationToken ct)
+    {
+        using var client = Client();
+        var resp = await client.GetAsync($"/v2/payments/{Uri.EscapeDataString(paymentId)}", ct);
+        if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            _log.LogError("Square RetrievePayment {PaymentId} failed {Status}: {Body}", paymentId, (int)resp.StatusCode, body);
+            throw new InvalidOperationException($"Square RetrievePayment -> {(int)resp.StatusCode}");
         }
         return JsonDocument.Parse(body);
     }

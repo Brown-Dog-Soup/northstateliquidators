@@ -157,6 +157,37 @@ public class SquareServiceInvoiceCancelTests
         Assert.Equal(2, h.Requests.Count);
     }
 
+    /// <summary>
+    /// The reordered read: status is checked with the never-throwing accessor
+    /// BEFORE version is touched with the throwing one. An already-CANCELED
+    /// invoice that (hypothetically) omits version must still succeed and must
+    /// still send no POST, because the early return happens before version is
+    /// ever read.
+    /// </summary>
+    [Fact]
+    public async Task An_already_cancelled_invoice_with_no_version_field_still_succeeds()
+    {
+        var h = new ScriptedHandler((HttpStatusCode.OK, "{\"invoice\":{\"id\":\"INV1\",\"status\":\"CANCELED\"}}"));
+        await Cancel(h);
+        Assert.Equal(new[] { "GET /v2/invoices/INV1" }, h.Requests);
+    }
+
+    /// <summary>
+    /// An invoice that is NOT already cancelled and (hypothetically) omits
+    /// version still needs it to build the cancel request, so this is the one
+    /// path where the throwing accessor is still reached — deliberately not
+    /// swallowed into a softer failure, since every real fixture supplies
+    /// version and a caller seeing this is looking at a malformed Square
+    /// response worth surfacing loudly.
+    /// </summary>
+    [Fact]
+    public async Task An_unpaid_invoice_with_no_version_field_throws_before_sending_a_cancel()
+    {
+        var h = new ScriptedHandler((HttpStatusCode.OK, "{\"invoice\":{\"id\":\"INV1\",\"status\":\"UNPAID\"}}"));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => Cancel(h));
+        Assert.Equal(new[] { "GET /v2/invoices/INV1" }, h.Requests);
+    }
+
     [Theory]
     [InlineData("UNPAID", false)]
     [InlineData("DRAFT", false)]

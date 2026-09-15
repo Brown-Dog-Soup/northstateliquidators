@@ -174,7 +174,7 @@
       : '';
     const struck = onSale ? p.list_price : p.total_msrp;
     return `
-<article class="box-card" data-id="${esc(p.manifest_id)}" data-state="${esc(p.publish_state)}" data-size="${esc(p.box_size || '')}">
+<article class="box-card" data-id="${esc(p.manifest_id)}" data-state="${esc(p.publish_state)}" data-size="${esc(p.box_size || '')}"${cartHas(p.manifest_id) ? ' data-in-cart' : ''}>
   <div class="box-photo"${photo}>
     ${size ? `<span class="box-size">${esc(size)}</span>` : ''}
     ${p.is_just_dropped && !sold ? `<span class="box-flag new">Just dropped</span>` : ''}
@@ -465,7 +465,7 @@
       <dl class="cart-receipt" id="cart-receipt">
         <div><dt>Subtotal</dt><dd id="cart-sub-amt">$0</dd></div>
         <div id="cart-deliv-line" hidden><dt>Delivery</dt><dd id="cart-deliv-amt">$0</dd></div>
-        <div><dt>Sales tax (${TAX_PCT}%)</dt><dd id="cart-tax-amt">$0</dd></div>
+        <div><dt id="cart-tax-label">Sales tax (${TAX_PCT}%)</dt><dd id="cart-tax-amt">$0</dd></div>
       </dl>
       <div class="cart-total"><span>Total</span><strong id="cart-total">$0</strong></div>
       <p class="note" id="cart-note">${esc(CART_NOTE)}</p>
@@ -489,12 +489,14 @@
       check: overlay.querySelector('#deliv-check'),
       addrRow: overlay.querySelector('#deliv-addr-row'),
       addr: overlay.querySelector('#deliv-addr'),
+      price: overlay.querySelector('#deliv-opt-delivery .deliv-price'),
     };
     const receipt = {
       sub: overlay.querySelector('#cart-sub-amt'),
       delLine: overlay.querySelector('#cart-deliv-line'),
       del: overlay.querySelector('#cart-deliv-amt'),
       tax: overlay.querySelector('#cart-tax-amt'),
+      taxLabel: overlay.querySelector('#cart-tax-label'),
       note: overlay.querySelector('#cart-note'),
     };
     deliv.radios.forEach(r => r.addEventListener('change', () => {
@@ -611,6 +613,12 @@
     const del = (goodsCents > 0 && choice === 'delivery') ? DELIVERY_CENTS : 0;
     const tax = Math.round((goodsCents + del) * TAX_PCT) / 100;
     const taxCents = Math.round(tax);
+    // The drawer is mounted before /api/public/checkout-status answers, so the
+    // rate and the fee baked into its markup are the defaults. Re-state both
+    // from the live config: a label quoting a rate we are not charging is a
+    // number we have told the shopper that isn't true.
+    c.receipt.taxLabel.textContent = `Sales tax (${TAX_PCT}%)`;
+    c.deliv.price.textContent = dollars(DELIVERY_CENTS);
     c.receipt.sub.textContent = dollars(goodsCents);
     c.receipt.delLine.hidden = del === 0;
     c.receipt.del.textContent = dollars(del);
@@ -683,14 +691,14 @@
     if (!ids.length) return;
     c.checkout.disabled = true;
     c.checkout.textContent = 'One sec…';
+    let leaving = false;                 // heading to Square: leave the button reading "One sec…"
     try {
       const choice = deliveryChoice();
       const addr = choice === 'delivery' ? (c.deliv.addr.value || '').trim() : '';
       if (choice === 'delivery' && !addr) {
         cartNotice('Add the street address for the delivery.');
         c.deliv.addr.focus();
-        resetCheckoutBtn();
-        return;
+        return;                          // the finally below puts the button back
       }
       let member = '';
       try { member = localStorage.getItem('nsl.member') || ''; } catch { /* ignore */ }
@@ -702,7 +710,7 @@
       });
       let j = {};
       try { j = await r.json(); } catch { /* non-JSON body */ }
-      if (r.ok && j.url) { window.location.href = j.url; return; }   // Square-hosted checkout
+      if (r.ok && j.url) { leaving = true; window.location.href = j.url; return; }   // Square-hosted checkout
       if (r.status === 409) {
         const gone = Array.isArray(j.unavailable) ? j.unavailable.map(x => String(x).toLowerCase()) : null;
         if (gone && gone.length) saveCart(ids.filter(id => !gone.includes(id)));
@@ -723,7 +731,7 @@
     } catch {
       cartNotice(`Couldn't start checkout — call us at ${PHONE} and we'll take care of you.`);
     } finally {
-      resetCheckoutBtn();
+      if (!leaving) resetCheckoutBtn();
     }
   }
 

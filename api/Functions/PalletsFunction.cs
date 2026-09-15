@@ -29,6 +29,7 @@ public sealed class PalletsFunction
     private readonly SqlService _sql;
     private readonly BlobService _blob;
     private readonly SquareService _square;
+    private readonly CheckoutFulfillment _fulfill;
     private readonly string _storageAccount;
     private readonly ILogger<PalletsFunction> _log;
 
@@ -53,11 +54,13 @@ public sealed class PalletsFunction
     /// <summary>The audited fields (B7) as read straight off dbo.manifests.</summary>
     private sealed record AuditSnapshot(string? publish_state, decimal? list_price, decimal? sale_price, string? box_size, string? sell_mode);
 
-    public PalletsFunction(SqlService sql, BlobService blob, SquareService square, IConfiguration config, ILogger<PalletsFunction> log)
+    public PalletsFunction(SqlService sql, BlobService blob, SquareService square, CheckoutFulfillment fulfill,
+        IConfiguration config, ILogger<PalletsFunction> log)
     {
         _sql = sql;
         _blob = blob;
         _square = square;
+        _fulfill = fulfill;
         _storageAccount = config["StorageAccountName"] ?? "";
         _log = log;
     }
@@ -330,6 +333,28 @@ WHERE li.manifest_id = @id ORDER BY li.created_at DESC";
         var after = await conn.QueryFirstOrDefaultAsync<AuditSnapshot>(AuditSnapshotSql, new { id });
         await WriteHistoryAsync(conn, id, before, after, ClientPrincipal.UserDetails(req));
 
+        // Cart links (spec §4): a price change, leaving 'live', or archiving
+        // retires every open cart link that holds this box — DB first, Square
+        // best-effort. A shopper holding an old link sees Square refuse it;
+        // the drawer re-validates on open.
+        bool priceChanged = before?.list_price != after?.list_price || before?.sale_price != after?.sale_price;
+        bool leftLive = before?.publish_state == "live" && after?.publish_state != "live";
+        bool archivedNow = body?.archived == true;
+        if (priceChanged || leftLive || archivedNow)
+        {
+            List<CanceledLink> canceled;
+            using (var tx = conn.BeginTransaction())
+            {
+                canceled = await _fulfill.CancelOpenLinksForBoxesAsync(conn, tx, new[] { id }, null);
+                tx.Commit();
+            }
+            if (canceled.Count > 0)
+            {
+                _log.LogInformation("UpdatePallet {Id}: canceled {N} open cart link(s) (price/state change)", id, canceled.Count);
+                await _fulfill.RetireLinksAsync(conn, canceled, ct);
+            }
+        }
+
         var updated = await conn.QueryFirstOrDefaultAsync(
             "SELECT * FROM dbo.v_pallets WHERE manifest_id = @id", new { id });
         if (updated != null) SignRowPhotos((object)updated);
@@ -458,6 +483,17 @@ FROM dbo.line_items WHERE manifest_id = @sid",
         using var tx = conn.BeginTransaction();
         try
         {
+            var webSold = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM dbo.checkout_order_boxes WHERE manifest_id = @id AND outcome = 'sold'",
+                new { id }, transaction: tx);
+            if (webSold > 0)
+            {
+                tx.Rollback();
+                return new ConflictObjectResult(new { error = "This box was sold through the website — archive it instead of deleting so the sale record stays intact." });
+            }
+            var canceled = await _fulfill.CancelOpenLinksForBoxesAsync(conn, tx, new[] { id }, null);
+            await conn.ExecuteAsync("DELETE FROM dbo.checkout_order_boxes WHERE manifest_id = @id", new { id }, transaction: tx);
+
             // manifest_history has an FK to manifests — clear the audit rows first.
             await conn.ExecuteAsync(
                 "DELETE FROM dbo.manifest_history WHERE manifest_id = @id",
@@ -471,6 +507,9 @@ FROM dbo.line_items WHERE manifest_id = @sid",
             tx.Commit();
 
             if (palletRows == 0) return new NotFoundResult();
+            // Only now: a delete that matched no rows cancelled nothing, and
+            // retiring links there would kill live links for a box that still exists.
+            await _fulfill.RetireLinksAsync(conn, canceled, ct);
             _log.LogInformation("DeletePallet {Id}: removed pallet + {N} item(s)", id, itemRows);
             return new OkObjectResult(new { id, deleted = true, items_deleted = itemRows });
         }
@@ -499,34 +538,19 @@ FROM dbo.line_items WHERE manifest_id = @sid",
 
         // What the original looked like BEFORE — the proc validates the rest.
         var orig = await conn.QueryFirstOrDefaultAsync(
-            "SELECT publish_state, checkout_link_id, invoice_id FROM dbo.manifests WHERE id = @id", new { id });
+            "SELECT publish_state, invoice_id FROM dbo.manifests WHERE id = @id", new { id });
         if (orig == null) return new NotFoundResult();
         if (orig.invoice_id != null && (string?)orig.publish_state != "sold")
             return new ConflictObjectResult(new { error = "This box has an outstanding Square invoice — cancel the invoice first, or wait for it to be paid." });
         string? prevState = (string?)orig.publish_state;
-        string? linkId = (string?)orig.checkout_link_id;
 
-        // Retire the public Buy link on the original FIRST (same as
-        // SquareReconcile's "pulled box" branch) so nobody can pay for a box
-        // that reads SOLD. Done before the proc so a Square failure leaves the
-        // box untouched — there is nothing to undo and staff simply retry.
-        // (Once the box is sold, the invoice route refuses it and Reconcile
-        // only sweeps fake-sold rows, so this is the one reliable moment.)
-        if (linkId != null && _square.Configured)
+        // Retire every open cart link holding this box BEFORE it reads SOLD.
+        // The DB cancel is the fence; Square deletes are best-effort after.
+        List<CanceledLink> canceled;
+        using (var tx = conn.BeginTransaction())
         {
-            try
-            {
-                await _square.DeletePaymentLinkAsync(linkId, ct);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _log.LogError(ex, "SoldToInventory: could not retire Square link {Link} on BOX {Id} — box left as-is", linkId, id);
-                return new ObjectResult(new { error = "Could not retire the Square Buy link on this box — try again in a moment." }) { StatusCode = 502 };
-            }
-            await conn.ExecuteAsync(@"
-UPDATE dbo.manifests SET checkout_link_id = NULL, checkout_order_id = NULL,
-       checkout_url = NULL, checkout_created_at = NULL WHERE id = @id", new { id });
-            _log.LogInformation("SoldToInventory: retired Square link {Link} on BOX {Id}", linkId, id);
+            canceled = await _fulfill.CancelOpenLinksForBoxesAsync(conn, tx, new[] { id }, null);
+            tx.Commit();
         }
 
         dynamic? row;
@@ -541,6 +565,8 @@ UPDATE dbo.manifests SET checkout_link_id = NULL, checkout_order_id = NULL,
             return new ConflictObjectResult(new { error = ex.Message });
         }
         if (row == null) return new ObjectResult(new { error = "sp_SoldToInventory returned no rows" }) { StatusCode = 500 };
+
+        await _fulfill.RetireLinksAsync(conn, canceled, ct);
 
         Guid originalId = (Guid)row.original_id;
         Guid cloneId    = (Guid)row.clone_id;

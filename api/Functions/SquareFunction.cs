@@ -685,7 +685,7 @@ WHERE square_payment_id = @pid
         await using var conn = await _sql.OpenAsync(ct);
         var box = await conn.QueryFirstOrDefaultAsync(@"
 SELECT p.manifest_id, p.pallet_number, p.display_name, p.publish_state, p.is_ghost, p.archived_at,
-       m.checkout_link_id, m.invoice_id,
+       m.invoice_id,
        COALESCE(p.sale_price, p.list_price, p.total_wholesale) AS ask_price
 FROM dbo.v_pallets p JOIN dbo.manifests m ON m.id = p.manifest_id
 WHERE p.manifest_id = @id", new { id });
@@ -701,9 +701,16 @@ WHERE p.manifest_id = @id", new { id });
         if (price is null or <= 0)
             return new BadRequestObjectResult(new { error = "No price — set a box price or pass one." });
 
-        // Retire the public Buy link (its order would be a second sale channel).
-        if (box.checkout_link_id != null)
-            await _square.DeletePaymentLinkAsync((string)box.checkout_link_id, ct);
+        // Retire every open cart link holding this box (DB-first fence), then
+        // create the invoice. If Square fails below, the box is simply
+        // link-less until a shopper re-adds it — never a live box with a dead link.
+        List<CanceledLink> canceled;
+        using (var tx0 = conn.BeginTransaction())
+        {
+            canceled = await _fulfill.CancelOpenLinksForBoxesAsync(conn, tx0, new[] { id }, null);
+            tx0.Commit();
+        }
+        await _fulfill.RetireLinksAsync(conn, canceled, ct);
 
         var customerId = await _square.FindOrCreateCustomerAsync(body.email.Trim(), body.name, ct);
         var name = $"BOX #{box.pallet_number} — {(string?)box.display_name ?? "NSL Box"}";
@@ -711,12 +718,24 @@ WHERE p.manifest_id = @id", new { id });
             name, (long)Math.Round(price.Value * 100m), customerId,
             title: "North State Liquidators", invoiceNumber: $"BOX-{box.pallet_number}", ct);
 
-        await conn.ExecuteAsync(@"
-UPDATE dbo.manifests SET
-    invoice_id = @iid, invoice_url = @iurl,
-    checkout_link_id = NULL, checkout_url = NULL,
-    checkout_order_id = @oid, checkout_created_at = SYSUTCDATETIME()
-WHERE id = @id", new { id, iid = inv.InvoiceId, iurl = inv.PublicUrl, oid = inv.OrderId });
+        // The invoice's Square order is recorded like any other checkout order:
+        // the webhook identifies our orders from dbo.checkout_orders, so without
+        // this row a paid invoice would land as an UNMATCHED payment flagged for
+        // a refund, with the box never marked sold.
+        using (var tx = conn.BeginTransaction())
+        {
+            await conn.ExecuteAsync(@"
+UPDATE dbo.manifests SET invoice_id = @iid, invoice_url = @iurl WHERE id = @id",
+                new { id, iid = inv.InvoiceId, iurl = inv.PublicUrl }, transaction: tx);
+            await conn.ExecuteAsync(@"
+INSERT INTO dbo.checkout_orders (square_order_id, kind, url, status, total_cents)
+VALUES (@oid, 'invoice', @url, 'open', @total)",
+                new { oid = inv.OrderId, url = inv.PublicUrl, total = (long)Math.Round(price.Value * 100m) }, transaction: tx);
+            await conn.ExecuteAsync(@"
+INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents) VALUES (@oid, @mid, @amt)",
+                new { oid = inv.OrderId, mid = id, amt = (long)Math.Round(price.Value * 100m) }, transaction: tx);
+            tx.Commit();
+        }
         // Reserved for the buyer: off the public site while the invoice is out.
         if ((string)box.publish_state == "live")
         {
@@ -749,8 +768,11 @@ WHERE id = @id", new { id, iid = inv.InvoiceId, iurl = inv.PublicUrl, oid = inv.
 
         await _square.CancelInvoiceAsync((string)box.invoice_id, ct);
         await conn.ExecuteAsync(@"
-UPDATE dbo.manifests SET invoice_id = NULL, invoice_url = NULL,
-    checkout_order_id = NULL, checkout_created_at = NULL WHERE id = @id", new { id });
+UPDATE o SET status = 'canceled', closed_at = SYSUTCDATETIME()
+FROM dbo.checkout_orders o
+WHERE o.kind = 'invoice' AND o.status = 'open'
+  AND EXISTS (SELECT 1 FROM dbo.checkout_order_boxes b WHERE b.square_order_id = o.square_order_id AND b.manifest_id = @id);
+UPDATE dbo.manifests SET invoice_id = NULL, invoice_url = NULL WHERE id = @id", new { id });
         _log.LogInformation("CancelBoxInvoice: BOX #{Num} invoice canceled", (object?)box.pallet_number);
         return new OkObjectResult(new { canceled = true });
     }

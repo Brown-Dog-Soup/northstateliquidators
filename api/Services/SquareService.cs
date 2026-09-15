@@ -33,6 +33,8 @@ public sealed class SquareService
     public bool   CheckoutEnabled { get; }
     public string BaseUrl { get; }
     public string LocationId { get; }
+    public string SupportEmail { get; }
+    public string? TaxCatalogId { get; }
     private readonly string _token;
     private readonly string _webhookSignatureKey;
     private readonly string _webhookUrl;
@@ -50,6 +52,8 @@ public sealed class SquareService
         CheckoutEnabled = string.Equals(cfg["SQUARE_CHECKOUT_ENABLED"], "true", StringComparison.OrdinalIgnoreCase);
         _webhookSignatureKey = cfg["SQUARE_WEBHOOK_SIGNATURE_KEY"] ?? "";
         _webhookUrl          = cfg["SQUARE_WEBHOOK_URL"] ?? "";
+        SupportEmail = cfg["SQUARE_SUPPORT_EMAIL"] ?? "hello@northstateliquidators.com";
+        TaxCatalogId = cfg["SQUARE_TAX_CATALOG_ID"];
     }
 
     private HttpClient Client()
@@ -61,29 +65,23 @@ public sealed class SquareService
         return c;
     }
 
-    public sealed record PaymentLink(string Id, string OrderId, string Url);
+    /// <summary>Per-box tax as Square computed it, keyed by the line uid (= manifest id).</summary>
+    public sealed record CartLink(string Id, string OrderId, string Url,
+        long TotalCents, long TaxCents, long DeliveryCents, IReadOnlyDictionary<Guid, long> LineTaxCents);
 
     /// <summary>
-    /// Quick Pay payment link for one box. Deterministic idempotency key means
-    /// a double-clicked Buy (or a retried request) replays the original link
-    /// instead of minting a second one.
+    /// One payment link for N boxes: a full `order` with one ad-hoc line item
+    /// per box (uid = manifest_id) instead of quick_pay, plus the 7.25% NC tax
+    /// and — for delivery orders — the $10 service charge. Idempotency key is
+    /// per attempt (nsl-cart-{guid}); reuse is decided by our DB, not Square.
+    /// Every money figure comes back out of Square's own order totals so our
+    /// arithmetic can never disagree with what the buyer is charged, and the
+    /// per-line tax means a partial refund can return that box's tax exactly.
     /// </summary>
-    public async Task<PaymentLink> CreatePaymentLinkAsync(
-        string name, long amountCents, string redirectUrl, string idempotencyKey,
-        string? note, CancellationToken ct)
+    public async Task<CartLink> CreateCartPaymentLinkAsync(IReadOnlyList<CartLine> lines, string redirectUrl,
+        string idempotencyKey, string referenceId, string paymentNote, DeliveryMethod delivery, CancellationToken ct)
     {
-        var payload = new
-        {
-            idempotency_key = idempotencyKey,
-            quick_pay = new
-            {
-                name,
-                price_money = new { amount = amountCents, currency = "USD" },
-                location_id = LocationId
-            },
-            checkout_options = new { redirect_url = redirectUrl },
-            payment_note = note
-        };
+        var payload = SquarePayloads.CartLink(lines, LocationId, redirectUrl, idempotencyKey, referenceId, paymentNote, SupportEmail, delivery, TaxCatalogId);
         using var client = Client();
         var resp = await client.PostAsync("/v2/online-checkout/payment-links",
             new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"), ct);
@@ -95,10 +93,48 @@ public sealed class SquareService
         }
         using var doc = JsonDocument.Parse(body);
         var link = doc.RootElement.GetProperty("payment_link");
-        return new PaymentLink(
+
+        long total = lines.Sum(l => l.AmountCents);   // only a fallback; Square's number wins
+        long tax = 0, deliveryCents = 0;
+        var lineTax = new Dictionary<Guid, long>();
+        if (doc.RootElement.TryGetProperty("related_resources", out var rr) &&
+            rr.TryGetProperty("orders", out var orders) && orders.GetArrayLength() > 0)
+        {
+            var o = orders[0];
+            total         = Money(o, "total_money") ?? total;
+            tax           = Money(o, "total_tax_money") ?? 0;
+            deliveryCents = Money(o, "total_service_charge_money") ?? 0;
+            if (o.TryGetProperty("line_items", out var items))
+                foreach (var li in items.EnumerateArray())
+                    if (li.TryGetProperty("uid", out var uid) && Guid.TryParse(uid.GetString(), out var g))
+                        lineTax[g] = Money(li, "total_tax_money") ?? 0;
+        }
+        else
+        {
+            _log.LogWarning("Square CreatePaymentLink {LinkId}: no related_resources.orders — tax/delivery recorded as 0",
+                link.GetProperty("id").GetString());
+        }
+
+        return new CartLink(
             link.GetProperty("id").GetString()!,
             link.GetProperty("order_id").GetString()!,
-            link.GetProperty("url").GetString()!);
+            link.GetProperty("url").GetString()!,
+            total, tax, deliveryCents, lineTax);
+
+        static long? Money(JsonElement el, string name)
+            => el.TryGetProperty(name, out var m) && m.TryGetProperty("amount", out var a) ? a.GetInt64() : null;
+    }
+
+    /// <summary>Manifest ids we stamped as line-item uids on a cart order (webhook fallback correlation).</summary>
+    public async Task<List<Guid>> OrderLineUidsAsync(string orderId, CancellationToken ct)
+    {
+        var ids = new List<Guid>();
+        using var order = await RetrieveOrderAsync(orderId, ct);
+        if (order == null) return ids;
+        if (order.RootElement.TryGetProperty("order", out var o) && o.TryGetProperty("line_items", out var items))
+            foreach (var li in items.EnumerateArray())
+                if (li.TryGetProperty("uid", out var uid) && Guid.TryParse(uid.GetString(), out var g)) ids.Add(g);
+        return ids;
     }
 
     /// <summary>Returns the raw order JSON, or null on 404.</summary>
@@ -132,17 +168,30 @@ public sealed class SquareService
         return false;
     }
 
-    /// <summary>Delete (deactivate) a payment link; cancels its unpaid order. 404 is fine.</summary>
-    public async Task DeletePaymentLinkAsync(string linkId, CancellationToken ct)
+    /// <summary>
+    /// Delete (deactivate) a payment link. Returns true only when Square
+    /// confirms the order was cancelled (response carries cancelled_order_id)
+    /// or the link is already gone (404). Square has been seen returning 200
+    /// without cancelled_order_id and leaving the link payable — callers
+    /// must treat false as "still open, re-check later", never as deleted.
+    /// </summary>
+    public async Task<bool> DeletePaymentLinkAsync(string linkId, CancellationToken ct)
     {
         using var client = Client();
         var resp = await client.DeleteAsync($"/v2/online-checkout/payment-links/{Uri.EscapeDataString(linkId)}", ct);
-        if (!resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NotFound)
+        if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return true;
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
         {
-            var body = await resp.Content.ReadAsStringAsync(ct);
             _log.LogError("Square DeletePaymentLink {LinkId} failed {Status}: {Body}", linkId, (int)resp.StatusCode, body);
             throw new InvalidOperationException($"Square DeletePaymentLink -> {(int)resp.StatusCode}");
         }
+        using var doc = JsonDocument.Parse(body);
+        var confirmed = doc.RootElement.TryGetProperty("cancelled_order_id", out var c) &&
+                        c.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(c.GetString());
+        if (!confirmed)
+            _log.LogWarning("Square DeletePaymentLink {LinkId}: 200 without cancelled_order_id — treating as still open", linkId);
+        return confirmed;
     }
 
     /// <summary>
@@ -286,14 +335,15 @@ public sealed class SquareService
     }
 
     /// <summary>
-    /// Full refund of a payment. Idempotency key derived from the payment id,
-    /// so a double-clicked Refund button can't refund twice.
+    /// Refund (full or partial). Key = hash(payment, amount), ≤45 chars, so the
+    /// same amount can't be refunded twice by a double click but a later
+    /// different-amount refund is allowed.
     /// </summary>
     public async Task<JsonDocument> RefundPaymentAsync(string paymentId, long amountCents, string? reason, CancellationToken ct)
     {
         var payload = new
         {
-            idempotency_key = $"nsl-refund-{paymentId}",
+            idempotency_key = SquarePayloads.RefundKey(paymentId, amountCents),
             payment_id = paymentId,
             amount_money = new { amount = amountCents, currency = "USD" },
             reason = reason ?? "NSL admin refund"
@@ -361,5 +411,13 @@ public sealed class SquareService
         var computed = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(_webhookUrl + rawBody)));
         return CryptographicOperations.FixedTimeEquals(
             Encoding.UTF8.GetBytes(computed), Encoding.UTF8.GetBytes(signatureHeader));
+    }
+
+    // TEMP shim removed in Task 4 — old single-box link creation.
+    public sealed record PaymentLink(string Id, string OrderId, string Url);
+    public async Task<PaymentLink> CreatePaymentLinkAsync(string name, long amountCents, string redirectUrl, string idempotencyKey, string? note, CancellationToken ct)
+    {
+        var l = await CreateCartPaymentLinkAsync(new[] { new CartLine(Guid.Empty, name, amountCents) }, redirectUrl, idempotencyKey, name, note ?? name, DeliveryMethod.Pickup, ct);
+        return new PaymentLink(l.Id, l.OrderId, l.Url);
     }
 }

@@ -388,9 +388,18 @@ WHERE square_payment_id = @pid",
     /// buyer did not get clears the flag without pretending the order was voided.
     /// The caller decides what counts as returned: only a COMPLETED refund gets
     /// here, never one Square has merely accepted.
+    ///
+    /// The INSERT is UNCONDITIONAL, including for a payment we have no row for:
+    /// it is the only durable evidence the refund happened, and skipping unknown
+    /// payments would drop a genuinely out-of-order refund forever. When the
+    /// payments UPDATE then matches nothing, that is our books and Square's
+    /// disagreeing about real money already returned to a real customer, so it is
+    /// logged as a warning naming all three figures. The return value does not
+    /// change: the webhook must still answer 200, because a refund we cannot
+    /// attribute is not a reason to make Square retry it eleven times.
     /// </summary>
     /// <returns>true if this refund was newly recorded; false on a replay.</returns>
-    public static async Task<bool> RecordRefundAsync(SqlConnection conn, string refundId, string paymentId, long amountCents)
+    public async Task<bool> RecordRefundAsync(SqlConnection conn, string refundId, string paymentId, long amountCents)
     {
         var inserted = await conn.ExecuteAsync(@"
 INSERT INTO dbo.payment_refunds (square_refund_id, square_payment_id, amount_cents)
@@ -402,12 +411,22 @@ WHERE NOT EXISTS (SELECT 1 FROM dbo.payment_refunds WHERE square_refund_id = @ri
         // refunded_cents + @amt, not @amt: every column below is the running
         // total after this refund, so two partials add up instead of the second
         // overwriting the first.
-        await conn.ExecuteAsync(@"
+        var matched = await conn.ExecuteAsync(@"
 UPDATE dbo.payments SET
     refunded_cents = refunded_cents + @amt,
     status = CASE WHEN refunded_cents + @amt >= COALESCE(amount_cents, 0) THEN 'REFUNDED' ELSE 'PARTIAL_REFUNDED' END,
     needs_refund = CASE WHEN refunded_cents + @amt >= COALESCE(refund_due_cents, amount_cents, 0) THEN 0 ELSE needs_refund END
 WHERE square_payment_id = @pid", new { pid = paymentId, amt = amountCents });
+
+        // Zero rows means we have no payments row for this payment at all. The
+        // refund row above is recorded, but nothing in dbo.payments will ever
+        // reflect it: our books and Square now disagree about money that has
+        // already gone back to a customer. This is NOT a replay or a retry —
+        // a replay returned false several lines up — it needs a human.
+        if (matched == 0)
+            _log.LogWarning(
+                "RecordRefund: UNATTRIBUTABLE refund — refund {RefundId} returned {Amount}c against payment {PaymentId}, which has no dbo.payments row. The refund row is recorded but no payment total was updated; our books and Square disagree about money already returned. Reconcile by hand.",
+                refundId, amountCents, paymentId);
         return true;
     }
 

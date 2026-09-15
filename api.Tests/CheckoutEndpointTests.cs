@@ -47,9 +47,16 @@ public class CheckoutEndpointTests
         return new SquareFunction(sql, square, fulfill, NullLogger<SquareFunction>.Instance);
     }
 
+    // A distinct address per request. The cart route carries a per-IP rate limit
+    // whose state is process-wide, so without this the tests in this class would
+    // eventually throttle each other rather than exercise what they are named for.
+    private static int _requests;
+
     private static HttpRequest Req(string json)
     {
         var ctx = new DefaultHttpContext();
+        ctx.Connection.RemoteIpAddress =
+            System.Net.IPAddress.Parse($"2001:db8::{Interlocked.Increment(ref _requests):x}");
         ctx.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(json));
         ctx.Request.ContentType = "application/json";
         return ctx.Request;
@@ -135,6 +142,10 @@ public class CheckoutEndpointTests
     [InlineData("\"abcde\"")]
     [InlineData("\"\"")]
     [InlineData("null")]
+    // Arabic-Indic 27587. In .NET \d is Unicode-aware and these satisfy it, so
+    // under the old pattern this reached the delivery_zips lookup (which refuses
+    // them, but only after a pooled connection) instead of being answered here.
+    [InlineData("\"\u0662\u0667\u0665\u0668\u0667\"")]
     public async Task A_delivery_order_without_a_five_digit_zip_is_a_400_on_zip_before_any_sql(string zip)
     {
         var bad = Assert.IsType<BadRequestObjectResult>(

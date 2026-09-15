@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
@@ -41,11 +42,138 @@ public sealed class SquareFunction
     }
 
     public const int CartMax = 20;
+
+    // Soft per-IP rate limit on the anonymous cart route. Same shape, same
+    // eviction and the same 429 as MembersFunction's signup limiter (the house
+    // pattern) — deliberately a copy rather than a second, cleverer design, so
+    // the two public POSTs cannot behave differently when someone hammers them.
+    //
+    // 10 per 60 s per IP. A real shopper clicks Checkout a handful of times, and
+    // a repeat click on an UNCHANGED cart is answered by the link-reuse query
+    // without minting anything — only a genuine cart revision costs budget.
+    // Twice the signup allowance because a household, an office and a phone on
+    // carrier NAT all present as one address and must not lock each other out;
+    // still nowhere near enough for a script walking subsets of the public box
+    // ids, which is the abuse the old deterministic idempotency key used to cap.
+    //
+    // x-forwarded-for is caller-controlled (the edge APPENDS the real address to
+    // whatever the client sent), so a spoofer can dodge the per-IP bucket. Two
+    // backstops, as in MembersFunction: a global cap per window that no header
+    // value can dodge, and a hard cap on the dictionary so junk keys cannot grow
+    // it unbounded. 60 global leaves room for a busy drop day on one instance.
+    private const int CheckoutRateLimitPerWindow = 10;
+    private const int CheckoutGlobalLimitPerWindow = 60;
+    private const int MaxTrackedIps = 5000;
+    private static readonly TimeSpan RateWindow = TimeSpan.FromSeconds(60);
+    private static readonly ConcurrentDictionary<string, (int count, DateTime windowStart)> _hits = new();
+    private static readonly object _globalLock = new();
+    private static int _globalCount;
+    private static DateTime _globalWindowStart = DateTime.MinValue;
+
     // The zip list is read on every public page load, so keep an in-process
     // copy. Rob's edits show up within the TTL, and the checkout call itself
     // always re-reads dbo.delivery_zips, so the authority never goes stale.
     private static readonly TimeSpan ZipCacheTtl = TimeSpan.FromMinutes(5);
-    private static (List<DeliveryZip> Zips, DateTime At)? _zipCache;
+    // Deliberately NOT the same TTL, and not a bug to be "fixed" into one. A good
+    // list is worth holding for MINUTES. A failed read is worth holding for
+    // SECONDS: with no failure window at all, every public page load during a SQL
+    // outage opens its own doomed connection; hold it too long and delivery stays
+    // switched off for minutes after the database is already back. Ten seconds
+    // bounds the storm and still recovers about as fast as anyone notices.
+    private static readonly TimeSpan ZipFailureWindow = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The cached zip list, when it was last read successfully, and when a read
+    /// last failed. ONE reference field on purpose: this replaced a
+    /// Nullable&lt;ValueTuple&lt;List, DateTime&gt;&gt;, a multi-word struct whose
+    /// write is not atomic — a reader racing a refresh could observe HasValue
+    /// true with Zips not yet written and NRE on a route every public page load
+    /// hits. Publishing a record is a single atomic store, so a reader sees the
+    /// whole snapshot or none of it.
+    /// </summary>
+    internal sealed record ZipCache(List<DeliveryZip> Zips, DateTime ReadAt, DateTime FailedAt);
+    private static ZipCache? _zipCache;
+
+    /// <summary>
+    /// Serve <paramref name="cached"/> rather than re-reading delivery_zips?
+    /// True while the last good read is inside <see cref="ZipCacheTtl"/>, and
+    /// also while a FAILED read is inside the much shorter
+    /// <see cref="ZipFailureWindow"/> — in which case what gets served is
+    /// whatever the last good list was, exactly as before.
+    /// </summary>
+    internal static bool ServeCachedZips(ZipCache? cached, DateTime now)
+        => cached != null && (now - cached.ReadAt < ZipCacheTtl || now - cached.FailedAt < ZipFailureWindow);
+
+    /// <summary>
+    /// Best-effort client address for the per-IP bucket: the first
+    /// x-forwarded-for entry (per the contract) but only when it parses as a
+    /// real IP (":port" suffix stripped); anything else falls back to the socket
+    /// address. Never trusted for anything but rate limiting.
+    /// Mirrors MembersFunction.ClientIp — keep the two identical.
+    /// </summary>
+    private static string ClientIp(HttpRequest req)
+    {
+        var fwd = req.Headers["x-forwarded-for"].FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(fwd))
+        {
+            var first = fwd.Split(',')[0].Trim();
+            if (first.Length > 0 && first.Length <= 64)
+            {
+                // "1.2.3.4:5678" —> "1.2.3.4"; "[::1]:5678" —> "[::1]" (IPAddress.TryParse accepts the brackets)
+                if (!first.StartsWith('[') && first.Count(c => c == ':') == 1) first = first[..first.IndexOf(':')];
+                else if (first.StartsWith('[') && first.Contains("]:")) first = first[..(first.IndexOf("]:") + 1)];
+                if (System.Net.IPAddress.TryParse(first, out var parsed)) return parsed.ToString();
+            }
+        }
+        return req.HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+    }
+
+    /// <summary>
+    /// True when this IP is over the limit for the current window, or when the
+    /// whole instance is (global cap — a spoofed x-forwarded-for can't dodge that).
+    /// Mirrors MembersFunction.OverRateLimit — keep the two identical.
+    /// </summary>
+    private static bool OverRateLimit(string ip)
+    {
+        var now = DateTime.UtcNow;
+
+        bool globalOver;
+        lock (_globalLock)
+        {
+            if (now - _globalWindowStart >= RateWindow) { _globalWindowStart = now; _globalCount = 0; }
+            _globalCount++;
+            globalOver = _globalCount > CheckoutGlobalLimitPerWindow;
+        }
+        if (globalOver) return true;
+
+        var entry = _hits.AddOrUpdate(ip,
+            _ => (1, now),
+            (_, cur) => now - cur.windowStart >= RateWindow ? (1, now) : (cur.count + 1, cur.windowStart));
+        // Cleanup so the dictionary never grows unbounded: drop expired windows
+        // first; if it is still oversized (a flood of junk keys inside one
+        // window) drop everything but the current key rather than keep growing.
+        if (_hits.Count > MaxTrackedIps)
+        {
+            foreach (var kv in _hits)
+                if (now - kv.Value.windowStart >= RateWindow) _hits.TryRemove(kv.Key, out _);
+            if (_hits.Count > MaxTrackedIps)
+                foreach (var kv in _hits)
+                    if (kv.Key != ip) _hits.TryRemove(kv.Key, out _);
+        }
+        return entry.count > CheckoutRateLimitPerWindow;
+    }
+
+    /// <summary>
+    /// Test seam: clear the process-wide limiter and zip-cache state so a test
+    /// starts from a known window. Never called by the running app.
+    /// </summary>
+    internal static void ResetStaticStateForTests()
+    {
+        _hits.Clear();
+        lock (_globalLock) { _globalCount = 0; _globalWindowStart = DateTime.MinValue; }
+        _zipCache = null;
+    }
+
     public const string FleaNote = "Fridays at the Raleigh Flea Market — we'll confirm the stall and time by phone.";
     public sealed record CheckoutRequest(Guid[]? ids, string? delivery, string? zip, string? address, string? memberNumber);
 
@@ -64,9 +192,9 @@ public sealed class SquareFunction
         if (_square.CheckoutEnabled)
         {
             var cached = _zipCache;
-            if (cached != null && DateTime.UtcNow - cached.Value.At < ZipCacheTtl)
+            if (ServeCachedZips(cached, DateTime.UtcNow))
             {
-                zips = cached.Value.Zips;
+                zips = cached!.Zips;
             }
             else
             {
@@ -77,7 +205,7 @@ public sealed class SquareFunction
                         "SELECT zip, fee_cents FROM dbo.delivery_zips WHERE active = 1 ORDER BY zip"))
                         .Select(r => new DeliveryZip((string)r.zip, Convert.ToInt64(r.fee_cents)))
                         .ToList();
-                    _zipCache = (zips, DateTime.UtcNow);
+                    _zipCache = new ZipCache(zips, DateTime.UtcNow, DateTime.MinValue);
                 }
                 // Only OUR cancellation is left alone. Nothing inside this try
                 // makes an HTTP call today, but the next person to add one must
@@ -87,8 +215,13 @@ public sealed class SquareFunction
                 {
                     // Serve the last list we had rather than nothing: a quiet
                     // SQL hiccup here would otherwise hide the cart site-wide.
-                    _log.LogError(ex, "CheckoutStatus: delivery_zips query failed — serving the cached list ({N} zips)", cached?.Zips.Count ?? 0);
+                    // Stamp the failure too, so the next few seconds of page loads
+                    // are answered from here instead of each opening its own doomed
+                    // connection. The last good list (and when we read it) rides
+                    // along untouched, so recovery is as fast as it ever was.
                     zips = cached?.Zips ?? new List<DeliveryZip>();
+                    _zipCache = new ZipCache(zips, cached?.ReadAt ?? DateTime.MinValue, DateTime.UtcNow);
+                    _log.LogError(ex, "CheckoutStatus: delivery_zips query failed — serving the cached list ({N} zips) and holding off for {Seconds}s", zips.Count, ZipFailureWindow.TotalSeconds);
                 }
             }
         }
@@ -120,6 +253,17 @@ public sealed class SquareFunction
         [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "public/checkout")] HttpRequest req,
         CancellationToken ct)
     {
+        // Anonymous, and every call past the reuse query mints a real Square
+        // order and a checkout_orders row — so limit before doing any work at
+        // all. checkout-status stays unlimited: it is a read the homepage makes
+        // on every load.
+        var ip = ClientIp(req);
+        if (OverRateLimit(ip))
+        {
+            _log.LogWarning("CreateCheckout: rate limit hit for {Ip}", ip);
+            return new ObjectResult(new { error = "Too many checkout attempts from this connection — try again in a minute." }) { StatusCode = 429 };
+        }
+
         CheckoutRequest? body;
         try { body = await JsonSerializer.DeserializeAsync<CheckoutRequest>(req.Body,
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct); }
@@ -141,6 +285,21 @@ public sealed class SquareFunction
         var boxList = "NSL " + string.Join(" ", palletNumbers.Select(n => "#" + n));
         return boxList.Length <= 40 ? boxList : $"NSL {palletNumbers.Count} boxes";
     }
+
+    /// <summary>
+    /// Can this box go in a cart? Available for a link, priced, and carrying a
+    /// pallet number. That last clause is the defensive one: manifests.pallet_number
+    /// is INT NULL and the number is what names the line on the buyer's receipt,
+    /// so a box without one is treated as unavailable rather than guessed at. A
+    /// live priced box should always have one — this is the third nullable-column
+    /// cast found in this build, and the previous two would each have aborted a
+    /// paid order.
+    /// </summary>
+    internal static bool Sellable(string? publishState, DateTime? archivedAt, bool isGhost,
+        string? invoiceId, decimal? askPrice, int? palletNumber)
+        => Availability.ForLink(publishState, archivedAt, isGhost, invoiceId)
+           && askPrice is > 0
+           && palletNumber.HasValue;
 
     private async Task<IActionResult> CreateCartCheckoutCore(Guid[] rawIds, DeliveryMethod method,
         string? rawZip, string? rawAddress, string? rawMember, CancellationToken ct)
@@ -166,7 +325,11 @@ public sealed class SquareFunction
         if (method == DeliveryMethod.Delivery)
         {
             zip = (rawZip ?? "").Trim();
-            if (!System.Text.RegularExpressions.Regex.IsMatch(zip, @"^\d{5}$"))
+            // [0-9], not \d: in .NET \d is Unicode-aware and Arabic-Indic digits
+            // satisfy it. The delivery_zips lookup refuses them a moment later so
+            // nothing was exploitable, but the pattern should mean what a reader
+            // thinks it means.
+            if (!System.Text.RegularExpressions.Regex.IsMatch(zip, @"^[0-9]{5}$"))
                 return new BadRequestObjectResult(new { error = "Enter a 5-digit zip code so we can check delivery.", field = "zip" });
         }
 
@@ -206,12 +369,17 @@ WHERE p.manifest_id IN @ids", new { ids })).ToDictionary(r => (Guid)r.manifest_i
         {
             if (!rows.TryGetValue(id, out var b)) { unavailable.Add(id); continue; }
             decimal? ask = (decimal?)b.ask_price;
-            bool ok = Availability.ForLink((string?)b.publish_state, (DateTime?)b.archived_at, b.is_ghost == true, (string?)b.invoice_id)
-                      && ask is > 0;
-            if (!ok) { unavailable.Add(id); continue; }
-            lines.Add(new CartLine(id, SquarePayloads.BoxLineName((int)b.pallet_number, (string?)b.display_name),
+            // manifests.pallet_number is INT NULL (db/admin-portal-additions.sql).
+            // An unconditional (int) cast raises InvalidCastException mid-request
+            // and aborts a paid order, so read it as int? and let Sellable decide.
+            int? palletNumber = (int?)b.pallet_number;
+            bool isGhost = b.is_ghost == true;
+            if (!Sellable((string?)b.publish_state, (DateTime?)b.archived_at, isGhost,
+                          (string?)b.invoice_id, ask, palletNumber))
+            { unavailable.Add(id); continue; }
+            lines.Add(new CartLine(id, SquarePayloads.BoxLineName(palletNumber!.Value, (string?)b.display_name),
                 (long)Math.Round(ask!.Value * 100m)));
-            numbers.Add((int)b.pallet_number);
+            numbers.Add(palletNumber.Value);
         }
         if (unavailable.Count > 0)
             return new ConflictObjectResult(new
@@ -374,7 +542,7 @@ INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents
                 await using var rconn = await _sql.OpenAsync(ct);
                 if (settled)
                 {
-                    recorded = await CheckoutFulfillment.RecordRefundAsync(
+                    recorded = await _fulfill.RecordRefundAsync(
                         rconn, refund.RefundId, refund.PaymentId, refund.AmountCents!.Value);
                     _log.LogInformation("SquareWebhook: refund {RefundId} COMPLETED for payment {PaymentId} ({Amt}c) recorded={Rec}",
                         refund.RefundId, refund.PaymentId, refund.AmountCents, recorded);

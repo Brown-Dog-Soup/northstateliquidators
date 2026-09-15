@@ -18,7 +18,23 @@ BEGIN
         subtotal_cents   BIGINT        NOT NULL CONSTRAINT DF_co_subtotal DEFAULT 0,   -- boxes only
         tax_cents        BIGINT        NOT NULL CONSTRAINT DF_co_tax      DEFAULT 0,   -- Square total_tax_money
         delivery_cents   BIGINT        NOT NULL CONSTRAINT DF_co_delivery DEFAULT 0,   -- Square total_service_charge_money
-        total_cents      BIGINT        NOT NULL,                  -- Square total_money (= the three above)
+        -- Square total_money. Equals the three columns above EVERYWHERE EXCEPT ONE
+        -- case, which is known and deliberate: fulfilment's recovery branch (the
+        -- order == null block in CheckoutFulfillment) when Square returns no
+        -- order-level tax. total_cents is then Square's own total and includes every
+        -- line the buyer paid for, while subtotal_cents and tax_cents are derived from
+        -- the checkout_order_boxes rows actually written -- and a box hard-deleted
+        -- before the payment landed produces no row, so its money is in total_cents
+        -- and in none of the parts.
+        --
+        -- Such a row IS the "missing box" case: the payment carries needs_refund with
+        -- status PARTIAL_REFUND_FLAGGED and NO computed figure, because no figure
+        -- derived from these columns is the whole debt.
+        --
+        -- Do NOT "repair" it by rewriting total_cents down to match the parts.
+        -- total_cents is what the buyer was actually charged at Square and is the only
+        -- correct basis for the refund.
+        total_cents      BIGINT        NOT NULL,
         delivery_method  VARCHAR(16)   NOT NULL CONSTRAINT DF_co_method   DEFAULT 'pickup',  -- pickup | delivery | flea
         delivery_zip     VARCHAR(10)   NULL,
         delivery_address NVARCHAR(300) NULL,

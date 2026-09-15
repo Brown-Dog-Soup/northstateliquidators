@@ -400,6 +400,361 @@
   // Legacy global (index.html once called it): add the box and open the cart.
   window.nslBuyBox = id => { if (cartAdd(id) && openCartHook) openCartHook(); };
 
+  // ── cart drawer + phone bar (spec §3) ────────────────────────────────────
+  const CART_NOTE = "Pickup in Wake Forest — we'll reach out after payment to arrange it. Free delivery to the Raleigh Flea Market on Fridays.";
+  let cart = null;
+
+  function mountCart() {
+    if (cart) return cart;
+    const actions = document.querySelector('.site-nav .actions, .nav .actions');
+    if (actions && !actions.querySelector('.cart-head-btn')) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cart-head-btn';
+      btn.hidden = true;
+      btn.innerHTML = `🛒 Cart <span class="cart-count">0</span>`;
+      btn.addEventListener('click', () => openCart());
+      actions.appendChild(btn);
+    }
+    let bar = document.getElementById('cart-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'cart-bar';
+      bar.className = 'cart-bar';
+      bar.hidden = true;
+      bar.innerHTML = `<span class="cart-bar-text"></span><button type="button" class="cart-bar-open">View cart →</button>`;
+      bar.querySelector('.cart-bar-open').addEventListener('click', () => openCart());
+      document.body.appendChild(bar);
+    }
+    let overlay = document.getElementById('cart-drawer');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'cart-drawer';
+      overlay.className = 'mf-overlay cart-overlay';
+      overlay.hidden = true;
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-labelledby', 'cart-title');
+      overlay.innerHTML = `
+  <div class="mf-box cart-box">
+    <button class="mf-close" type="button" aria-label="Close">&times;</button>
+    <div class="mf-head"><h3 id="cart-title">Your cart</h3><p class="mf-sub" id="cart-sub"></p></div>
+    <div class="mf-body" id="cart-body"></div>
+    <div class="mf-foot cart-foot">
+      <p class="cart-notice" id="cart-notice" aria-live="polite" hidden></p>
+
+      <fieldset class="cart-deliv" id="cart-deliv">
+        <legend>How do you want them?</legend>
+        <label class="deliv-opt"><input type="radio" name="nsl-deliv" value="pickup" checked>
+          <span class="deliv-label">Pick up at our Wake Forest warehouse</span><span class="deliv-price">Free</span></label>
+        <label class="deliv-opt" id="deliv-opt-delivery"><input type="radio" name="nsl-deliv" value="delivery" disabled>
+          <span class="deliv-label">Delivered to you<span class="deliv-to" id="deliv-to"></span></span><span class="deliv-price">${dollars(DELIVERY_CENTS)}</span></label>
+        <div class="deliv-zip" id="deliv-zip-row">
+          <label for="deliv-zip">Your zip</label>
+          <input id="deliv-zip" inputmode="numeric" maxlength="5" autocomplete="postal-code" placeholder="27587">
+          <button type="button" class="btn btn-ghost" id="deliv-check">Check</button>
+        </div>
+        <div class="deliv-addr" id="deliv-addr-row" hidden>
+          <label for="deliv-addr">Street address</label>
+          <input id="deliv-addr" maxlength="300" autocomplete="street-address" placeholder="123 Main St, Wake Forest">
+        </div>
+        <label class="deliv-opt"><input type="radio" name="nsl-deliv" value="flea">
+          <span class="deliv-label">Meet us at the Raleigh Flea Market on Friday</span><span class="deliv-price">Free</span></label>
+      </fieldset>
+
+      <dl class="cart-receipt" id="cart-receipt">
+        <div><dt>Subtotal</dt><dd id="cart-sub-amt">$0</dd></div>
+        <div id="cart-deliv-line" hidden><dt>Delivery</dt><dd id="cart-deliv-amt">$0</dd></div>
+        <div><dt>Sales tax (${TAX_PCT}%)</dt><dd id="cart-tax-amt">$0</dd></div>
+      </dl>
+      <div class="cart-total"><span>Total</span><strong id="cart-total">$0</strong></div>
+      <p class="note" id="cart-note">${esc(CART_NOTE)}</p>
+      <button type="button" class="btn btn-primary cart-checkout" id="cart-checkout">Checkout with Square →</button>
+    </div>
+  </div>`;
+      document.body.appendChild(overlay);
+    }
+    const body = overlay.querySelector('#cart-body');
+    const sub = overlay.querySelector('#cart-sub');
+    const notice = overlay.querySelector('#cart-notice');
+    const total = overlay.querySelector('#cart-total');
+    const checkout = overlay.querySelector('#cart-checkout');
+    const deliv = {
+      set: overlay.querySelector('#cart-deliv'),
+      radios: Array.from(overlay.querySelectorAll('input[name="nsl-deliv"]')),
+      optDelivery: overlay.querySelector('#deliv-opt-delivery'),
+      to: overlay.querySelector('#deliv-to'),
+      zipRow: overlay.querySelector('#deliv-zip-row'),
+      zip: overlay.querySelector('#deliv-zip'),
+      check: overlay.querySelector('#deliv-check'),
+      addrRow: overlay.querySelector('#deliv-addr-row'),
+      addr: overlay.querySelector('#deliv-addr'),
+    };
+    const receipt = {
+      sub: overlay.querySelector('#cart-sub-amt'),
+      delLine: overlay.querySelector('#cart-deliv-line'),
+      del: overlay.querySelector('#cart-deliv-amt'),
+      tax: overlay.querySelector('#cart-tax-amt'),
+      note: overlay.querySelector('#cart-note'),
+    };
+    deliv.radios.forEach(r => r.addEventListener('change', () => {
+      if (r.checked) { setDeliveryChoice(r.value); syncDelivery(); renderTotals(); }
+    }));
+    deliv.check.addEventListener('click', checkZip);
+    deliv.zip.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); checkZip(); } });
+    deliv.addr.addEventListener('input', () => { try { localStorage.setItem('nsl.addr', deliv.addr.value.trim()); } catch { /* ignore */ } });
+    overlay.addEventListener('click', e => { if (e.target === overlay) closeCart(); });
+    overlay.querySelector('.mf-close').addEventListener('click', closeCart);
+    body.addEventListener('click', e => {
+      const rm = e.target.closest('button[data-remove]');
+      if (!rm) return;
+      cartRemove(rm.getAttribute('data-remove'));
+      renderCart();
+    });
+    checkout.addEventListener('click', checkoutCart);
+    // Back from Square's hosted page restores this page from bfcache with the
+    // button still reading "One sec…" and possibly a box that just sold.
+    window.addEventListener('pageshow', e => {
+      if (!e.persisted) return;
+      resetCheckoutBtn();
+      syncCartUi();
+      if (!overlay.hidden) renderCart();
+    });
+    // Another tab changed the cart.
+    window.addEventListener('storage', e => {
+      if (e.key !== CART_KEY) return;
+      cartMem = null;
+      syncCartUi();
+      if (!overlay.hidden) renderCart();
+    });
+    cart = { overlay, body, sub, notice, total, checkout, deliv, receipt };
+    openCartHook = openCart;
+    return cart;
+  }
+
+  function cartNotice(msg) {
+    const c = mountCart();
+    c.notice.textContent = msg;
+    c.notice.hidden = !msg;
+  }
+
+  function openCart(noticeText) {
+    const c = mountCart();
+    if (mf && !mf.overlay.hidden) closeOverlay(mf.overlay);   // drawer replaces the manifest modal
+    if (c.overlay.hidden) openOverlay(c.overlay);
+    renderCart().then(() => { if (noticeText) cartNotice(noticeText); });
+  }
+  function closeCart() { if (cart) closeOverlay(cart.overlay); }
+
+  function validateCart(rows) {
+    const byId = new Map((rows || []).map(r => [String(r.manifest_id).toLowerCase(), r]));
+    const kept = [], removed = [];
+    cartIds().forEach(id => {
+      const r = byId.get(id);
+      if (r && isLive(r) && Number(r.ask_price) > 0) kept.push(r);
+      else removed.push(r ? r.pallet_number : null);
+    });
+    return { kept, removed };
+  }
+
+  function removedNotice(removed) {
+    const known = removed.filter(n => n != null).map(n => '#' + n);
+    if (known.length === removed.length && known.length === 1) return `BOX ${known[0]} was just sold — removed from your cart.`;
+    if (known.length === removed.length) return `Boxes ${known.join(', ')} were just sold — removed from your cart.`;
+    return 'Some boxes in your cart are no longer available — removed.';
+  }
+
+  // Enable/disable the $10 option from what we know about the shopper's zip.
+  // If a member signed up on this device we already have it (spec §8.5) and
+  // the zip input never appears; otherwise they type it once.
+  function syncDelivery() {
+    const c = mountCart();
+    const z = storedZip();
+    const ok = zipQualifies(z);
+    const choice = deliveryChoice();
+    c.deliv.radios.forEach(r => { r.checked = r.value === choice; });
+    c.deliv.optDelivery.querySelector('input').disabled = !ok;
+    c.deliv.optDelivery.classList.toggle('is-off', !ok);
+    c.deliv.to.textContent = ok ? ` (to ${z})` : '';
+    c.deliv.zipRow.hidden = ok;
+    c.deliv.addrRow.hidden = !(ok && choice === 'delivery');
+    if (c.deliv.addrRow.hidden === false && !c.deliv.addr.value) c.deliv.addr.value = storedAddr();
+    c.receipt.note.textContent =
+      choice === 'flea' ? (FLEA_NOTE || CART_NOTE)
+      : choice === 'delivery' ? "We'll call to schedule the drop — usually within a couple of days."
+      : CART_NOTE;
+  }
+
+  function checkZip() {
+    const c = mountCart();
+    const z = (c.deliv.zip.value || '').trim();
+    if (!/^\d{5}$/.test(z)) { cartNotice('Enter a 5-digit zip code.'); c.deliv.zip.focus(); return; }
+    try { localStorage.setItem('nsl.zip', z); } catch { /* ignore */ }
+    if (zipQualifies(z)) {
+      cartNotice(`Good news — we deliver to ${z} for ${dollars(DELIVERY_CENTS)}.`);
+      setDeliveryChoice('delivery');
+    } else {
+      cartNotice(`We can't reach ${z} on our own truck — pickup and the Friday flea-market drop are both free.`);
+    }
+    syncDelivery();
+    renderTotals();
+  }
+
+  // Display arithmetic ONLY. Square computes the real tax per line and its
+  // number is what the buyer pays (spec §8.6); this is here so nobody is
+  // surprised by the total on the next screen.
+  let goodsCents = 0;
+  function renderTotals() {
+    const c = mountCart();
+    const choice = deliveryChoice();
+    // No goods, no delivery: an empty cart must read $0, not $10 + tax on the fee.
+    const del = (goodsCents > 0 && choice === 'delivery') ? DELIVERY_CENTS : 0;
+    const tax = Math.round((goodsCents + del) * TAX_PCT) / 100;
+    const taxCents = Math.round(tax);
+    c.receipt.sub.textContent = dollars(goodsCents);
+    c.receipt.delLine.hidden = del === 0;
+    c.receipt.del.textContent = dollars(del);
+    c.receipt.tax.textContent = dollars(taxCents);
+    c.total.textContent = dollars(goodsCents + del + taxCents);
+  }
+
+  async function renderCart() {
+    const c = mountCart();
+    const ids = cartIds();
+    cartNotice('');
+    c.sub.textContent = '';
+    c.total.textContent = '$0';
+    c.checkout.disabled = true;
+    if (!ids.length) {
+      c.body.innerHTML = `<p class="cart-empty">Your cart is empty. <a class="view" href="shop.html?view=all">Shop what's on the floor →</a></p>`;
+      c.deliv.set.hidden = true;
+      goodsCents = 0;
+      renderTotals();
+      return;
+    }
+    c.deliv.set.hidden = false;
+    c.body.innerHTML = '<p class="mf-loading">Checking your boxes…</p>';
+    let rows;
+    try { rows = await refreshPublicPallets(); }
+    catch {
+      // Never prune on a failed fetch — the ids are all we have.
+      c.body.innerHTML = `<p class="mf-empty">Couldn't check your cart right now — try again in a moment or call ${PHONE}.</p>`;
+      return;
+    }
+    const { kept, removed } = validateCart(rows);
+    if (removed.length) {
+      saveCart(kept.map(r => r.manifest_id));
+      cartNotice(removedNotice(removed));
+    }
+    if (!kept.length) {
+      c.body.innerHTML = `<p class="cart-empty">Everything in your cart just sold. <a class="view" href="shop.html?view=new">See what just dropped →</a></p>`;
+      c.deliv.set.hidden = true;
+      goodsCents = 0;
+      renderTotals();
+      return;
+    }
+    let cents = 0;
+    c.body.innerHTML = `<ul class="cart-list">` + kept.map(p => {
+      cents += Math.round(Number(p.ask_price) * 100);
+      return `
+      <li class="cart-row">
+        <span class="cart-thumb"${p.photo_url ? ` style="background-image:url('${esc(p.photo_url)}')"` : ''}></span>
+        <span class="cart-info"><span class="box-no">BOX #${esc(p.pallet_number)}</span><span class="cart-name">${esc(p.display_name || ('Box #' + p.pallet_number))}</span></span>
+        <span class="cart-price">${money(p.ask_price)}</span>
+        <button type="button" class="cart-remove" data-remove="${esc(p.manifest_id)}" aria-label="Remove BOX #${esc(p.pallet_number)}">&times;</button>
+      </li>`;
+    }).join('') + `</ul>`;
+    c.sub.textContent = `${kept.length} box${kept.length === 1 ? '' : 'es'}`;
+    goodsCents = cents;
+    syncDelivery();
+    renderTotals();
+    c.checkout.disabled = false;
+  }
+
+  function resetCheckoutBtn() {
+    if (!cart) return;
+    cart.checkout.textContent = 'Checkout with Square →';
+    cart.checkout.disabled = cartIds().length === 0;
+  }
+
+  async function checkoutCart() {
+    const c = mountCart();
+    const ids = cartIds();
+    if (!ids.length) return;
+    c.checkout.disabled = true;
+    c.checkout.textContent = 'One sec…';
+    try {
+      const choice = deliveryChoice();
+      const addr = choice === 'delivery' ? (c.deliv.addr.value || '').trim() : '';
+      if (choice === 'delivery' && !addr) {
+        cartNotice('Add the street address for the delivery.');
+        c.deliv.addr.focus();
+        resetCheckoutBtn();
+        return;
+      }
+      let member = '';
+      try { member = localStorage.getItem('nsl.member') || ''; } catch { /* ignore */ }
+      const r = await fetch('/api/public/checkout', {
+        method: 'POST', credentials: 'omit',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, delivery: choice, zip: choice === 'delivery' ? storedZip() : null,
+                               address: addr || null, memberNumber: member || null }),
+      });
+      let j = {};
+      try { j = await r.json(); } catch { /* non-JSON body */ }
+      if (r.ok && j.url) { window.location.href = j.url; return; }   // Square-hosted checkout
+      if (r.status === 409) {
+        const gone = Array.isArray(j.unavailable) ? j.unavailable.map(x => String(x).toLowerCase()) : null;
+        if (gone && gone.length) saveCart(ids.filter(id => !gone.includes(id)));
+        await renderCart();                                            // fresh fetch prunes the rest
+        cartNotice(j.error || 'Some boxes in your cart are no longer available.');
+        return;
+      }
+      if (r.status === 400 && (j.field === 'zip' || j.field === 'address')) {
+        // The server is the authority on the delivery radius; our copy of the
+        // zip list can be stale if Rob just edited it.
+        cartNotice(j.error || 'Check the delivery address.');
+        if (j.field === 'zip') { setDeliveryChoice('pickup'); syncDelivery(); renderTotals(); c.deliv.zip.focus(); }
+        else c.deliv.addr.focus();
+        return;
+      }
+      if (r.status === 503) { cartNotice(`Online checkout is paused right now — call us at ${PHONE} and we'll take care of you.`); return; }
+      cartNotice(j.error || `Couldn't start checkout — call us at ${PHONE} and we'll take care of you.`);
+    } catch {
+      cartNotice(`Couldn't start checkout — call us at ${PHONE} and we'll take care of you.`);
+    } finally {
+      resetCheckoutBtn();
+    }
+  }
+
+  // ── shared overlay behaviour (focus restore, Tab wrap, Escape, scroll lock)
+  const OVERLAY_FOCUSABLE = 'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  const overlayStack = [];
+  function openOverlay(overlay, firstFocus) {
+    overlayStack.push({ overlay, lastFocus: document.activeElement });
+    overlay.hidden = false;
+    document.body.style.overflow = 'hidden';
+    (firstFocus || overlay.querySelector('.mf-close') || overlay).focus();
+  }
+  function closeOverlay(overlay) {
+    const i = overlayStack.findIndex(s => s.overlay === overlay);
+    const entry = i >= 0 ? overlayStack.splice(i, 1)[0] : null;
+    overlay.hidden = true;
+    if (overlayStack.length === 0) document.body.style.overflow = '';
+    if (entry && entry.lastFocus && entry.lastFocus.focus) entry.lastFocus.focus();
+  }
+  document.addEventListener('keydown', e => {
+    const top = overlayStack[overlayStack.length - 1];
+    if (!top) return;
+    if (e.key === 'Escape') { closeOverlay(top.overlay); return; }
+    if (e.key !== 'Tab') return;
+    const f = top.overlay.querySelectorAll(OVERLAY_FOCUSABLE);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+
   // ── manifest modal (§6.5) ────────────────────────────────────────────────
   const MF_NOTE = 'Pickup in Wake Forest · Free delivery to the Raleigh Flea Market every Friday · $10 delivery within 20 miles of our warehouse · Call to claim this box.';
   let mf = null;
@@ -436,10 +791,9 @@
       const b = e.target.closest('button[data-cart]');
       if (b) onCartButton(b.getAttribute('data-cart'));
     });
-    const close = () => { overlay.hidden = true; document.body.style.overflow = ''; };
+    const close = () => closeOverlay(overlay);
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
     overlay.querySelector('.mf-close').addEventListener('click', close);
-    document.addEventListener('keydown', e => { if (e.key === 'Escape' && !overlay.hidden) close(); });
     mf = { overlay, titleEl, subEl, bodyEl, close };
     return mf;
   }
@@ -449,8 +803,7 @@
     m.titleEl.textContent = name || 'Manifest';
     m.subEl.textContent = '';
     m.bodyEl.innerHTML = '<p class="mf-loading">Loading manifest…</p>';
-    m.overlay.hidden = false;
-    document.body.style.overflow = 'hidden';
+    openOverlay(m.overlay);
     try {
       const r = await fetch(`/api/public/pallets/${encodeURIComponent(id)}/items`, { credentials: 'omit' });
       if (!r.ok) throw new Error('http ' + r.status);
@@ -565,9 +918,8 @@
     const submit = overlay.querySelector('#join-submit');
     const numberEl = overlay.querySelector('#join-number');
     const subEl = overlay.querySelector('#join-result-sub');
-    let lastFocus = null;
 
-    const close = () => { overlay.hidden = true; document.body.style.overflow = ''; if (lastFocus && lastFocus.focus) lastFocus.focus(); };
+    const close = () => { closeOverlay(overlay); };
     const showError = msg => { errEl.textContent = msg; errEl.hidden = false; };
     const clearError = () => { errEl.textContent = ''; errEl.hidden = true; };
     const showResult = (n, sub) => {
@@ -580,18 +932,13 @@
     const showForm = () => { result.hidden = true; form.hidden = false; clearError(); };
 
     const open = () => {
-      lastFocus = document.activeElement;
       const n = storedMember();
       if (n) showResult(n, JOIN_SUB_STORED); else showForm();
-      overlay.hidden = false;
-      document.body.style.overflow = 'hidden';
-      const first = n ? overlay.querySelector('.mf-close') : overlay.querySelector('#join-first');
-      if (first) first.focus();
+      openOverlay(overlay, n ? null : overlay.querySelector('#join-first'));
     };
 
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
     overlay.querySelector('.mf-close').addEventListener('click', close);
-    document.addEventListener('keydown', e => { if (e.key === 'Escape' && !overlay.hidden) close(); });
     overlay.querySelector('.join-reset').addEventListener('click', e => { e.preventDefault(); forgetMember(); showForm(); overlay.querySelector('#join-first').focus(); });
     form.addEventListener('input', clearError);
 
@@ -732,7 +1079,7 @@
     // modal + checkout
     showManifest, initPage, openJoin, checkoutReady,
     // cart
-    cartIds, cartHas, cartAdd, cartRemove, cartClear, cartButtonHtml, syncCartUi, refreshPublicPallets,
+    cartIds, cartHas, cartAdd, cartRemove, cartClear, cartButtonHtml, syncCartUi, refreshPublicPallets, openCart,
     // helpers
     esc, money, pctOfMsrp,
   };

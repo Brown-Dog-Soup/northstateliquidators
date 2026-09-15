@@ -122,13 +122,12 @@ async function loadSummary() {
 /// accumulate and a second click must not send the whole owed figure again.
 function owedCents(r) {
   const back = n(r.refunded_cents);
+  // Asked FIRST, exactly as the server asks it, and before any arithmetic: a
+  // debt fulfilment declined to price has no figure, and "the whole payment" is
+  // the bar for clearing the flag, never an amount to hand back — the buyer is
+  // keeping the boxes that did arrive. Unknown, not "all of it".
+  if (isUnpriceable(r)) return null;
   if (r.refund_due_cents != null) return Math.max(0, n(r.refund_due_cents) - back);
-  // PARTIAL_REFUND_FLAGGED with no owed figure is fulfilment saying, in as many
-  // words, that it could NOT work out the debt: boxes on this order did sell,
-  // but a box the buyer paid for has no line on our copy. The whole payment is
-  // the bar for CLEARING the flag — it is not an amount to hand back, because
-  // the buyer is keeping the boxes that did arrive. Unknown, not "all of it".
-  if (String(r.status || '') === 'PARTIAL_REFUND_FLAGGED') return null;
   if (r.amount_cents == null) return null;
   return Math.max(0, n(r.amount_cents) - back);
 }
@@ -146,15 +145,51 @@ function isSecondTender(r) {
   return String(r.status || '') === 'REFUND_FLAGGED' && (n(r.sold_boxes) > 0 || !!r.boxes);
 }
 
-/// The one flagged state that can NEVER clear itself: fulfilment declined to
-/// price the debt (refund_due_cents left NULL on purpose), so the automatic
-/// clear's bar is the whole payment, while the correct action is a partial
-/// refund by hand. Doing as instructed leaves the row flagged forever — which is
-/// what "Mark handled" exists for.
-function isUnpriceable(r) {
-  return String(r.status || '') === 'PARTIAL_REFUND_FLAGGED' &&
-         r.refund_due_cents == null && r.amount_cents != null;
-}
+/// A person already took this row. acknowledged_at is stamped by
+/// /api/square-acknowledge, on nothing but the declined-to-price state, and
+/// nothing ever clears it — so it is the one fact here that a later partial
+/// refund cannot rewrite. The row's status can and will move underneath it.
+const isAcknowledged = r => r.acknowledged_at != null;
+
+/// Who took it, for a sentence. acknowledged_by is nullable — the signed-in
+/// identity arrives in a header and a missing one must never have failed the
+/// acknowledgement — so an absence is reported as an absence rather than as a
+/// blank space or an invented name.
+const ackWho = r => r.acknowledged_by || 'someone (sign-in not recorded)';
+
+/// The flagged state that can NEVER clear itself: fulfilment declined to price
+/// the debt, leaving refund_due_cents NULL on purpose, so the automatic clear's
+/// bar is the WHOLE payment while the correct action is a partial refund by
+/// hand. Doing as instructed leaves the row flagged forever — which is what
+/// "Mark handled" exists for.
+///
+/// This used to read the status, and the status is a stage: the hand refund
+/// staff are told to make comes back as refund.updated and rewrites it to
+/// PARTIAL_REFUNDED, after which the page re-grew a live Refund button offering
+/// the REST OF THE PAYMENT. These three facts outlive that rewrite, and they are
+/// the same facts /api/square-refund now rules on, so the button and the server
+/// cannot drift apart again.
+///
+/// Two rows wear those first facts without being this one, and each needs its
+/// own term. box_lines > 0 keeps out an UNMATCHED payment — no order copy at
+/// all, whole payment genuinely owed, often refunded in instalments. tender_seq
+/// keeps out a SECOND payment on an order Square gave us no amount for: its debt
+/// is the whole of a double charge, priced by fulfilment at the payment itself,
+/// and once Get amount from Square fills the amount in it must be refundable
+/// from here rather than wearing a disabled button.
+/// A missing tender_seq counts as the first tender, which errs toward the
+/// disabled button rather than toward a live one: if this field ever stops
+/// arriving, the page under-offers and the server still rules.
+const declinedToPrice = r =>
+  r.refund_due_cents == null && !!r.needs_refund && n(r.box_lines) > 0 &&
+  (r.tender_seq == null || n(r.tender_seq) <= 1);
+
+const isUnpriceable = r => isAcknowledged(r) || declinedToPrice(r);
+
+/// "Mark handled" is offered on exactly what the endpoint's compare-and-swap
+/// accepts, and on nothing else: the declined-to-price row, amount known, not
+/// already taken. Offering it anywhere else buys a 409 mid-task.
+const canMarkHandled = r => declinedToPrice(r) && r.amount_cents != null && !isAcknowledged(r);
 
 /// The Box column. "no box matched" is reserved for a payment that hit no order
 /// at all — every other empty state has a different, truer sentence.
@@ -172,6 +207,22 @@ function attentionBox(r) {
 /// actually wrote. Returns plain text — the caller escapes it.
 function attentionReason(r) {
   const s = String(r.status || '');
+  // First, and above the status, because it is the fact and the status is a
+  // stage. A row can only be back on this list after an acknowledgement because
+  // a LATER refund failed at Square (the webhook re-raises the flag) — so say
+  // both: a person settled the original debt by hand, and here is the status
+  // that put it back in front of you.
+  if (isAcknowledged(r)) {
+    const ack = `marked handled by ${ackWho(r)} on ${when(r.acknowledged_at)} — the debt was worked out from the Square receipt and settled there, not from this page. `
+              + `We never held a figure for it, so nothing here can refund it again`;
+    // An acknowledged row can only come BACK onto this list one way: a LATER
+    // refund failed or was rejected at Square and the webhook re-raised the
+    // flag. The sentence above on its own reads as though the list were simply
+    // wrong, so name the thing that put it here.
+    if (s === 'REFUND_FAILED')   return `${ack}. It is back on this list because a LATER refund FAILED at Square — the money did not move. Check the Square receipt.`;
+    if (s === 'REFUND_REJECTED') return `${ack}. It is back on this list because Square REJECTED a LATER refund — the money did not move. Check the Square receipt.`;
+    return `${ack}.`;
+  }
   // Agree with the button. A flagged row whose debt is settled says so rather
   // than quoting its old status, which would read as money still outstanding
   // beside a greyed-out "Nothing owed".
@@ -195,7 +246,13 @@ function attentionReason(r) {
     // the whole payment. Name the second half of the job.
     return 'the order lines do not add up, so we cannot say what is owed — work it out from the Square receipt, refund it there, then press Mark handled';
   }
-  if (s === 'PARTIAL_REFUNDED') return 'partly refunded — the rest of what is owed has not gone back yet';
+  if (s === 'PARTIAL_REFUNDED')
+    // The status a hand refund leaves on a declined-to-price row. "The rest of
+    // what is owed" would be a lie there: we never knew what was owed, and the
+    // rest of the payment is money for boxes the buyer kept.
+    return declinedToPrice(r)
+      ? 'part of this has been refunded, but the order lines still do not add up, so we cannot say whether anything is left — check the Square receipt, refund any remainder there, then press Mark handled'
+      : 'partly refunded — the rest of what is owed has not gone back yet';
   if (s === 'REFUND_PENDING' || s === 'REFUND_APPROVED')
     return 'refund sent to Square — it has not settled, so this stays here until it does';
   if (s === 'REFUND_FAILED')   return 'the refund FAILED at Square — the money is still owed';
@@ -218,6 +275,13 @@ function attentionReason(r) {
 /// a silently different amount going back.
 function attentionAction(r) {
   const pid = esc(r.square_payment_id);
+  // A row a person has already settled offers NOTHING, first and before every
+  // other branch. A live Refund button here would be drawn against a debt we
+  // never priced, and the only figure it could carry is the rest of the payment
+  // — money for boxes the buyer kept.
+  if (isAcknowledged(r))
+    return `<button class="btn" disabled style="padding:4px 12px;font-size:11px;"
+              title="Marked handled by ${esc(ackWho(r))} on ${when(r.acknowledged_at)}. The debt was worked out from the Square receipt and refunded in the Square Dashboard; we never held a figure for it, so there is nothing for a button here to send. Refund anything further in the Square Dashboard.">Handled ${when(r.acknowledged_at)}</button>`;
   if (r.amount_cents == null)
     return `<button class="btn do-lookup" data-pid="${pid}" style="padding:4px 12px;font-size:11px;"
               title="We have no amount for this payment, so no refund can be worked out and nothing can clear this row. This asks Square what it was for and writes it down. It does not refund anything.">Get amount from Square</button>`;
@@ -229,7 +293,7 @@ function attentionAction(r) {
     // — it lowers the flag and claims nothing about the money.
     return `<button class="btn" disabled style="padding:4px 12px;font-size:11px;"
               title="Boxes on this order did sell, but our copy of the order is incomplete, so we cannot work out what is owed — and a button that guesses would guess with the buyer's money. Read the amount off the Square receipt and refund it in the Square Dashboard.">Amount unclear</button>` +
-           (isUnpriceable(r)
+           (canMarkHandled(r)
              ? ` <button class="btn do-ack" data-pid="${pid}" style="padding:4px 12px;font-size:11px;margin-left:6px;"
                    title="Use this AFTER you have refunded the right amount in the Square Dashboard. It takes this row off the list and records that a person settled it. It does not refund anything and does not change what we have recorded as refunded.">Mark handled</button>`
              : '');
@@ -282,7 +346,14 @@ async function loadPayments() {
             ? ` <span class="tag">${r.delivery_method === 'flea' ? 'flea market' : 'delivery'}</span>` : ''}</td>
         <td class="money">${r.amount_cents == null ? '—' : money(r.amount_cents)}${
           r.refunded_cents ? ` <span class="neg">(−${money(r.refunded_cents)})</span>` : ''}</td>
-        <td>${r.needs_refund ? '<span class="flag">⚠ needs refund</span>' : esc(r.status)}</td>
+        <td>${r.needs_refund ? '<span class="flag">⚠ needs refund</span>' : esc(r.status)}${
+          // The audit trail has to keep saying it. The status here is whatever
+          // the last event wrote — a hand refund leaves PARTIAL_REFUNDED — and
+          // printing only that is the same erasure the acknowledge columns were
+          // added to stop, performed by the browser instead of by an UPDATE.
+          isAcknowledged(r)
+            ? `<div class="subnote">handled by ${esc(ackWho(r))} · ${when(r.acknowledged_at)}</div>`
+            : ''}</td>
       </tr>`).join('') || '<tr><td colspan="4" style="color:#666;">No website payments recorded yet.</td></tr>');
 }
 

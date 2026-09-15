@@ -1,3 +1,4 @@
+using System;
 using NSL.Api.Functions;
 using Xunit;
 
@@ -41,7 +42,8 @@ public class SalesDashboardTests
     [Fact]
     public void With_nothing_owed_on_record_the_default_is_the_whole_payment()
     {
-        var plan = SquareFunction.PlanRefund(totalCents: 4612, refundedCents: 0, refundDueCents: null, requestedCents: null);
+        var plan = SquareFunction.PlanRefund(totalCents: 4612, refundedCents: 0, refundDueCents: null, requestedCents: null,
+                                             needsRefund: true, orderBoxLines: 0, tenderSeq: 1, acknowledgedAt: null);
         Assert.True(plan.Allowed);
         Assert.Equal(4612, plan.Amount);
     }
@@ -55,7 +57,8 @@ public class SalesDashboardTests
     [Fact]
     public void A_partial_cart_refunds_what_is_owed_not_the_whole_payment()
     {
-        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 0, refundDueCents: 1608, requestedCents: null);
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 0, refundDueCents: 1608, requestedCents: null,
+                                             needsRefund: true, orderBoxLines: 3, tenderSeq: 1, acknowledgedAt: null);
         Assert.True(plan.Allowed);
         Assert.Equal(1608, plan.Amount);
     }
@@ -70,7 +73,8 @@ public class SalesDashboardTests
     [Fact]
     public void A_second_click_sends_only_what_is_still_owed()
     {
-        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 600, refundDueCents: 1608, requestedCents: null);
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 600, refundDueCents: 1608, requestedCents: null,
+                                             needsRefund: true, orderBoxLines: 3, tenderSeq: 1, acknowledgedAt: null);
         Assert.True(plan.Allowed);
         Assert.Equal(1008, plan.Amount);
     }
@@ -84,7 +88,8 @@ public class SalesDashboardTests
     [Fact]
     public void A_fully_settled_debt_refuses_rather_than_refunding_the_rest()
     {
-        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 1608, refundDueCents: 1608, requestedCents: null);
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 1608, refundDueCents: 1608, requestedCents: null,
+                                             needsRefund: false, orderBoxLines: 3, tenderSeq: 1, acknowledgedAt: null);
         Assert.False(plan.Allowed);
         Assert.Contains("Nothing outstanding", plan.Refusal);
         Assert.Equal(0, plan.Amount);
@@ -99,7 +104,8 @@ public class SalesDashboardTests
     [Fact]
     public void A_payment_already_fully_refunded_in_parts_refuses_in_words()
     {
-        var plan = SquareFunction.PlanRefund(totalCents: 4612, refundedCents: 4612, refundDueCents: null, requestedCents: null);
+        var plan = SquareFunction.PlanRefund(totalCents: 4612, refundedCents: 4612, refundDueCents: null, requestedCents: null,
+                                             needsRefund: false, orderBoxLines: 0, tenderSeq: 1, acknowledgedAt: null);
         Assert.False(plan.Allowed);
         Assert.Contains("Already refunded in full", plan.Refusal);
     }
@@ -117,7 +123,8 @@ public class SalesDashboardTests
     [InlineData(-1L, 500L)]
     public void An_unknown_or_impossible_total_refuses_and_points_at_the_way_out(long? total, long? requested)
     {
-        var plan = SquareFunction.PlanRefund(total, refundedCents: 0, refundDueCents: null, requestedCents: requested);
+        var plan = SquareFunction.PlanRefund(total, refundedCents: 0, refundDueCents: null, requestedCents: requested,
+                                             needsRefund: true, orderBoxLines: 0, tenderSeq: 1, acknowledgedAt: null);
         Assert.False(plan.Allowed);
         Assert.Equal(0, plan.Amount);
         // The refusal must name the exit, or this is the row that stays flagged
@@ -135,7 +142,8 @@ public class SalesDashboardTests
     [InlineData(1008L)]   // exactly what is owed
     public void A_typed_amount_within_the_debt_is_sent_as_typed(long typed)
     {
-        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 600, refundDueCents: 1608, requestedCents: typed);
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 600, refundDueCents: 1608, requestedCents: typed,
+                                             needsRefund: true, orderBoxLines: 3, tenderSeq: 1, acknowledgedAt: null);
         Assert.True(plan.Allowed);
         Assert.Equal(typed, plan.Amount);
     }
@@ -161,7 +169,8 @@ public class SalesDashboardTests
     [Fact]
     public void A_stale_button_amount_above_the_debt_is_refused_not_clamped()
     {
-        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 600, refundDueCents: 1608, requestedCents: 1608);
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 600, refundDueCents: 1608, requestedCents: 1608,
+                                             needsRefund: true, orderBoxLines: 3, tenderSeq: 1, acknowledgedAt: null);
         Assert.False(plan.Allowed);
         Assert.Equal(0, plan.Amount);
         Assert.Contains("$16.08", plan.Refusal);   // what was asked for
@@ -177,7 +186,8 @@ public class SalesDashboardTests
     [Fact]
     public void No_caller_can_exceed_the_debt_by_asking_for_the_payment_remainder()
     {
-        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 600, refundDueCents: 1608, requestedCents: 13236);
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 600, refundDueCents: 1608, requestedCents: 13236,
+                                             needsRefund: true, orderBoxLines: 3, tenderSeq: 1, acknowledgedAt: null);
         Assert.False(plan.Allowed);
         Assert.Equal(0, plan.Amount);
     }
@@ -193,7 +203,8 @@ public class SalesDashboardTests
     [Fact]
     public void A_typed_amount_cannot_reopen_a_settled_debt()
     {
-        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 1608, refundDueCents: 1608, requestedCents: 1000);
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 1608, refundDueCents: 1608, requestedCents: 1000,
+                                             needsRefund: false, orderBoxLines: 3, tenderSeq: 1, acknowledgedAt: null);
         Assert.False(plan.Allowed);
         Assert.Equal(0, plan.Amount);
         Assert.Contains("Nothing outstanding", plan.Refusal);
@@ -211,7 +222,8 @@ public class SalesDashboardTests
     [InlineData(99999L, false, 0L)]
     public void With_no_owed_figure_the_ceiling_is_still_the_payment(long typed, bool allowed, long expected)
     {
-        var plan = SquareFunction.PlanRefund(totalCents: 4612, refundedCents: 0, refundDueCents: null, requestedCents: typed);
+        var plan = SquareFunction.PlanRefund(totalCents: 4612, refundedCents: 0, refundDueCents: null, requestedCents: typed,
+                                             needsRefund: true, orderBoxLines: 0, tenderSeq: 1, acknowledgedAt: null);
         Assert.Equal(allowed, plan.Allowed);
         Assert.Equal(expected, plan.Amount);
     }
@@ -219,17 +231,18 @@ public class SalesDashboardTests
     // ------------------------------------- the row nobody may put a figure on
 
     /// <summary>
-    /// ITEM 4: the two halves used to disagree about one row.
-    /// PARTIAL_REFUND_FLAGGED with refund_due_cents NULL is fulfilment declining,
-    /// at length, to name the debt — boxes sold, but a box the buyer paid for has
-    /// no line on our copy, so no figure computed from the lines is the whole
-    /// bill. The page mirrors that with a disabled button whose tooltip says
-    /// guessing would be guessing with the buyer's money. The server, on that
-    /// same row, fell back to the payment total and refunded ALL of it — which on
-    /// an order the buyer is keeping boxes from is the dangerous direction.
+    /// ITEM 4: the two halves used to disagree about one row. A flagged payment
+    /// with refund_due_cents NULL, on an order we DO hold a copy of, is
+    /// fulfilment declining at length to name the debt — boxes sold, but a box
+    /// the buyer paid for has no line on our copy, so no figure computed from
+    /// the lines is the whole bill. The page mirrors that with a disabled button
+    /// whose tooltip says guessing would be guessing with the buyer's money. The
+    /// server, on that same row, fell back to the payment total and refunded ALL
+    /// of it — which on an order the buyer is keeping boxes from is the
+    /// dangerous direction.
     ///
-    /// Called with no amount and called with one both decline now: the endpoint
-    /// is not a way to price a debt fulfilment refused to price.
+    /// Called with no amount and called with one both decline: the endpoint is
+    /// not a way to price a debt fulfilment refused to price.
     /// </summary>
     [Theory]
     [InlineData(null)]
@@ -237,7 +250,8 @@ public class SalesDashboardTests
     public void An_unpriceable_debt_declines_instead_of_refunding_the_whole_payment(long? requested)
     {
         var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 0, refundDueCents: null,
-                                             requestedCents: requested, status: "PARTIAL_REFUND_FLAGGED");
+                                             requestedCents: requested,
+                                             needsRefund: true, orderBoxLines: 3, tenderSeq: 1, acknowledgedAt: null);
         Assert.False(plan.Allowed);
         Assert.Equal(0, plan.Amount);
         // It must name the exit, or this is the row that stays flagged forever.
@@ -246,26 +260,192 @@ public class SalesDashboardTests
     }
 
     /// <summary>
-    /// The decline is keyed on the PAIR, not on either half. A NULL owed figure
-    /// on any other status is the ordinary "the whole payment is the debt" row —
-    /// UNMATCHED is exactly that, money in and nothing sold — and must still
-    /// refund. An owed figure that IS recorded is priceable whatever the status.
+    /// THE DEFECT THIS ROUND EXISTS FOR, and it is the sequence the page itself
+    /// instructs. The old guard read status == 'PARTIAL_REFUND_FLAGGED'. Staff
+    /// read the Square receipt, refund the right PARTIAL amount by hand, and
+    /// that refund comes back as refund.updated — which rewrites the status to
+    /// PARTIAL_REFUNDED. From that moment the old guard returned false, the row
+    /// re-grew a live Refund button, and it offered THE REST OF THE PAYMENT:
+    /// $126.36 of a $138.36 payment whose buyer is keeping the boxes that did
+    /// arrive. Doing exactly as told armed the mistake.
+    ///
+    /// Nothing in the inputs below says PARTIAL_REFUND_FLAGGED, on purpose —
+    /// the status is gone and is never asked for again. The flag is still up
+    /// (refunded_cents has not reached the whole payment, which is the only bar
+    /// a NULL owed figure leaves), the owed figure is still NULL, and the order
+    /// copy still has its lines. All three outlive the refund.
     /// </summary>
-    [Theory]
-    [InlineData("UNMATCHED", null)]
-    [InlineData("REFUND_FLAGGED", null)]
-    [InlineData("COMPLETED", null)]
-    [InlineData("PARTIAL_REFUND_FLAGGED", 1608L)]
-    public void Only_a_flagged_row_with_no_owed_figure_is_unpriceable(string status, long? due)
+    [Fact]
+    public void A_partial_refund_cannot_wash_the_unpriceable_flag_off_by_moving_the_status()
     {
-        Assert.False(SquareFunction.DebtIsUnpriceable(status, due));
-        Assert.True(SquareFunction.PlanRefund(13836, 0, due, null, status).Allowed);
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 1200, refundDueCents: null,
+                                             requestedCents: null,
+                                             needsRefund: true, orderBoxLines: 3, tenderSeq: 1, acknowledgedAt: null);
+        Assert.False(plan.Allowed);
+        Assert.Equal(0, plan.Amount);
+        Assert.Contains("Square Dashboard", plan.Refusal);
     }
 
-    /// <summary>And the pair itself is unpriceable — the one combination that is.</summary>
+    /// <summary>
+    /// And the same row once a person has taken it. Acknowledging LOWERS the
+    /// flag, so the test above stops applying at exactly that moment — the stamp
+    /// is what carries the fact across. A later partial refund then rewrites the
+    /// status again (PARTIAL_REFUNDED here) and changes nothing.
+    ///
+    /// The refusal must name who and when. This row reaches here only by having
+    /// been marked handled, and a refusal that said merely "our copy is
+    /// incomplete" would invite a second hand-refund of a debt already settled.
+    /// </summary>
+    [Theory]
+    [InlineData(0L)]
+    [InlineData(1200L)]   // a hand refund landed after the acknowledgement
+    public void An_acknowledged_row_refuses_for_good_and_names_who_settled_it(long refunded)
+    {
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: refunded, refundDueCents: null,
+                                             requestedCents: null,
+                                             needsRefund: false, orderBoxLines: 3, tenderSeq: 1,
+                                             acknowledgedAt: new DateTime(2026, 9, 15, 14, 30, 0, DateTimeKind.Utc),
+                                             acknowledgedBy: "rob@northstateliquidators.com");
+        Assert.False(plan.Allowed);
+        Assert.Equal(0, plan.Amount);
+        Assert.Contains("rob@northstateliquidators.com", plan.Refusal);
+        Assert.Contains("15 Sep 2026", plan.Refusal);
+    }
+
+    /// <summary>
+    /// A typed amount buys nothing past an acknowledgement either. The ceiling
+    /// is the whole point: a caller that is not the page — a script, a retry, a
+    /// second dashboard — gets the same answer.
+    /// </summary>
     [Fact]
-    public void The_unpriceable_pair_is_flagged_status_plus_a_null_owed_figure()
-        => Assert.True(SquareFunction.DebtIsUnpriceable("PARTIAL_REFUND_FLAGGED", null));
+    public void A_typed_amount_cannot_reopen_an_acknowledged_row()
+    {
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 0, refundDueCents: null,
+                                             requestedCents: 500,
+                                             needsRefund: false, orderBoxLines: 3, tenderSeq: 1,
+                                             acknowledgedAt: new DateTime(2026, 9, 15, 0, 0, 0, DateTimeKind.Utc));
+        Assert.False(plan.Allowed);
+        Assert.Equal(0, plan.Amount);
+    }
+
+    /// <summary>
+    /// acknowledged_by is NULLABLE — the signed-in identity arrives in a header
+    /// and a missing one must never have failed the acknowledgement. The refusal
+    /// then reports the absence AS an absence. Printing "handled by " and
+    /// nothing, or inventing "staff", would answer the one question the column
+    /// exists for with a blank or a guess.
+    /// </summary>
+    [Fact]
+    public void An_acknowledgement_with_no_recorded_sign_in_says_so_rather_than_naming_nobody()
+    {
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 0, refundDueCents: null,
+                                             requestedCents: null,
+                                             needsRefund: false, orderBoxLines: 3, tenderSeq: 1,
+                                             acknowledgedAt: new DateTime(2026, 9, 15, 0, 0, 0, DateTimeKind.Utc),
+                                             acknowledgedBy: null);
+        Assert.False(plan.Allowed);
+        Assert.Contains("not recorded", plan.Refusal);
+    }
+
+    /// <summary>
+    /// THE FLOW THE NARROW GUARD WAS PROTECTING, and the reason this was never
+    /// widened to "any flagged row with a NULL owed figure". An UNMATCHED
+    /// payment — money in, NOTHING sold, no order copy at all — carries exactly
+    /// the same NULL owed figure and the same raised flag, and the whole payment
+    /// really is owed. It is routinely handed back in instalments, and every one
+    /// of those instalments must go through.
+    ///
+    /// orderBoxLines is what separates it, and separates it exactly:
+    /// FulfillOrderAsync writes UNMATCHED on every path where it resolved ZERO
+    /// order-box lines, and only reaches the declined-to-price verdict after it
+    /// has at least one.
+    /// </summary>
+    [Theory]
+    [InlineData(0L, 4612L)]      // in full
+    [InlineData(500L, 4112L)]    // second instalment
+    [InlineData(4000L, 612L)]    // last instalment
+    public void An_unmatched_payment_still_refunds_in_full_or_in_instalments(long refunded, long expected)
+    {
+        var plan = SquareFunction.PlanRefund(totalCents: 4612, refundedCents: refunded, refundDueCents: null,
+                                             requestedCents: null,
+                                             needsRefund: true, orderBoxLines: 0, tenderSeq: 1, acknowledgedAt: null);
+        Assert.True(plan.Allowed);
+        Assert.Equal(expected, plan.Amount);
+    }
+
+    /// <summary>
+    /// An ordinary settled web order — order lines on record, owed figure NULL
+    /// because nothing is owed, flag DOWN — is not an unpriceable debt and must
+    /// still be refundable in full. The flag is load-bearing in the test: a
+    /// guard that fired on "order lines plus a NULL owed figure" alone would
+    /// block every plain refund of every completed sale we have.
+    /// </summary>
+    [Fact]
+    public void A_completed_matched_order_is_still_refundable_in_full()
+    {
+        var plan = SquareFunction.PlanRefund(totalCents: 13836, refundedCents: 0, refundDueCents: null,
+                                             requestedCents: null,
+                                             needsRefund: false, orderBoxLines: 3, tenderSeq: 1, acknowledgedAt: null);
+        Assert.True(plan.Allowed);
+        Assert.Equal(13836, plan.Amount);
+    }
+
+    /// <summary>
+    /// The predicate itself, as a truth table, because every row of it is a
+    /// different production payment and three of them must NOT be caught.
+    ///
+    /// The status is absent from every case on purpose: it is a stage the row
+    /// passes through, and the whole defect was reading a fact off one.
+    /// </summary>
+    [Theory]
+    // owed NULL + flagged + we hold the order's lines + first tender on the
+    // order = fulfilment declined to price it. Caught, whatever the status has
+    // since become.
+    [InlineData(null, true,  3, 1L, false, true)]
+    [InlineData(null, true,  1, 1L, false, true)]
+    // ... and once a person has taken it, the lowered flag stops mattering.
+    [InlineData(null, false, 3, 1L, true,  true)]
+    [InlineData(null, true,  0, 1L, true,  true)]   // stamp wins even with no lines
+    // UNMATCHED: flagged, owed NULL, but no order copy. The whole payment is
+    // genuinely the debt and instalments must go through.
+    [InlineData(null, true,  0, 1L, false, false)]
+    // A SECOND TENDER Square gave us no amount for. Same first three facts, and
+    // its debt is the whole of a double charge, not something we declined to
+    // price — fulfilment's duplicate ruling owns it.
+    [InlineData(null, true,  3, 2L, false, false)]
+    // A priced debt is priceable whatever else is true.
+    [InlineData(1608L, true, 3, 1L, false, false)]
+    // A settled, unflagged matched order. Not a debt at all.
+    [InlineData(null, false, 3, 1L, false, false)]
+    public void The_predicate_reads_facts_that_a_refund_cannot_move(
+        long? due, bool flagged, int boxLines, long tenderSeq, bool acknowledged, bool expected)
+        => Assert.Equal(expected, SquareFunction.DebtIsUnpriceable(
+               due, flagged, boxLines, tenderSeq,
+               acknowledged ? new DateTime(2026, 9, 15, 0, 0, 0, DateTimeKind.Utc) : null));
+
+    /// <summary>
+    /// The second legitimate flow, end to end. A Square split tender or a double
+    /// charge arrives as a SECOND payment on an order every box of which we had
+    /// already sold; fulfilment prices its debt at the payment itself, but when
+    /// the webhook carried no amount_money there is no figure to record, so the
+    /// row lands flagged with refund_due_cents NULL and order lines on the
+    /// order — the first three facts of an unpriceable debt exactly.
+    ///
+    /// It is not one. Once "Get amount from Square" fills the amount in, the
+    /// whole of it is refundable from this page, and a guard that answered "our
+    /// copy of the order is incomplete" here would be wrong about the row AND
+    /// would push a genuine double charge out into the Square Dashboard.
+    /// </summary>
+    [Fact]
+    public void A_second_tender_with_no_recorded_amount_is_refundable_once_the_amount_is_known()
+    {
+        var plan = SquareFunction.PlanRefund(totalCents: 4612, refundedCents: 0, refundDueCents: null,
+                                             requestedCents: null,
+                                             needsRefund: true, orderBoxLines: 3, tenderSeq: 2,
+                                             acknowledgedAt: null);
+        Assert.True(plan.Allowed);
+        Assert.Equal(4612, plan.Amount);
+    }
 
     /// <summary>
     /// refund_due_cents can only ever be capped by the payment: a debt larger
@@ -275,7 +455,8 @@ public class SalesDashboardTests
     [Fact]
     public void An_owed_figure_larger_than_the_payment_is_capped_at_the_payment()
     {
-        var plan = SquareFunction.PlanRefund(totalCents: 4612, refundedCents: 0, refundDueCents: 99999, requestedCents: null);
+        var plan = SquareFunction.PlanRefund(totalCents: 4612, refundedCents: 0, refundDueCents: 99999, requestedCents: null,
+                                             needsRefund: true, orderBoxLines: 1, tenderSeq: 1, acknowledgedAt: null);
         Assert.True(plan.Allowed);
         Assert.Equal(4612, plan.Amount);
     }

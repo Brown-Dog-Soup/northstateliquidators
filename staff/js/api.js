@@ -95,7 +95,11 @@ export const apiClient = {
   squarePaymentAmount: (paymentId) => api('POST', '/api/square-payment-amount', { paymentId }),
   // Lowers the attention flag on the one row that can never clear itself — the
   // payment whose debt fulfilment declined to price. Refunds nothing and moves
-  // no money; it records that a person settled it outside this page.
+  // no money; it records WHO settled it outside this page and WHEN, on the row
+  // itself. That stamp, not the status, is what stops /api/square-refund ever
+  // offering the rest of the payment here again: a status is a stage the row
+  // passes through and the next refund rewrites it, while acknowledged_at is a
+  // fact about the row and nothing clears it.
   squareAcknowledge: (paymentId) => api('POST', '/api/square-acknowledge', { paymentId }),
   squareReconcile:  () => api('POST', '/api/square-reconcile'),
   invoiceBox:       (id, email, name = null, price = null) => api('POST', `/api/pallets/${id}/invoice`, { email, name, price }),

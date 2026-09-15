@@ -287,4 +287,58 @@ GO
             },
             byFile);
     }
+
+    // ------------------------------------------------- the acknowledge columns
+
+    /// <summary>
+    /// The second contract with both halves in this repository: the
+    /// acknowledged_* columns the refund guard now rules on exist ONLY because
+    /// db/cart-checkout.sql adds them to dbo.payments, and four statements in
+    /// SquareFunction.cs read or write them by name.
+    ///
+    /// WHY THIS ONE EARNS A TEST. Those columns are not bookkeeping. They are the
+    /// durable record that fulfilment declined to price a debt, and they are what
+    /// stops /api/square-refund offering the rest of a payment on a row nobody
+    /// could price — money back for boxes the buyer kept. If a later edit renames
+    /// or drops them here, or a typo creeps into one of the statements, the
+    /// endpoints throw at the moment a staff member is standing in front of a
+    /// customer, and the acknowledge route — the only exit from a permanently
+    /// flagged row — stops working entirely.
+    ///
+    /// WHAT IT DOES NOT PROVE. It compares two texts and nothing else: not the
+    /// types, not that any statement parses, not that the migration has been
+    /// APPLIED to the database (it has not — the script is still unapplied, and
+    /// running against a database without these columns fails at runtime with
+    /// this test green). Applying db/cart-checkout.sql before deploying is a
+    /// staging step, not something any test here can stand in for.
+    /// </summary>
+    [Theory]
+    [InlineData("acknowledged_at")]
+    [InlineData("acknowledged_by")]
+    public void The_acknowledge_columns_the_refund_guard_rests_on_are_declared(string column)
+    {
+        var sql = File.ReadAllText(Path.Combine(RepoRoot(), SchemaFile));
+        Assert.Contains($"ALTER TABLE dbo.payments ADD {column} ", sql);
+        Assert.Contains($"COL_LENGTH('dbo.payments', '{column}')", sql);
+    }
+
+    /// <summary>
+    /// And the other direction, which is the one that catches a typo: every
+    /// acknowledged_* name the function app puts in a SQL string is a column the
+    /// migration actually declares. Anti-vacuity is the count — this must be
+    /// finding references, or it is asserting nothing at all.
+    /// </summary>
+    [Fact]
+    public void Every_acknowledge_column_the_code_names_is_one_the_migration_adds()
+    {
+        var root = RepoRoot();
+        var code = File.ReadAllText(Path.Combine(root, "api/Functions/SquareFunction.cs"));
+        var sql = File.ReadAllText(Path.Combine(root, SchemaFile));
+
+        var named = Regex.Matches(code, @"\backnowledged_[a-z_]+\b")
+                         .Select(m => m.Value).Distinct().OrderBy(x => x).ToList();
+        Assert.Equal(new[] { "acknowledged_at", "acknowledged_by" }, named);
+        foreach (var col in named)
+            Assert.Contains($"ALTER TABLE dbo.payments ADD {col} ", sql);
+    }
 }

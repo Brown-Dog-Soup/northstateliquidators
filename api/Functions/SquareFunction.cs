@@ -6,6 +6,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NSL.Api.Services;
 using Dapper;
+using System.Globalization;
 using System.Text.Json;
 
 namespace NSL.Api.Functions;
@@ -865,7 +866,22 @@ WHERE o.kind = 'invoice' AND o.status = 'open'
     ///                       by design (db/cart-checkout.sql).
     ///   box_lines         — how many boxes were on the order at all. Zero here
     ///                       is the only state that honestly reads "matched no
-    ///                       order".
+    ///                       order", and it is also the line the unpriceable
+    ///                       guard turns on: see <see cref="DebtIsUnpriceable"/>.
+    ///
+    /// acknowledged_at / acknowledged_by are the row's own record that a person
+    /// settled a debt we declined to price, by hand, outside this page. They are
+    /// selected because the page must SAY so — an acknowledged row that prints a
+    /// bare status and a live Refund button is the same erasure the columns were
+    /// added to stop, just performed by the browser instead of by an UPDATE.
+    ///
+    /// tender_seq is this payment's rank among the payments on its order, the
+    /// same ROW_NUMBER SalesSummary ranks by. The page needs it for the same
+    /// reason /api/square-refund does — a second tender with no amount on record
+    /// otherwise wears the unpriceable row's disabled button — and taking it from
+    /// the same expression is what stops the two drifting apart. It is computed
+    /// over every payment, not just the hundred returned: a second tender does
+    /// not become a first one by falling off the end of a list.
     /// </summary>
     [Function("ListSquarePayments")]
     public async Task<IActionResult> ListPayments(
@@ -876,6 +892,10 @@ WHERE o.kind = 'invoice' AND o.status = 'open'
         var rows = (await conn.QueryAsync(new CommandDefinition(@"
 SELECT TOP 100 p.square_payment_id, p.square_order_id, p.manifest_id,
        p.amount_cents, p.refunded_cents, p.refund_due_cents, p.status, p.needs_refund, p.created_at,
+       p.acknowledged_at, p.acknowledged_by,
+       CASE WHEN p.square_order_id IS NULL THEN 1
+            ELSE ROW_NUMBER() OVER (PARTITION BY p.square_order_id
+                                    ORDER BY p.created_at, p.square_payment_id) END AS tender_seq,
        m.pallet_number, m.display_name,
        o.delivery_method, o.tax_cents, o.delivery_cents,
        (SELECT STRING_AGG('#' + CAST(m2.pallet_number AS VARCHAR(10)), ', ') WITHIN GROUP (ORDER BY m2.pallet_number)
@@ -909,19 +929,88 @@ ORDER BY p.needs_refund DESC, p.created_at DESC", cancellationToken: ct))).ToLis
     private static string Dollars(long cents) => $"${cents / 100m:0.00}";
 
     /// <summary>
-    /// The one row fulfilment DECLINES TO PRICE. PARTIAL_REFUND_FLAGGED with no
-    /// refund_due_cents is CheckoutFulfillment saying, at length, that it could
-    /// not work out the debt: boxes on this order did sell, but a box the buyer
-    /// paid for has no line left on our copy, so no figure computed from the
-    /// lines is the whole bill. It leaves the column NULL ON PURPOSE.
-    ///
-    /// The status is the only place that fact is written down, which is this
-    /// test's limit: once any refund lands on such a row ApplyRefundSql rewrites
-    /// the status to PARTIAL_REFUNDED and the fact is gone. Recording it durably
-    /// needs a column on dbo.payments, which is not this task's to add.
+    /// Who did it, for a sentence. acknowledged_by is NULLABLE on purpose: the
+    /// signed-in identity arrives in a header, and a missing or malformed header
+    /// must never have failed the acknowledgement (ClientPrincipal swallows it).
+    /// So the absence is reported as an absence — inventing "staff" or "admin"
+    /// here would answer the one question the column exists for with a guess.
     /// </summary>
-    internal static bool DebtIsUnpriceable(string? status, long? refundDueCents)
-        => refundDueCents is null && string.Equals(status, "PARTIAL_REFUND_FLAGGED", StringComparison.Ordinal);
+    private static string Who(string? acknowledgedBy)
+        => string.IsNullOrWhiteSpace(acknowledgedBy) ? "Someone (their sign-in was not recorded)" : acknowledgedBy;
+
+    /// <summary>
+    /// The row fulfilment DECLINES TO PRICE — asked of FACTS ABOUT THE ROW, not
+    /// of the stage the row is currently passing through.
+    ///
+    /// WHAT IT IS. CheckoutFulfillment could not work out the debt: boxes on this
+    /// order did sell, but a box the buyer paid for has no line left on our copy,
+    /// so no figure computed from the lines is the whole bill. It leaves
+    /// refund_due_cents NULL ON PURPOSE (DecidePaymentOutcome: recorded = null
+    /// whenever lines are missing) and raises the attention flag.
+    ///
+    /// WHY THIS IS NO LONGER A STATUS TEST. It used to read
+    /// status == 'PARTIAL_REFUND_FLAGGED', and a status is a stage: the first
+    /// partial refund runs ApplyRefundSql, which rewrites it to PARTIAL_REFUNDED,
+    /// and the fact that fulfilment declined to price the row was ERASED by the
+    /// very act the page had just instructed. After that this returned false and
+    /// PlanRefund fell back to refunding the REST OF THE PAYMENT on a row nobody
+    /// could price — money back for boxes the buyer kept. The two tests below
+    /// both survive that rewrite.
+    ///
+    /// TEST ONE — the row still says so itself. refund_due_cents NULL while the
+    /// attention flag is up, on a payment that MATCHED AN ORDER WE HOLD A COPY OF
+    /// (<paramref name="orderBoxLines"/> &gt; 0). Every one of those three is
+    /// untouched by a refund: ApplyRefundSql moves refunded_cents and the status,
+    /// and it only ever lowers needs_refund when the debt is covered — which, with
+    /// the owed figure NULL, means the WHOLE payment, i.e. not on a partial.
+    ///
+    /// TEST TWO — a person already took responsibility. acknowledged_at is set
+    /// only by <see cref="Acknowledge"/>, whose compare-and-swap admits nothing
+    /// but this same state, and nothing ever clears it. It is what carries the
+    /// fact across the moment test one stops being true: acknowledging lowers the
+    /// flag, so from then on the stamp is the whole of the evidence.
+    ///
+    /// HOW THIS STILL LETS THE LEGITIMATE FLOWS THROUGH — there are two, and each
+    /// needs its own term.
+    ///
+    /// AN UNMATCHED PAYMENT. Money in, nothing sold, the whole payment genuinely
+    /// owed and routinely handed back in instalments. It carries refund_due_cents
+    /// NULL and the flag too, and must keep refunding. <paramref name="orderBoxLines"/>
+    /// separates it, and separates it exactly: FulfillOrderAsync writes UNMATCHED
+    /// on every path where it resolved ZERO order-box lines, and reaches the
+    /// declined-to-price verdict only after it has at least one. Zero lines is
+    /// "we have no copy of an order for this money"; one or more with the owed
+    /// figure blank is "we have a copy and it does not add up".
+    ///
+    /// A SECOND TENDER SQUARE GAVE US NO AMOUNT FOR. DecidePaymentOutcome prices
+    /// a duplicate tender at the payment itself — a complete figure, which is why
+    /// missing lines cannot spoil it — but when the webhook carried no
+    /// amount_money there is no figure to record, so refund_due_cents comes out
+    /// NULL on a flagged row with order lines: the first two terms alone. Its
+    /// debt is not unpriceable at all, it is the whole of a double charge, and
+    /// once "Get amount from Square" fills the amount in it must be refundable
+    /// from here. <paramref name="tenderSeq"/> is the separating fact, and it is
+    /// the same rank SalesSummary already uses: the order's goods belong to the
+    /// FIRST payment against it, and duplicateTender is by definition not that
+    /// one. Fulfilment can only reach the declined-to-price verdict on a first
+    /// tender, because on any later one the duplicate ruling wins.
+    ///
+    /// Neither exception can be smuggled in through the stamp, because Acknowledge
+    /// admits exactly the same state this does.
+    /// </summary>
+    /// <param name="refundDueCents">payments.refund_due_cents — NULL is fulfilment
+    /// declining to name a figure, never zero.</param>
+    /// <param name="needsRefund">payments.needs_refund — the attention flag.</param>
+    /// <param name="orderBoxLines">rows in dbo.checkout_order_boxes for this
+    /// payment's order. Zero means the payment matched no order copy at all.</param>
+    /// <param name="tenderSeq">this payment's rank among the payments on its
+    /// order, oldest first; 1 for the first and for a payment with no order.</param>
+    /// <param name="acknowledgedAt">payments.acknowledged_at — set once, never
+    /// cleared, and only on exactly this state.</param>
+    internal static bool DebtIsUnpriceable(long? refundDueCents, bool needsRefund, int orderBoxLines,
+                                           long tenderSeq, DateTime? acknowledgedAt)
+        => acknowledgedAt is not null
+        || (refundDueCents is null && needsRefund && orderBoxLines > 0 && tenderSeq <= 1);
 
     /// <summary>
     /// The refund arithmetic, pure (spec §8.8), so it can be tested rather than
@@ -962,9 +1051,17 @@ ORDER BY p.needs_refund DESC, p.created_at DESC", cancellationToken: ct))).ToLis
     ///
     /// A settled partial refund is never escalated into a refund of the rest of
     /// the payment: when nothing is owed, we say so.
+    ///
+    /// The unpriceable check runs BEFORE any arithmetic and is asked of the row's
+    /// own durable facts rather than its status (<see cref="DebtIsUnpriceable"/>),
+    /// which is why the caller must hand over needsRefund, orderBoxLines,
+    /// tenderSeq and acknowledgedAt, and why none of them has a default: a guard
+    /// that switches itself off when a caller forgets an argument is not a guard.
     /// </summary>
     internal static RefundPlan PlanRefund(long? totalCents, long refundedCents, long? refundDueCents,
-                                          long? requestedCents, string? status = null)
+                                          long? requestedCents, bool needsRefund, int orderBoxLines,
+                                          long tenderSeq, DateTime? acknowledgedAt,
+                                          string? acknowledgedBy = null)
     {
         if (totalCents is null or <= 0)
             return new RefundPlan(0,
@@ -977,9 +1074,15 @@ ORDER BY p.needs_refund DESC, p.created_at DESC", cancellationToken: ct))).ToLis
         // with the buyer's money. The server used to fall back to the payment
         // total on the same row and refund ALL of it — the one place the two
         // halves disagreed about one row, and the dangerous direction.
-        if (DebtIsUnpriceable(status, refundDueCents))
-            return new RefundPlan(0,
-                "Boxes on this order did sell, but our copy of the order is incomplete, so we cannot work out what is owed — and refunding the whole payment would take back money for boxes the buyer kept. Read the amount off the Square receipt, refund it in the Square Dashboard, then use “Mark handled” on this row.");
+        if (DebtIsUnpriceable(refundDueCents, needsRefund, orderBoxLines, tenderSeq, acknowledgedAt))
+            return new RefundPlan(0, acknowledgedAt is { } ack
+                // Already settled by a person. The refusal has to name them and
+                // the day, because this row reaches here ONLY by having been
+                // marked handled, and the one question anybody asks in front of
+                // it is who decided that. Saying "our copy is incomplete" alone
+                // would invite a second hand-refund of a debt already paid.
+                ? $"{Who(acknowledgedBy)} marked this row handled on {ack.ToString("d MMM yyyy", CultureInfo.InvariantCulture)} — whatever was owed was worked out from the Square receipt and refunded in the Square Dashboard. We never held a figure for this debt, so there is nothing for this button to send. Refund anything further in the Square Dashboard."
+                : "Boxes on this order did sell, but our copy of the order is incomplete, so we cannot work out what is owed — and refunding the whole payment would take back money for boxes the buyer kept. Read the amount off the Square receipt, refund it in the Square Dashboard, then use “Mark handled” on this row.");
 
         long due = Math.Min(refundDueCents ?? totalCents.Value, totalCents.Value);
         long owed = Math.Max(0, due - refundedCents);
@@ -1045,13 +1148,37 @@ ORDER BY p.needs_refund DESC, p.created_at DESC", cancellationToken: ct))).ToLis
             return new BadRequestObjectResult(new { error = "paymentId is required" });
 
         await using var conn = await _sql.OpenAsync(ct);
-        var row = await conn.QueryFirstOrDefaultAsync(new CommandDefinition(
-            "SELECT square_payment_id, amount_cents, refunded_cents, refund_due_cents, status FROM dbo.payments WHERE square_payment_id = @pid",
+        // box_lines and tender_seq are not decoration: between them they are what
+        // separates a debt fulfilment declined to price from the two rows that
+        // look identical to it once a partial refund has rewritten the status out
+        // from under all three — an UNMATCHED payment being refunded in
+        // instalments, and a second tender Square gave us no amount for. Both are
+        // read here, against the same tables and with the same tender rank
+        // SalesSummary uses, so the server's ruling owes the page nothing.
+        //
+        // The tender rank is spelled out rather than windowed because this reads
+        // ONE row: count the payments on the same order that sort ahead of this
+        // one, on (created_at, square_payment_id) — identical ordering to the
+        // ROW_NUMBER in SalesSummary, so the two can never disagree about which
+        // payment is an order's first.
+        var row = await conn.QueryFirstOrDefaultAsync(new CommandDefinition(@"
+SELECT p.square_payment_id, p.amount_cents, p.refunded_cents, p.refund_due_cents, p.status,
+       p.needs_refund, p.acknowledged_at, p.acknowledged_by,
+       (SELECT COUNT(*) FROM dbo.checkout_order_boxes b WHERE b.square_order_id = p.square_order_id) AS box_lines,
+       CASE WHEN p.square_order_id IS NULL THEN 1
+            ELSE 1 + (SELECT COUNT(*) FROM dbo.payments p2
+                      WHERE p2.square_order_id = p.square_order_id
+                        AND (p2.created_at < p.created_at
+                             OR (p2.created_at = p.created_at AND p2.square_payment_id < p.square_payment_id)))
+       END AS tender_seq
+FROM dbo.payments p WHERE p.square_payment_id = @pid",
             new { pid = body.paymentId }, cancellationToken: ct));
         if (row == null) return new NotFoundObjectResult(new { error = "Payment not found in our records." });
 
         var plan = PlanRefund((long?)row.amount_cents, (long)row.refunded_cents, (long?)row.refund_due_cents,
-                              body.amountCents, (string?)row.status);
+                              body.amountCents, (bool)row.needs_refund, (int)row.box_lines,
+                              (long)(int)row.tender_seq,
+                              (DateTime?)row.acknowledged_at, (string?)row.acknowledged_by);
         if (!plan.Allowed) return new ConflictObjectResult(new { error = plan.Refusal });
         long cents = plan.Amount;
 
@@ -1211,20 +1338,37 @@ FROM dbo.payments WHERE square_payment_id = @pid",
     /// lowered it.
     ///
     /// NARROW ON PURPOSE. The UPDATE is a compare-and-swap against exactly the
-    /// trapped state: still flagged, status PARTIAL_REFUND_FLAGGED, owed figure
-    /// NULL, amount known. Every other flagged row has a real exit — refund it,
-    /// or look the amount up — and must keep nagging until it is taken. Widening
+    /// trapped state: still flagged, owed figure NULL, amount known, and order
+    /// lines on record. Every other flagged row has a real exit — refund it, or
+    /// look the amount up — and must keep nagging until it is taken. Widening
     /// this to "clear any flag" would turn the attention table into something
     /// staff can tidy away, which is the whole thing it exists not to be. A
     /// double click matches zero rows and answers 409 rather than re-clearing.
     ///
-    /// WHAT IS NOT RECORDED, and it needs a schema column this task does not
-    /// own: WHO acknowledged and WHEN. The status carries the fact; the caller's
-    /// identity reaches the log only. dbo.payments wants
-    /// acknowledged_at DATETIME2 NULL / acknowledged_by NVARCHAR(200) NULL for
-    /// that to be durable — and the same column would fix the other limit noted
-    /// on DebtIsUnpriceable, because a later partial refund rewrites the status
-    /// and erases both facts.
+    /// WHY THE CAS NO LONGER NAMES THE STATUS, and this is not tidying. It used
+    /// to require status = 'PARTIAL_REFUND_FLAGGED', and the page tells staff to
+    /// refund in the Square Dashboard FIRST and press Mark handled afterwards.
+    /// That refund arrives back as refund.updated, ApplyRefundSql rewrites the
+    /// status to PARTIAL_REFUNDED, and the button they were told to press then
+    /// answered 409 — the row could never be acknowledged at all, by anyone,
+    /// after doing exactly as instructed. The remaining terms plus
+    /// EXISTS(order lines) are that same state asked of facts a refund does not
+    /// move: see <see cref="DebtIsUnpriceable"/> for why order lines keep an
+    /// UNMATCHED payment (zero lines, whole payment genuinely owed, often
+    /// refunded in instalments) out of here and still nagging, and why the
+    /// NOT EXISTS keeps a second tender out — marking one handled would put its
+    /// Refund button beyond reach for good, and a double charge is owed in full.
+    ///
+    /// WHO AND WHEN are written down now, not merely logged. acknowledged_at is
+    /// what carries "we declined to price this" past the moment the flag comes
+    /// down — the status cannot, because a later partial refund overwrites it.
+    /// acknowledged_by is who took responsibility: this clears a debt without
+    /// moving money, and the one question afterwards is always who decided.
+    /// Both are written with COALESCE so the FIRST person to take the row keeps
+    /// it. A REFUND_FAILED webhook can re-raise the flag on an acknowledged row
+    /// and a second person may clear it again; overwriting the original stamp
+    /// then would be this whole bug in miniature — a later event erasing an
+    /// earlier fact. Every acknowledgement is logged with its own who and when.
     /// </summary>
     [Function("SquareAcknowledge")]
     public async Task<IActionResult> Acknowledge(
@@ -1241,29 +1385,49 @@ FROM dbo.payments WHERE square_payment_id = @pid",
         var who = ClientPrincipal.UserDetails(req);
         await using var conn = await _sql.OpenAsync(ct);
         var applied = await conn.ExecuteAsync(new CommandDefinition(@"
-UPDATE dbo.payments SET needs_refund = 0, status = @ack
-WHERE square_payment_id = @pid
-  AND needs_refund = 1
-  AND status = 'PARTIAL_REFUND_FLAGGED'
-  AND refund_due_cents IS NULL
-  AND amount_cents IS NOT NULL",
-            new { pid = body.paymentId, ack = AcknowledgedStatus }, cancellationToken: ct));
+UPDATE p SET needs_refund = 0, status = @ack,
+    acknowledged_at = COALESCE(p.acknowledged_at, SYSUTCDATETIME()),
+    acknowledged_by = COALESCE(p.acknowledged_by, @who)
+FROM dbo.payments p
+WHERE p.square_payment_id = @pid
+  AND p.needs_refund = 1
+  AND p.refund_due_cents IS NULL
+  AND p.amount_cents IS NOT NULL
+  AND EXISTS (SELECT 1 FROM dbo.checkout_order_boxes b WHERE b.square_order_id = p.square_order_id)
+  AND NOT EXISTS (SELECT 1 FROM dbo.payments p2
+                  WHERE p2.square_order_id = p.square_order_id
+                    AND (p2.created_at < p.created_at
+                         OR (p2.created_at = p.created_at AND p2.square_payment_id < p.square_payment_id)))",
+            new { pid = body.paymentId, ack = AcknowledgedStatus, who }, cancellationToken: ct));
         if (applied == 0)
         {
             var row = await conn.QueryFirstOrDefaultAsync(new CommandDefinition(
-                "SELECT status, needs_refund FROM dbo.payments WHERE square_payment_id = @pid",
+                "SELECT status, needs_refund, acknowledged_at, acknowledged_by FROM dbo.payments WHERE square_payment_id = @pid",
                 new { pid = body.paymentId }, cancellationToken: ct));
             if (row == null) return new NotFoundObjectResult(new { error = "Payment not found in our records." });
+            // A second press and a wrong row want different sentences. The stamp
+            // outlives every status, so "already handled" can be answered with
+            // the name and the day rather than with a refusal that reads as
+            // though the first press had failed.
+            var already = (DateTime?)row.acknowledged_at;
             return new ConflictObjectResult(new
             {
-                error = "This row is not the one that cannot clear itself — only a payment whose owed amount our order copy could not work out can be marked handled. Refund it, or use “Get amount from Square”.",
+                error = already is { } at
+                    ? $"Already marked handled by {Who((string?)row.acknowledged_by)} on {at.ToString("d MMM yyyy", CultureInfo.InvariantCulture)}. Nothing was changed."
+                    : "This row is not the one that cannot clear itself — only a payment whose owed amount our order copy could not work out can be marked handled. Refund it, or use “Get amount from Square”.",
                 status = (string?)row.status,
+                acknowledgedAt = already,
+                acknowledgedBy = (string?)row.acknowledged_by,
             });
         }
         _log.LogWarning(
             "SquareAcknowledge: payment {PaymentId} marked handled by {Who} — the attention flag was lowered by a person, not by a refund. refunded_cents is unchanged; whatever went back to the buyer went back through the Square Dashboard.",
             body.paymentId, who ?? "(unknown staff user)");
-        return new OkObjectResult(new { paymentId = body.paymentId, status = AcknowledgedStatus, cleared = true });
+        return new OkObjectResult(new
+        {
+            paymentId = body.paymentId, status = AcknowledgedStatus, cleared = true,
+            acknowledgedBy = who,
+        });
     }
 
     /// <summary>

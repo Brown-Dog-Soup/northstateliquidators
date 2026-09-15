@@ -830,32 +830,137 @@ WHERE o.status = 'open' AND o.kind = 'link'
     }
 
     /// <summary>
-    /// Best-effort Square deletes for DB-canceled links. link_deleted_at is
-    /// stamped ONLY when Square confirms; anything else is left for Reconcile.
-    /// Never throws — the sale is already committed.
+    /// How many times ONE call may ask Square to prove, out of its own mouth,
+    /// that our credential is looking at the merchant these orders belong to.
     ///
-    /// <paramref name="ct"/> reaches the Square call and deliberately NOT the
+    /// A failed proof is not a neutral outcome worth retrying a fourth time:
+    /// "Square holds no such order" is itself the evidence that points at a wrong
+    /// merchant, so three of them in a row have already answered the question.
+    /// The cap is what keeps the extra traffic bounded when the sweep hands this
+    /// method its whole 40-link budget at once — past it we stop asking, stamp
+    /// nothing, and the next run (or the next staff action) starts over.
+    /// </summary>
+    private const int MerchantProofBudget = 3;
+
+    /// <summary>
+    /// Best-effort Square deletes for DB-canceled links. link_deleted_at is
+    /// stamped ONLY when Square confirms AND this call has corroborated that the
+    /// credential reaches the merchant holding these orders; anything else is
+    /// left for Reconcile. Never throws — the sale is already committed.
+    ///
+    /// WHY A CONFIRMED DELETE IS NOT ENOUGH ON ITS OWN.
+    /// <see cref="SquareService.DeletePaymentLinkAsync"/> returns true for two
+    /// different answers: a 200 carrying cancelled_order_id (Square cancelled OUR
+    /// link) and a 404 (Square has no such link). Those are the same word for
+    /// opposite facts when the credential points at the wrong merchant — a
+    /// sandbox token in production, a re-created application, a location change
+    /// after a migration. None of that moves a cent of anybody's money: the
+    /// buyers' links stay payable and their payments stay where they are, at OUR
+    /// merchant. Only our ability to see them moves, and what we see instead is a
+    /// 404 on every call. Read as confirmation, every one of those 404s stamps
+    /// link_deleted_at — and a canceled row that is stamped matches neither arm
+    /// of SquareFunction.ReconcileBacklogSql, so it becomes unreachable by the
+    /// one pass that could still discover a payment against it, permanently,
+    /// including after somebody fixes the credential.
+    ///
+    /// SquareFunction.Reconcile already refuses to call this at all without a
+    /// readable order somewhere in the same run (SquareAnswered). The gate below
+    /// is that rule applied where it belongs — inside the method, so it also
+    /// covers the five callers with no run-level evidence to offer: three in
+    /// PalletsFunction, one in InvoiceBox, and FulfillOrderAsync itself. Their
+    /// blast radius is smaller (each passes the links of one request's boxes, not
+    /// every aged order) but it is not zero.
+    ///
+    /// WHAT COUNTS AS PROOF, and why it is a second call rather than a cleverer
+    /// reading of the first. Square answering RetrieveOrder with an order object
+    /// for an id WE minted can only happen at the merchant that holds it; a token
+    /// on another merchant 404s. One such answer proves the credential for the
+    /// whole call, so it is asked for lazily — at the first link that actually
+    /// wants a stamp — and never asked again once given. The cheaper signal is a
+    /// 200-with-cancelled_order_id on the delete itself, which is equally
+    /// conclusive; it is unused here only because the bool hides it. If
+    /// DeletePaymentLinkAsync ever distinguishes its two trues, a body-confirmed
+    /// delete should count as proof and skip the probe.
+    ///
+    /// THE COST, paid on purpose: one extra GET per call that has a stamp to
+    /// make, and — when the proof cannot be had — a link that really was deleted
+    /// keeps its row in the retire queue for another round. That round re-deletes
+    /// it, which is harmless, and Reconcile samples that queue at random so
+    /// nothing is starved. The opposite mistake costs a customer their money.
+    ///
+    /// <paramref name="ct"/> reaches the Square calls and deliberately NOT the
     /// stamp below, which is the one database call in the sweep that should
     /// finish regardless: by the time it runs, Square has already deleted the
     /// link, and the row is the only record that it happened. Cancelling it
     /// buys a few milliseconds of shutdown and costs a wasted delete call on
-    /// the next run. (Nothing breaks either way — a missing stamp re-deletes,
-    /// Square answers 404, and 404 confirms.)
+    /// the next run. (Nothing breaks either way — a missing stamp re-deletes and
+    /// re-corroborates on the next pass.)
     /// </summary>
     public async Task RetireLinksAsync(SqlConnection conn, IEnumerable<CanceledLink> links, CancellationToken ct)
     {
+        bool merchantProven = false;
+        int proofsAttempted = 0;
+        int unprovenDeletes = 0;
+        var noLinkId = new List<string>();
+
         foreach (var l in links)
         {
             try
             {
-                bool confirmed;
-                if (l.LinkId == null) confirmed = true;                 // nothing at Square to delete
-                else if (!_square.Configured) confirmed = false;         // leave for Reconcile
-                else confirmed = await _square.DeletePaymentLinkAsync(l.LinkId, ct);
-                if (confirmed)
-                    await conn.ExecuteAsync(
-                        "UPDATE dbo.checkout_orders SET link_deleted_at = SYSUTCDATETIME() WHERE square_order_id = @oid",
-                        new { oid = l.OrderId });
+                // NO LINK ID, NO STAMP — the deliberate reversal of what this
+                // branch used to do, which was to treat "nothing to delete" as
+                // confirmation and stamp the row without asking Square anything.
+                //
+                // That reading was right about the link and wrong about the
+                // column. There is indeed nothing here for us to cancel: we never
+                // recorded the id, so no delete call is even expressible. But
+                // link_deleted_at no longer means only "the link is gone" — it is
+                // what takes a canceled row OUT of ReconcileBacklogSql, the one
+                // pass that still asks Square about the ORDER and heals it if it
+                // comes back paid (SquareFunction.VerdictFor: CANCELED + paid =>
+                // Heal). A row with no link id is precisely the row where we
+                // cannot have cancelled anything at Square, so whatever link the
+                // buyer was given may still be payable. And these rows are real,
+                // not theoretical: db/cart-checkout.sql backfills legacy orders
+                // from manifests.checkout_link_id, which is nullable while
+                // checkout_url is not, and the recovery path in FulfillOrderAsync
+                // inserts kind='link' rows carrying no link id at all.
+                //
+                // So the honest answer is that we know nothing, and the honest
+                // record of knowing nothing is to leave the column NULL and let
+                // the sweep keep asking. The price is that these rows have no
+                // terminal state: they sit in the retire queue being handed back
+                // here every run (costing a loop iteration and no Square call)
+                // and they count toward ReconcileRetireQueueWarnAt. Giving them
+                // one needs evidence this method does not have — the sweep's own
+                // "verified unpaid at Square this run", or a per-row attempt
+                // counter, which is a schema change. Both belong outside this
+                // file; the warning below is what keeps the pile visible until
+                // one of them lands.
+                if (l.LinkId == null)
+                {
+                    noLinkId.Add(l.OrderId);
+                    continue;
+                }
+                if (!_square.Configured) continue;                       // leave for Reconcile
+                if (!await _square.DeletePaymentLinkAsync(l.LinkId, ct)) continue;
+
+                // Square says the link is dead. Whether that word is about OUR
+                // merchant is a separate question, asked once per call.
+                if (!merchantProven && proofsAttempted < MerchantProofBudget)
+                {
+                    proofsAttempted++;
+                    merchantProven = await SquareHoldsOrderAsync(l.OrderId, ct);
+                }
+                if (!merchantProven)
+                {
+                    unprovenDeletes++;
+                    continue;
+                }
+
+                await conn.ExecuteAsync(
+                    "UPDATE dbo.checkout_orders SET link_deleted_at = SYSUTCDATETIME() WHERE square_order_id = @oid",
+                    new { oid = l.OrderId });
             }
             catch (Exception ex)
             {
@@ -865,6 +970,53 @@ WHERE o.status = 'open' AND o.kind = 'link'
                 // throws". The undeleted link is left for Reconcile either way.
                 _log.LogError(ex, "RetireLinks: could not delete link {LinkId} (order {OrderId}) — Reconcile will retry", l.LinkId, l.OrderId);
             }
+        }
+
+        // Square called these links dead and could not show us a single order of
+        // ours to prove it was talking about our merchant. Either reading is
+        // survivable — the links really are gone and we re-delete them next
+        // round, or the credential is wrong and we have just avoided burying that
+        // many orders — but only one of them is a configuration fault, and it is
+        // the one worth saying out loud.
+        if (unprovenDeletes > 0)
+            _log.LogError(
+                "RetireLinks: Square reported {N} link(s) deleted but answered nothing readable about any of the {Asked} order(s) we asked after, so the credential is not proven to be on our merchant and NOT ONE link_deleted_at was stamped. Those rows stay in the retire queue and in the backlog window, which is the safe direction. If this repeats, check SQUARE_ENVIRONMENT, the access token and the location id.",
+                unprovenDeletes, proofsAttempted);
+
+        if (noLinkId.Count > 0)
+            _log.LogWarning(
+                "RetireLinks: {N} canceled link order(s) carry no square_link_id, so there is nothing we can cancel at Square and nothing we can confirm: {Orders}. Left UNSTAMPED on purpose — the stamp would drop them out of the sweep's backlog window, and a link we never held the id for is exactly the one that could still be payable. They will be handed back here every run until something with better evidence retires them.",
+                noLinkId.Count, string.Join(", ", noLinkId.Take(5)) + (noLinkId.Count > 5 ? ", …" : ""));
+    }
+
+    /// <summary>
+    /// Did Square just show us an order we minted? That is the whole proof: a
+    /// credential on another merchant cannot read our order ids back, so one
+    /// order object is enough to say the 404s in the same call are about our
+    /// links and not about our configuration.
+    ///
+    /// Never throws, and every failure reads as "not proven" — a 429, a rotated
+    /// token, a 5xx and a host shutdown all leave us knowing nothing, which for
+    /// the purposes of stamping is the same position a 404 leaves us in. The two
+    /// are logged apart because only one of them is a misconfiguration.
+    /// </summary>
+    private async Task<bool> SquareHoldsOrderAsync(string orderId, CancellationToken ct)
+    {
+        try
+        {
+            using var order = await _square.RetrieveOrderAsync(orderId, ct);
+            if (order != null) return true;
+            _log.LogWarning(
+                "RetireLinks: Square has no record of order {OrderId}, so a delete it answers for cannot be read as confirmation until some order of ours reads back",
+                orderId);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "RetireLinks: could not ask Square about order {OrderId} — no deletion stamp is written on an unproven merchant this round",
+                orderId);
+            return false;
         }
     }
 }

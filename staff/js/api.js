@@ -84,7 +84,12 @@ export const apiClient = {
   // Square: sales dashboard, payment audit, refunds, reconcile, wholesale invoices
   salesSummary:     (days = 30) => api('GET', `/api/sales-summary?days=${days}`),
   squarePayments:   () => api('GET',  '/api/square-payments'),
-  squareRefund:     (paymentId, reason = null) => api('POST', '/api/square-refund', { paymentId, reason }),
+  // amountCents is what the caller means to send. Omitted, the server sends
+  // what is OWED (refund_due_cents less anything already refunded).
+  squareRefund:     (paymentId, reason = null, amountCents = null) =>
+    api('POST', '/api/square-refund', { paymentId, reason, amountCents }),
+  // Fills in a payment we recorded with no amount, from Square. Refunds nothing.
+  squarePaymentAmount: (paymentId) => api('POST', '/api/square-payment-amount', { paymentId }),
   squareReconcile:  () => api('POST', '/api/square-reconcile'),
   invoiceBox:       (id, email, name = null, price = null) => api('POST', `/api/pallets/${id}/invoice`, { email, name, price }),
   cancelBoxInvoice: (id) => api('POST', `/api/pallets/${id}/invoice-cancel`),

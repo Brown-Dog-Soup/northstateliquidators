@@ -821,6 +821,21 @@ UPDATE dbo.manifests SET invoice_id = NULL, invoice_url = NULL WHERE id = @id",
     /// <summary>
     /// GET /api/square-payments — staff view of our payment audit trail, box
     /// context joined in. Flagged rows (needs_refund) first.
+    ///
+    /// The box columns are three different questions and the page asks all
+    /// three, because answering only the first is how the attention table came
+    /// to print "no box matched" beside "box was already sold":
+    ///
+    ///   boxes             — the SOLD boxes, as "#12, #14". NULL when none sold
+    ///                       AND ALSO when a box sold but its manifest row was
+    ///                       later deleted, which is why the counts exist.
+    ///   sold_boxes /
+    ///   unavailable_boxes — outcomes on this order, counted from
+    ///                       checkout_order_boxes, which outlives its manifest
+    ///                       by design (db/cart-checkout.sql).
+    ///   box_lines         — how many boxes were on the order at all. Zero here
+    ///                       is the only state that honestly reads "matched no
+    ///                       order".
     /// </summary>
     [Function("ListSquarePayments")]
     public async Task<IActionResult> ListPayments(
@@ -828,23 +843,105 @@ UPDATE dbo.manifests SET invoice_id = NULL, invoice_url = NULL WHERE id = @id",
         CancellationToken ct)
     {
         await using var conn = await _sql.OpenAsync(ct);
-        var rows = (await conn.QueryAsync(@"
+        var rows = (await conn.QueryAsync(new CommandDefinition(@"
 SELECT TOP 100 p.square_payment_id, p.square_order_id, p.manifest_id,
-       p.amount_cents, p.status, p.needs_refund, p.created_at,
-       m.pallet_number, m.display_name
+       p.amount_cents, p.refunded_cents, p.refund_due_cents, p.status, p.needs_refund, p.created_at,
+       m.pallet_number, m.display_name,
+       o.delivery_method, o.tax_cents, o.delivery_cents,
+       (SELECT STRING_AGG('#' + CAST(m2.pallet_number AS VARCHAR(10)), ', ') WITHIN GROUP (ORDER BY m2.pallet_number)
+        FROM dbo.checkout_order_boxes b JOIN dbo.manifests m2 ON m2.id = b.manifest_id
+        WHERE b.square_order_id = p.square_order_id AND b.outcome = 'sold') AS boxes,
+       bx.box_lines, bx.sold_boxes, bx.unavailable_boxes
 FROM dbo.payments p
 LEFT JOIN dbo.manifests m ON m.id = p.manifest_id
-ORDER BY p.needs_refund DESC, p.created_at DESC")).ToList();
+LEFT JOIN dbo.checkout_orders o ON o.square_order_id = p.square_order_id
+OUTER APPLY (
+    SELECT COUNT(*) AS box_lines,
+           COALESCE(SUM(CASE WHEN b.outcome = 'sold'        THEN 1 ELSE 0 END), 0) AS sold_boxes,
+           COALESCE(SUM(CASE WHEN b.outcome = 'unavailable' THEN 1 ELSE 0 END), 0) AS unavailable_boxes
+    FROM dbo.checkout_order_boxes b WHERE b.square_order_id = p.square_order_id) bx
+ORDER BY p.needs_refund DESC, p.created_at DESC", cancellationToken: ct))).ToList();
         return new OkObjectResult(rows);
     }
 
-    public sealed record RefundRequest(string? paymentId, string? reason);
+    public sealed record RefundRequest(string? paymentId, string? reason, long? amountCents);
 
     /// <summary>
-    /// POST /api/square-refund — full refund of one payment from the admin.
-    /// Staff-authenticated route; refund amount comes from OUR audit row, not
-    /// the request, so the UI can't fat-finger an amount. The refund.updated
-    /// webhook flips the row to REFUNDED when Square confirms.
+    /// What one click of Refund is allowed to send: either an <see cref="Amount"/>
+    /// to put to Square, or a <see cref="Refusal"/> to show the staff member.
+    /// </summary>
+    internal readonly record struct RefundPlan(long Amount, string? Refusal)
+    {
+        public bool Allowed => Refusal == null;
+    }
+
+    /// <summary>
+    /// The refund arithmetic, pure (spec §8.8), so it can be tested rather than
+    /// described.
+    ///
+    /// <paramref name="totalCents"/> NULL is not zero. An unknown total concludes
+    /// nothing — the same ruling CheckoutFulfillment applies to the attention
+    /// flag — so we refuse rather than send a number we do not have. The staff
+    /// exit from that state is <see cref="LookUpPaymentAmount"/>, not a guess.
+    ///
+    /// Refunds ACCUMULATE, so both bars move as money goes back: the payment's
+    /// remainder (total − refunded) caps anything we send, and what is OWED
+    /// (refund_due_cents, tax-inclusive per spec §8.8) MINUS what has already
+    /// gone back is the default. Subtracting <paramref name="refundedCents"/>
+    /// from the owed figure is not tidiness: a second click on a row whose owed
+    /// amount is partly settled would otherwise send the whole owed figure
+    /// again and over-refund the buyer, because an explicit amount is clamped
+    /// only against the payment remainder, which is much larger.
+    ///
+    /// A settled partial refund is never escalated into a refund of the rest of
+    /// the payment: when nothing is owed and nothing was typed, we say so.
+    /// </summary>
+    internal static RefundPlan PlanRefund(long? totalCents, long refundedCents, long? refundDueCents, long? requestedCents)
+    {
+        if (totalCents is null or <= 0)
+            return new RefundPlan(0,
+                "No amount on record for this payment, so we cannot work out what to send. Use “Get amount from Square” on this row first.");
+        long remaining = totalCents.Value - refundedCents;
+        if (remaining <= 0)
+            return new RefundPlan(0, "Already refunded in full — nothing left on this payment to send back.");
+
+        long due = Math.Min(refundDueCents ?? totalCents.Value, totalCents.Value);
+        long owed = Math.Max(0, due - refundedCents);
+        if (requestedCents is > 0)
+            return new RefundPlan(Math.Min(requestedCents.Value, remaining), null);
+        if (owed == 0)
+            return new RefundPlan(0,
+                "Nothing outstanding to refund on this payment — what was owed has already gone back. Refund the rest in the Square Dashboard if you mean to.");
+        return new RefundPlan(Math.Min(owed, remaining), null);
+    }
+
+    /// <summary>
+    /// POST /api/square-refund — refund from the admin. The default amount is
+    /// what is OWED (refund_due_cents for a partial-unavailable cart, else the
+    /// remainder of the payment); an explicit amountCents is clamped to the
+    /// remainder for staff-initiated partials. Bookkeeping goes through
+    /// RecordRefundAsync so the refund.updated webhook cannot double count.
+    ///
+    /// Square's RefundPayment is AMOUNT-ONLY — there is no way to say "return
+    /// this box and its tax"; itemised returns belong to the Orders
+    /// returns/exchanges flow, which payment links do not give us. So
+    /// refund_due_cents is stored tax-inclusive (spec §8.8) and we just send it.
+    /// A staff-typed amountCents is NOT grossed up for tax — whoever types it
+    /// owns it; the admin button's title attribute says so.
+    ///
+    /// ONLY A SETTLED REFUND CLEARS THE ATTENTION FLAG, which is the invariant
+    /// the webhook now honours and which this route used to contradict: it set
+    /// needs_refund = 0 the moment Square ACCEPTED the refund, so a refund that
+    /// later FAILED looked handled on the sales page until the failure event
+    /// landed — and forever if that event was missed. PENDING/APPROVED is Square
+    /// taking the request, not money moving, so the flag is left exactly as it
+    /// was and the refund.updated webhook clears it when the money does.
+    ///
+    /// The already-refunded guard used to trip only on status == 'REFUNDED',
+    /// which no longer includes PARTIAL_REFUNDED, so a click on a partly
+    /// refunded row asked Square for the FULL original amount, Square refused,
+    /// SquareService threw, and staff got an opaque 500 mid-task with a customer
+    /// waiting. PlanRefund subtracts what has gone back and refuses in words.
     /// </summary>
     [Function("SquareRefund")]
     public async Task<IActionResult> Refund(
@@ -859,25 +956,141 @@ ORDER BY p.needs_refund DESC, p.created_at DESC")).ToList();
             return new BadRequestObjectResult(new { error = "paymentId is required" });
 
         await using var conn = await _sql.OpenAsync(ct);
-        var row = await conn.QueryFirstOrDefaultAsync(
-            "SELECT square_payment_id, amount_cents, status FROM dbo.payments WHERE square_payment_id = @pid",
-            new { pid = body.paymentId });
+        var row = await conn.QueryFirstOrDefaultAsync(new CommandDefinition(
+            "SELECT square_payment_id, amount_cents, refunded_cents, refund_due_cents, status FROM dbo.payments WHERE square_payment_id = @pid",
+            new { pid = body.paymentId }, cancellationToken: ct));
         if (row == null) return new NotFoundObjectResult(new { error = "Payment not found in our records." });
-        if ((string)row.status == "REFUNDED")
-            return new ConflictObjectResult(new { error = "Already refunded." });
-        long? cents = (long?)row.amount_cents;
-        if (cents is null or <= 0)
-            return new ConflictObjectResult(new { error = "No amount on record — refund this one in the Square Dashboard." });
 
-        using var result = await _square.RefundPaymentAsync(body.paymentId, cents.Value, body.reason, ct);
-        var refundStatus = result.RootElement.GetProperty("refund").TryGetProperty("status", out var rs)
-            ? rs.GetString() : "PENDING";
-        await conn.ExecuteAsync(
-            "UPDATE dbo.payments SET status = 'REFUND_' + @rs, needs_refund = 0 WHERE square_payment_id = @pid",
-            new { rs = refundStatus, pid = body.paymentId });
-        _log.LogInformation("SquareRefund: payment {PaymentId} -> {Status}", body.paymentId, refundStatus);
-        return new OkObjectResult(new { paymentId = body.paymentId, refundStatus });
+        var plan = PlanRefund((long?)row.amount_cents, (long)row.refunded_cents, (long?)row.refund_due_cents, body.amountCents);
+        if (!plan.Allowed) return new ConflictObjectResult(new { error = plan.Refusal });
+        long cents = plan.Amount;
+
+        using var result = await _square.RefundPaymentAsync(body.paymentId, cents, body.reason, ct);
+        var refund = result.RootElement.GetProperty("refund");
+        var refundId = refund.GetProperty("id").GetString()!;
+        var refundStatus = refund.TryGetProperty("status", out var rs) ? rs.GetString() ?? "PENDING" : "PENDING";
+        if (refundStatus == "COMPLETED")
+            await _fulfill.RecordRefundAsync(conn, refundId, body.paymentId, cents);
+        else
+            // PENDING/APPROVED is Square accepting the request, not money back.
+            // Leave needs_refund exactly as it was so the row stays on the
+            // Needs-attention list until the refund.updated webhook confirms.
+            await conn.ExecuteAsync(new CommandDefinition(
+                "UPDATE dbo.payments SET status = 'REFUND_' + @rs WHERE square_payment_id = @pid AND status NOT IN ('REFUNDED')",
+                new { rs = refundStatus, pid = body.paymentId }, cancellationToken: ct));
+        _log.LogInformation("SquareRefund: payment {PaymentId} refund {RefundId} {Amt}c -> {Status}", body.paymentId, refundId, cents, refundStatus);
+        return new OkObjectResult(new
+        {
+            paymentId = body.paymentId, refundId, refundStatus,
+            amountCents = cents,
+            settled = refundStatus == "COMPLETED",
+        });
     }
+
+    public sealed record PaymentAmountRequest(string? paymentId);
+
+    /// <summary>
+    /// POST /api/square-payment-amount — ask Square what a payment we recorded
+    /// with NO amount was actually for, write it down, and re-test the attention
+    /// flag against it.
+    ///
+    /// WHY THIS EXISTS. An unknown total concludes nothing: no refund may clear
+    /// the flag on a payment whose amount we do not know, because the
+    /// alternative declared a whole payment refunded on the strength of a
+    /// dollar. Correct — but it closes the only automatic exit, and the refund
+    /// route closes the manual one by refusing outright and telling staff to
+    /// refund the payment in the Square Dashboard instead. The sequence that
+    /// leaves is: a payment lands with no amount, it gets flagged, Rob refunds
+    /// it by hand exactly as instructed, and the row sits on the Needs-attention
+    /// list permanently with nothing he can click. That is the same cry-wolf
+    /// failure the refund rules exist to prevent, arriving from the other side,
+    /// and worse because the system instructed him into it.
+    ///
+    /// This does NOT pretend a refund happened — it fills in the one missing
+    /// fact and lets the ordinary rules apply again. A payment Rob already
+    /// refunded by hand (whose refund.updated we DID record into refunded_cents,
+    /// while being unable to conclude anything from it) clears on the spot; one
+    /// that was never refunded stays flagged, now with a Refund button that
+    /// knows what to send.
+    ///
+    /// The UPDATE is a compare-and-swap on "amount_cents IS NULL": an amount
+    /// already on record is never overwritten, and a double click is a no-op.
+    /// refunded_cents is NOT taken from Square — it is our own running total,
+    /// backed one-for-one by dbo.payment_refunds rows, and the reconcile sweep's
+    /// idempotence guard depends on it never being set from anywhere else.
+    /// </summary>
+    [Function("SquarePaymentAmount")]
+    public async Task<IActionResult> LookUpPaymentAmount(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "square-payment-amount")] HttpRequest req,
+        CancellationToken ct)
+    {
+        PaymentAmountRequest? body;
+        try { body = await JsonSerializer.DeserializeAsync<PaymentAmountRequest>(req.Body,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct); }
+        catch (JsonException ex) { return new BadRequestObjectResult(new { error = "Invalid JSON", detail = ex.Message }); }
+        if (string.IsNullOrWhiteSpace(body?.paymentId))
+            return new BadRequestObjectResult(new { error = "paymentId is required" });
+        if (!_square.Configured)
+            return new ObjectResult(new { error = "Square is not configured, so there is nothing to ask." }) { StatusCode = 503 };
+
+        await using var conn = await _sql.OpenAsync(ct);
+        var before = await conn.QueryFirstOrDefaultAsync(new CommandDefinition(
+            "SELECT amount_cents FROM dbo.payments WHERE square_payment_id = @pid",
+            new { pid = body.paymentId }, cancellationToken: ct));
+        if (before == null) return new NotFoundObjectResult(new { error = "Payment not found in our records." });
+        if ((long?)before.amount_cents is not null)
+            return new ConflictObjectResult(new { error = "This payment already has an amount on record — use Refund." });
+
+        using var doc = await _square.RetrievePaymentAsync(body.paymentId, ct);
+        if (doc == null)
+            return new NotFoundObjectResult(new { error = "Square has no payment with that id. Nothing was changed." });
+        long? amount = doc.RootElement.TryGetProperty("payment", out var pay) &&
+                       pay.TryGetProperty("amount_money", out var am) &&
+                       am.TryGetProperty("amount", out var av) && av.TryGetInt64(out var a) ? a : null;
+        if (amount is null or <= 0)
+        {
+            _log.LogError("SquarePaymentAmount: Square returned no amount for payment {PaymentId} either — the row stays flagged and the Square receipt is the only figure anyone can act on", body.paymentId);
+            return new ConflictObjectResult(new { error = "Square did not give an amount for this payment either. Work it out from the Square receipt — this row cannot be settled from here." });
+        }
+
+        // Compare-and-swap. The status only ever RESOLVES here: a payment whose
+        // recorded refunds already cover the newly known total is REFUNDED. A
+        // partly-refunded or failed status is left alone — RecordRefundAsync and
+        // the webhook own those words, and overwriting REFUND_FAILED with
+        // PARTIAL_REFUNDED would delete the one signal saying why it is standing.
+        var applied = await conn.ExecuteAsync(new CommandDefinition(@"
+UPDATE dbo.payments SET
+    amount_cents = @amt,
+    status = CASE WHEN refunded_cents >= @amt THEN 'REFUNDED' ELSE status END,
+    needs_refund = CASE WHEN refunded_cents >= COALESCE(refund_due_cents, @amt) THEN 0 ELSE needs_refund END
+WHERE square_payment_id = @pid AND amount_cents IS NULL",
+            new { pid = body.paymentId, amt = amount.Value }, cancellationToken: ct));
+
+        // Read back rather than infer: the flag is decided by a CASE inside the
+        // UPDATE, and the page's next line of copy depends on which way it went.
+        var after = await conn.QueryFirstOrDefaultAsync<PaymentAfterLookup>(new CommandDefinition(@"
+SELECT amount_cents AS AmountCents, refunded_cents AS RefundedCents,
+       refund_due_cents AS RefundDueCents, status AS Status, needs_refund AS NeedsRefund
+FROM dbo.payments WHERE square_payment_id = @pid",
+            new { pid = body.paymentId }, cancellationToken: ct));
+        bool stillFlagged = after?.NeedsRefund ?? true;
+        _log.LogWarning("SquarePaymentAmount: payment {PaymentId} had no amount on record; Square says {Amount}c ({Rows} row(s) updated). needs_refund is now {Flag}.",
+            body.paymentId, amount.Value, applied, stillFlagged ? 1 : 0);
+        return new OkObjectResult(new
+        {
+            paymentId = body.paymentId,
+            amountCents = after?.AmountCents ?? amount.Value,
+            refundedCents = after?.RefundedCents ?? 0L,
+            refundDueCents = after?.RefundDueCents,
+            status = after?.Status,
+            needsRefund = stillFlagged,
+            cleared = !stillFlagged,
+        });
+    }
+
+    /// <summary>The payment row as it stands after the amount was filled in.</summary>
+    private sealed record PaymentAfterLookup(long? AmountCents, long RefundedCents,
+                                             long? RefundDueCents, string? Status, bool NeedsRefund);
 
     /// <summary>
     /// GET /api/sales-summary?days=30 — the profit view Square alone can't
@@ -918,19 +1131,47 @@ ORDER BY p.needs_refund DESC, p.created_at DESC")).ToList();
         }
 
         await using var conn = await _sql.OpenAsync(ct);
-        var webRows = (await conn.QueryAsync(@"
-SELECT p.square_payment_id, p.manifest_id, m.pallet_number, m.display_name,
-       v.total_cost, v.total_cost_units
+        // A web sale is a Square payment against one of OUR checkout orders, and
+        // what it SOLD is checkout_order_boxes — payments.manifest_id is NULL for
+        // every box of a cart order (db/square-payments.sql), so the old join on
+        // it classified every multi-box sale as "floor".
+        //
+        // The boxes are LEFT joined on purpose: an order that took money and could
+        // hand nothing over (reconcile calls it paidNothingSold) is still a WEB
+        // payment and must not be counted as floor revenue at its tax-inclusive
+        // total. It lands here with zero goods, its tax and delivery in their own
+        // columns, and a note saying so.
+        //
+        // MIN(o.*) is not an aggregate in spirit — checkout_orders is one row per
+        // order, so MIN just satisfies the GROUP BY. Note these are the ORDER's
+        // tax and delivery, which on a partial-unavailable order include tax for
+        // boxes that did not sell; the refund beside it is where that comes back
+        // out.
+        var webRows = (await conn.QueryAsync(new CommandDefinition(@"
+SELECT p.square_payment_id,
+       STRING_AGG('#' + CAST(m.pallet_number AS VARCHAR(10)), ', ') WITHIN GROUP (ORDER BY m.pallet_number) AS boxes,
+       MIN(m.pallet_number) AS pallet_number, MIN(m.display_name) AS display_name,
+       COUNT(b.manifest_id) AS box_count,
+       COALESCE(SUM(b.amount_cents), 0) AS goods_cents,   -- what we actually sold, EX tax
+       MIN(o.tax_cents)       AS tax_cents,               -- per order, not per box
+       MIN(o.delivery_cents)  AS delivery_cents,
+       MIN(o.delivery_method) AS delivery_method,
+       SUM(COALESCE(v.total_cost, v.total_cost_units)) AS cost,
+       SUM(CASE WHEN b.manifest_id IS NOT NULL
+                 AND COALESCE(v.total_cost, v.total_cost_units) IS NULL THEN 1 ELSE 0 END) AS cost_missing
 FROM dbo.payments p
-JOIN dbo.manifests m ON m.id = p.manifest_id
+JOIN dbo.checkout_orders o ON o.square_order_id = p.square_order_id
+LEFT JOIN dbo.checkout_order_boxes b ON b.square_order_id = p.square_order_id AND b.outcome = 'sold'
+LEFT JOIN dbo.manifests m ON m.id = b.manifest_id
 LEFT JOIN dbo.v_pallets v ON v.manifest_id = m.id
-WHERE p.created_at >= @begin", new { begin })).ToList();
+WHERE p.created_at >= @begin
+GROUP BY p.square_payment_id", new { begin }, cancellationToken: ct))).ToList();
         var webByPaymentId = webRows
             .GroupBy(r => (string)r.square_payment_id)
             .ToDictionary(g => g.Key, g => g.First());
 
         var sales = new List<SaleRow>();
-        long squareCents = 0, webCents = 0, floorCents = 0, refundedCents = 0;
+        long squareCents = 0, webCents = 0, floorCents = 0, refundedCents = 0, taxAndDeliveryCents = 0;
         foreach (var p in squarePayments)
         {
             var status = p.TryGetProperty("status", out var st) ? st.GetString() : null;
@@ -943,24 +1184,49 @@ WHERE p.created_at >= @begin", new { begin })).ToList();
             var created = p.TryGetProperty("created_at", out var ca) ? ca.GetString() : null;
             var isWeb = webByPaymentId.TryGetValue(pid, out var web);
 
-            squareCents += amt;
-            refundedCents += refunded;
-            if (isWeb) webCents += amt; else floorCents += amt;
-
+            // A cost roll-up that is missing on ANY sold box makes the whole
+            // payment's margin unknowable — a partial cost would read as profit.
             decimal? cost = null;
-            if (isWeb) cost = (decimal?)(web!.total_cost ?? web.total_cost_units);
+            if (isWeb && (int)web!.cost_missing == 0) cost = (decimal?)web.cost;
+            long boxCount = isWeb ? (long)(int)web!.box_count : 0;
+
+            // REVENUE IS GOODS ONLY (spec §8.6). Sales tax belongs to NCDOR and
+            // the delivery fee covers Norm's truck: neither is ours, so neither
+            // enters the sale amount, the margin, or ANY of the tiles. The row
+            // and the tiles read the same split off one function so they cannot
+            // drift — getting the row right while the Website tile still counts
+            // tax is the exact failure that ruling exists to catch.
+            var split = SplitSale(isWeb,
+                paymentAmountCents: amt,
+                goodsCents: isWeb ? (long)web!.goods_cents : 0,
+                taxCents: isWeb ? (long)web!.tax_cents : 0,
+                deliveryCents: isWeb ? (long)web!.delivery_cents : 0,
+                cost: cost);
+
+            squareCents += split.GoodsCents;
+            refundedCents += refunded;
+            if (isWeb) webCents += split.GoodsCents; else floorCents += split.GoodsCents;
+            taxAndDeliveryCents += split.TaxAndDeliveryCents;
+
             sales.Add(new SaleRow(
                 payment_id: pid,
                 created_at: created,
-                amount_cents: amt,
+                amount_cents: split.GoodsCents,
                 refunded_cents: refunded,
+                tax_cents: isWeb ? (long)web!.tax_cents : 0,
+                delivery_cents: isWeb ? (long)web!.delivery_cents : 0,
+                delivery_method: isWeb ? (string?)web!.delivery_method : null,
                 channel: isWeb ? "web" : "floor",
                 source: "square",
                 pallet_number: isWeb ? (int?)web!.pallet_number : null,
                 display_name: isWeb ? (string?)web!.display_name : null,
+                boxes: isWeb ? (string?)web!.boxes : null,
+                box_count: (int)boxCount,
                 cost: cost,
-                margin_cents: isWeb && cost.HasValue ? (long?)(amt - (long)Math.Round(cost.Value * 100)) : null,
-                note: null));
+                margin_cents: split.MarginCents,
+                note: isWeb && boxCount == 0
+                    ? "Paid, but no box could be handed over — a refund is owed. See Needs attention."
+                    : null));
         }
 
         // B1: boxes marked SOLD in admin with no live Square payment on file.
@@ -984,9 +1250,9 @@ WHERE m.publish_state = 'sold'
   AND m.sold_to_inventory_at IS NULL
   AND m.sold_at >= @begin
   AND NOT EXISTS (SELECT 1 FROM dbo.payments p
-                  WHERE p.manifest_id = m.id
-                    AND p.needs_refund = 0
-                    AND p.status LIKE 'COMPLETED%')
+                  JOIN dbo.checkout_order_boxes b ON b.square_order_id = p.square_order_id
+                  WHERE b.manifest_id = m.id AND b.outcome = 'sold'
+                    AND p.status <> 'REFUNDED')
 ORDER BY m.sold_at DESC", new { begin })).ToList();
 
         long adminCents = 0;
@@ -1001,10 +1267,12 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
                 created_at: ((DateTime)a.sold_at).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
                 amount_cents: amt,
                 refunded_cents: 0,
+                tax_cents: 0, delivery_cents: 0, delivery_method: null,
                 channel: "admin",
                 source: "admin",
                 pallet_number: (int?)a.pallet_number,
                 display_name: (string?)a.display_name,
+                boxes: null, box_count: 1,
                 cost: cost,
                 margin_cents: cost.HasValue && amt > 0 ? (long?)(amt - (long)Math.Round(cost.Value * 100)) : null,
                 note: "Marked sold in admin — no Square payment linked to this box; if it was rung up on the terminal it is already in Floor / other"));
@@ -1026,12 +1294,15 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
         return new OkObjectResult(new
         {
             days,
-            gross_cents = squareCents,          // what Square actually collected (web + floor)
+            gross_cents = squareCents,          // GOODS ONLY (web + floor) — see SplitSale
             square_cents = squareCents,
             web_cents = webCents,
             floor_cents = floorCents,
             admin_cents = adminCents,           // listed separately — may overlap floor_cents (see above)
             refunded_cents = refundedCents,
+            // Money we collected and do not own: NCDOR's sales tax and the
+            // delivery fee. Its own accumulator, its own tile, never in gross.
+            tax_delivery_cents = taxAndDeliveryCents,
             sale_count = squareCount,           // Square sales only, matches gross_cents
             admin_count = adminRows.Count,
             square_error = squareError,         // null when Square answered
@@ -1043,8 +1314,45 @@ ORDER BY m.sold_at DESC", new { begin })).ToList();
     /// <summary>One row of the sales list; property names ARE the JSON keys (snake_case, like the Dapper rows).</summary>
     private sealed record SaleRow(
         string? payment_id, string? created_at, long amount_cents, long refunded_cents,
+        long tax_cents, long delivery_cents, string? delivery_method,
         string channel, string source, int? pallet_number, string? display_name,
+        string? boxes, int box_count,
         decimal? cost, long? margin_cents, string? note);
+
+    /// <summary>What one payment contributes to revenue, to the held-money tile, and to margin.</summary>
+    internal readonly record struct SaleSplit(long GoodsCents, long TaxAndDeliveryCents, long? MarginCents);
+
+    /// <summary>
+    /// The revenue rule, in one place (spec §8.6): TAX AND THE DELIVERY FEE ARE
+    /// NEVER REVENUE AND NEVER MARGIN. Sales tax is money held for NCDOR; the
+    /// $10 covers Norm's fuel. Both get their own column and their own tile.
+    ///
+    /// The row and the three tiles (Gross, Website, Floor) all take their figure
+    /// from here, because the failure this guards against is arithmetic drift
+    /// between them — a row that correctly reads $43.00 beside a Website tile
+    /// that still reads $46.12 because it summed the payment instead.
+    ///
+    /// Floor sales are the honest gap. A terminal sale has no order and no line
+    /// data, so whatever tax it collected is inside the payment amount with no
+    /// way to separate it, and all of it is counted as goods. That overstates
+    /// floor revenue by the tax and it is NOT fixable from here — it would need
+    /// the Square order behind each terminal payment.
+    ///
+    /// <paramref name="refundedCents"/> is deliberately absent from the margin:
+    /// boxes that came back are outcome='unavailable' and the goods query
+    /// already excludes them, so subtracting the refund too would double count.
+    /// The one case this reads high is a GOODWILL refund on a fully-sold order;
+    /// refunded_cents is displayed next to it so staff can see that (spec §8.6,
+    /// accepted imprecision).
+    /// </summary>
+    internal static SaleSplit SplitSale(bool isWeb, long paymentAmountCents, long goodsCents,
+                                        long taxCents, long deliveryCents, decimal? cost)
+    {
+        long goods = isWeb ? goodsCents : paymentAmountCents;
+        long held = isWeb ? taxCents + deliveryCents : 0;
+        long? margin = isWeb && cost.HasValue ? goods - (long)Math.Round(cost.Value * 100) : null;
+        return new SaleSplit(goods, held, margin);
+    }
 
     private static DateTimeOffset ParseWhen(string? iso) =>
         DateTimeOffset.TryParse(iso, System.Globalization.CultureInfo.InvariantCulture,

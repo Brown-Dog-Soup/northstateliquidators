@@ -602,17 +602,22 @@
     renderTotals();
   }
 
-  // Display arithmetic ONLY. Square computes the real tax per line and its
-  // number is what the buyer pays (spec §8.6); this is here so nobody is
-  // surprised by the total on the next screen.
+  // This has to reproduce Square's arithmetic exactly, not approximate it:
+  // a total here that differs from the hosted page is a phone call to the
+  // warehouse, not a bug report.
   let goodsCents = 0;
+  let goodsLines = [];                  // per-box cents, in the order shown
+  // SquarePayloads applies ONE tax at scope LINE_ITEM to every box line and to
+  // the delivery service charge, so Square rounds the tax once per line and
+  // adds those up. Rounding the cart total instead drifts a cent: two $6.67
+  // boxes are 48 + 48 = 96, where round(1334 × 7.25%) = 97.
+  const lineTax = cents => Math.round(cents * TAX_PCT / 100);
   function renderTotals() {
     const c = mountCart();
     const choice = deliveryChoice();
     // No goods, no delivery: an empty cart must read $0, not $10 + tax on the fee.
     const del = (goodsCents > 0 && choice === 'delivery') ? DELIVERY_CENTS : 0;
-    const tax = Math.round((goodsCents + del) * TAX_PCT) / 100;
-    const taxCents = Math.round(tax);
+    const taxCents = goodsLines.reduce((sum, cents) => sum + lineTax(cents), 0) + (del ? lineTax(del) : 0);
     // The drawer is mounted before /api/public/checkout-status answers, so the
     // rate and the fee baked into its markup are the defaults. Re-state both
     // from the live config: a label quoting a rate we are not charging is a
@@ -637,6 +642,7 @@
       c.body.innerHTML = `<p class="cart-empty">Your cart is empty. <a class="view" href="shop.html?view=all">Shop what's on the floor →</a></p>`;
       c.deliv.set.hidden = true;
       goodsCents = 0;
+      goodsLines = [];
       renderTotals();
       return;
     }
@@ -658,12 +664,16 @@
       c.body.innerHTML = `<p class="cart-empty">Everything in your cart just sold. <a class="view" href="shop.html?view=new">See what just dropped →</a></p>`;
       c.deliv.set.hidden = true;
       goodsCents = 0;
+      goodsLines = [];
       renderTotals();
       return;
     }
     let cents = 0;
+    const lines = [];
     c.body.innerHTML = `<ul class="cart-list">` + kept.map(p => {
-      cents += Math.round(Number(p.ask_price) * 100);
+      const line = Math.round(Number(p.ask_price) * 100);
+      lines.push(line);
+      cents += line;
       return `
       <li class="cart-row">
         <span class="cart-thumb"${p.photo_url ? ` style="background-image:url('${esc(p.photo_url)}')"` : ''}></span>
@@ -674,6 +684,7 @@
     }).join('') + `</ul>`;
     c.sub.textContent = `${kept.length} box${kept.length === 1 ? '' : 'es'}`;
     goodsCents = cents;
+    goodsLines = lines;
     syncDelivery();
     renderTotals();
     c.checkout.disabled = false;

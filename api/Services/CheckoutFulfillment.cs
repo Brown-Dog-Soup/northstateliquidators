@@ -5,7 +5,15 @@ using NSL.Api.Functions;
 
 namespace NSL.Api.Services;
 
-public sealed record FulfillResult(string Outcome, int Sold, int Unavailable, long RefundDueCents, List<int> PalletNumbers);
+/// <summary>
+/// What one fulfilment did. <paramref name="Sold"/> counts every box this order
+/// owns (including ones an earlier call already sold); <paramref name="NewlySold"/>
+/// counts only the ones THIS call transitioned. Notify buyers off NewlySold —
+/// Sold on a re-run would send the confirmation twice.
+/// </summary>
+public sealed record FulfillResult(string Outcome, int Sold, int NewlySold, int Unavailable,
+    long RefundDueCents, List<int> PalletNumbers, List<int> UnavailablePalletNumbers);
+
 public sealed record CanceledLink(string OrderId, string? LinkId);
 
 /// <summary>
@@ -30,6 +38,16 @@ public sealed class CheckoutFulfillment
         _log = log;
     }
 
+    /// <summary>
+    /// CALLER CONTRACT: this method assumes the payment has ALREADY been filtered
+    /// to one of ours. The Square merchant account is shared with the floor POS,
+    /// so a cash sale at the counter raises payment.updated too — callers MUST
+    /// gate on <see cref="SquareEvents.IsOurProduct"/> (ECOMMERCE_API | INVOICES)
+    /// before calling. Nothing below re-checks it: an unfiltered floor payment
+    /// reaches the zero-boxes branch and gets flagged for a refund that is not
+    /// owed. db/hotfix-floor-payments.sql exists because that already happened
+    /// once; do not regress it.
+    /// </summary>
     public async Task<FulfillResult> FulfillOrderAsync(SqlConnection conn, string orderId, string paymentId,
         long? amountCents, string? rawJson, string source, CancellationToken ct)
     {
@@ -51,7 +69,7 @@ WHERE NOT EXISTS (SELECT 1 FROM dbo.payments WHERE square_payment_id = @pid)",
                 if (inserted == 0)
                 {
                     tx.Rollback();
-                    return new FulfillResult("duplicate", 0, 0, 0, new List<int>());
+                    return new FulfillResult("duplicate", 0, 0, 0, 0, new List<int>(), new List<int>());
                 }
 
                 var order = await conn.QueryFirstOrDefaultAsync(
@@ -61,50 +79,77 @@ WHERE NOT EXISTS (SELECT 1 FROM dbo.payments WHERE square_payment_id = @pid)",
                 if (order == null)
                 {
                     // Fallback correlation: the line-item uids ARE our manifest ids.
-                    var ids = _square.Configured ? await _square.OrderLineUidsAsync(orderId, ct) : new List<Guid>();
-                    if (ids.Count == 0)
+                    // Read the WHOLE order, not just the uids: spec §8.6 — we never
+                    // compute the authoritative tax, and every money column has to be
+                    // what the buyer was actually charged, because §8.8's refunds are
+                    // computed straight off these rows. Re-pricing the boxes from
+                    // today's ask price would refund the wrong amount for any box
+                    // whose price moved after the link was minted.
+                    var recovered = _square.Configured
+                        ? await _square.OrderLinesAsync(orderId, ct)
+                        : new SquareService.RecoveredOrder(new List<SquareService.OrderLine>(), null, null, null);
+                    if (recovered.Lines.Count == 0)
                     {
                         await conn.ExecuteAsync(
                             "UPDATE dbo.payments SET needs_refund = 1, status = 'UNMATCHED' WHERE square_payment_id = @pid",
                             new { pid = paymentId }, transaction: tx);
                         tx.Commit();
                         _log.LogError("Fulfill: payment {PaymentId} matched no order and no line uids (order {OrderId})", paymentId, orderId);
-                        return new FulfillResult("unmatched", 0, 0, 0, new List<int>());
+                        return new FulfillResult("unmatched", 0, 0, 0, 0, new List<int>(), new List<int>());
                     }
-                    // Recovery path: we never saw the create response, so the
-                    // tax/delivery split is unknown. Record the paid amount as
-                    // the total and DERIVE the tax from the same 7.25% rate the
-                    // payload uses, so that sum(box.tax_cents) == order.tax_cents
-                    // still holds on a recovered order, and a later partial refund
-                    // reads the box rows correctly (spec §8.8). Delivery stays 0: a
-                    // recovered order cannot tell a $10 fee from $10 of goods. The
-                    // row is flagged by the "recovered order" warning below for a
-                    // human to reconcile against the Square dashboard.
+
+                    // Recovery path: we never saw the create response, so the order row
+                    // is rebuilt from Square's own figures. Delivery is Square's service
+                    // charge; a line whose money Square didn't return falls back to the
+                    // box's current price and the 7.25% rate as a LAST resort, and that
+                    // fallback is what the "recovered order" warning below asks a human
+                    // to reconcile against the Square dashboard.
+                    long recoveredTotal = recovered.TotalCents ?? amountCents ?? 0;
                     await conn.ExecuteAsync(@"
-INSERT INTO dbo.checkout_orders (square_order_id, kind, status, total_cents) VALUES (@oid, 'link', 'open', @total)",
-                        new { oid = orderId, total = amountCents ?? 0 }, transaction: tx);
+INSERT INTO dbo.checkout_orders (square_order_id, kind, status, total_cents, delivery_cents) VALUES (@oid, 'link', 'open', @total, @delivery)",
+                        new { oid = orderId, total = recoveredTotal, delivery = recovered.DeliveryCents ?? 0 }, transaction: tx);
+                    // One statement per line so each box can carry its OWN money. Dapper
+                    // runs the command once per element of the list.
+                    var boxRows = recovered.Lines
+                        .Select(l => new { oid = orderId, mid = l.ManifestId, amt = l.AmountCents, tax = l.TaxCents, rate = TaxRate })
+                        .ToList();
                     await conn.ExecuteAsync(@"
 INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents, tax_cents)
 SELECT @oid, p.manifest_id, amt.amount_cents,
-       CAST(ROUND(amt.amount_cents * @rate, 0) AS BIGINT)
+       COALESCE(@tax, CAST(ROUND(amt.amount_cents * @rate, 0) AS BIGINT))
 FROM dbo.v_pallets p
-CROSS APPLY (SELECT CAST(ROUND(COALESCE(p.sale_price, p.list_price, p.total_wholesale, 0) * 100, 0) AS BIGINT) AS amount_cents) amt
-WHERE p.manifest_id IN @ids",
-                        new { oid = orderId, ids, rate = TaxRate }, transaction: tx);
-                    // Bring the order row into agreement with its boxes. tax_cents is
-                    // DERIVED here, not quoted by Square: we never saw the create
-                    // response for a recovered order. Leaving it at the column default
-                    // of 0 would under-refund the buyer's tax on a later partial refund
-                    // (spec §8.8). SUM the per-box values rather than rounding the order
-                    // total separately, or the two disagree by a cent or two and the
-                    // sum(box.tax_cents) == order.tax_cents invariant fails.
-                    await conn.ExecuteAsync(@"
+CROSS APPLY (SELECT COALESCE(@amt, CAST(ROUND(COALESCE(p.sale_price, p.list_price, p.total_wholesale, 0) * 100, 0) AS BIGINT)) AS amount_cents) amt
+WHERE p.manifest_id = @mid",
+                        boxRows, transaction: tx);
+                    if (recovered.TaxCents.HasValue)
+                    {
+                        // Square's own split. subtotal is what is left of the total once
+                        // its tax and service charge come out, so the three still sum to
+                        // total_cents exactly as the schema promises.
+                        await conn.ExecuteAsync(@"
+UPDATE dbo.checkout_orders SET tax_cents = @tax, subtotal_cents = @total - @tax - @delivery
+WHERE square_order_id = @oid",
+                            new { oid = orderId, tax = recovered.TaxCents.Value, total = recoveredTotal, delivery = recovered.DeliveryCents ?? 0 },
+                            transaction: tx);
+                    }
+                    else
+                    {
+                        // No order-level tax from Square: derive it as the SUM of the
+                        // per-box values just inserted, never by rounding the order total
+                        // separately, or the two disagree by a cent or two and the
+                        // sum(box.tax_cents) == order.tax_cents invariant fails. Leaving
+                        // tax at the column default of 0 would under-refund the buyer's
+                        // tax on a later partial refund (spec §8.8).
+                        await conn.ExecuteAsync(@"
 UPDATE dbo.checkout_orders
 SET tax_cents      = COALESCE((SELECT SUM(tax_cents)    FROM dbo.checkout_order_boxes WHERE square_order_id = @oid), 0),
     subtotal_cents = COALESCE((SELECT SUM(amount_cents) FROM dbo.checkout_order_boxes WHERE square_order_id = @oid), 0)
 WHERE square_order_id = @oid",
-                        new { oid = orderId }, transaction: tx);
-                    _log.LogWarning("Fulfill: recovered order {OrderId} from {N} line uids", orderId, ids.Count);
+                            new { oid = orderId }, transaction: tx);
+                    }
+                    int derivedLines = recovered.Lines.Count(l => l.AmountCents == null || l.TaxCents == null);
+                    _log.LogWarning("Fulfill: recovered order {OrderId} from {N} Square lines ({Derived} missing money, priced from the box instead)",
+                        orderId, recovered.Lines.Count, derivedLines);
                     order = await conn.QueryFirstOrDefaultAsync(
                         "SELECT kind, status, total_cents FROM dbo.checkout_orders WHERE square_order_id = @oid",
                         new { oid = orderId }, transaction: tx);
@@ -121,16 +166,19 @@ WHERE square_order_id = @oid",
                         new { pid = paymentId }, transaction: tx);
                     tx.Commit();
                     _log.LogError("Fulfill: order {OrderId} vanished between recovery insert and re-read — payment {PaymentId} flagged UNMATCHED", orderId, paymentId);
-                    return new FulfillResult("unmatched", 0, 0, 0, new List<int>());
+                    return new FulfillResult("unmatched", 0, 0, 0, 0, new List<int>(), new List<int>());
                 }
 
                 string kind = (string)order.kind;
+                string? orderStatus = (string?)order.status;
                 // ORDER BY manifest_id is deadlock safety, not cosmetics: every
                 // fulfilment locks the boxes of an order in the same sequence, so two
                 // concurrent orders that share a box queue behind one another instead
-                // of each holding what the other needs.
+                // of each holding what the other needs. This SELECT itself takes NO
+                // lock — it is the work list, not the decision. The decision is made
+                // per box against a locked re-read inside the loop (see below).
                 var boxes = (await conn.QueryAsync(@"
-SELECT b.manifest_id, b.amount_cents, b.tax_cents, b.outcome, m.pallet_number, m.publish_state, m.archived_at, m.is_ghost, m.invoice_id
+SELECT b.manifest_id, b.amount_cents, b.tax_cents, b.outcome, m.pallet_number
 FROM dbo.checkout_order_boxes b JOIN dbo.manifests m ON m.id = b.manifest_id
 WHERE b.square_order_id = @oid ORDER BY b.manifest_id",
                     new { oid = orderId }, transaction: tx)).ToList();
@@ -147,39 +195,88 @@ WHERE b.square_order_id = @oid ORDER BY b.manifest_id",
                         new { oid = orderId }, transaction: tx);
                     tx.Commit();
                     _log.LogError("Fulfill: order {OrderId} payment {PaymentId} resolved to ZERO boxes — flagged UNMATCHED, refund owed", orderId, paymentId);
-                    return new FulfillResult("unmatched", 0, 0, 0, new List<int>());
+                    return new FulfillResult("unmatched", 0, 0, 0, 0, new List<int>(), new List<int>());
                 }
 
-                int sold = 0, unavailable = 0;
+                int sold = 0, newlySold = 0, unavailable = 0;
                 long refundDue = 0;
                 var soldIds = new List<Guid>();
                 var pallets = new List<int>();
+                var unavailablePallets = new List<int>();
                 foreach (var b in boxes)
                 {
                     Guid mid = (Guid)b.manifest_id;
                     int? palletNumber = (int?)b.pallet_number;
-                    if (palletNumber.HasValue) pallets.Add(palletNumber.Value);
                     string? outcome = (string?)b.outcome;
                     // refundDue is always TAX-INCLUSIVE: the buyer paid tax on a
                     // box they are not getting, and we cannot remit it against a
                     // sale that did not happen (spec §8.8).
                     long boxDue = (long)b.amount_cents + (long)b.tax_cents;
-                    if (outcome == "sold") { sold++; continue; }                     // re-entrant: already ours
-                    if (outcome == "unavailable") { unavailable++; refundDue += boxDue; continue; }
+                    if (outcome == "sold")                                           // re-entrant: already ours
+                    {
+                        sold++;
+                        AddPallet(pallets, palletNumber, mid);
+                        continue;
+                    }
+                    if (outcome == "unavailable")
+                    {
+                        unavailable++;
+                        refundDue += boxDue;
+                        AddPallet(unavailablePallets, palletNumber, mid);
+                        continue;
+                    }
 
-                    string? publishState = (string?)b.publish_state;
-                    bool isGhost = b.is_ghost == true;
-                    bool ok = Availability.For(kind, publishState, (DateTime?)b.archived_at, isGhost, (string?)b.invoice_id);
+                    // C1: take the row lock BEFORE deciding, and decide from what the
+                    // lock returns — never from the unlocked work-list SELECT above.
+                    // Azure SQL runs READ_COMMITTED_SNAPSHOT by default, so without a
+                    // lock hint both fulfilments of a contested box read the same
+                    // pre-transaction snapshot, both see "live", and both sell it: two
+                    // buyers, one box, neither payment flagged (spec §5's "second pays
+                    // anyway"). UPDLOCK opts this one statement out of row versioning:
+                    // the second fulfilment blocks here until the first commits and
+                    // then reads its 'sold'. Single row, by primary key, walked in the
+                    // manifest_id order of the loop — so lock ordering stays
+                    // deterministic. A set-level UPDLOCK,HOLDLOCK over the join would
+                    // NOT give that: ORDER BY is applied after the scan, so the locks
+                    // would be taken in whatever order the plan happened to scan.
+                    var locked = await conn.QueryFirstOrDefaultAsync(@"
+SELECT publish_state, archived_at, is_ghost, invoice_id
+FROM dbo.manifests WITH (UPDLOCK, ROWLOCK)
+WHERE id = @mid",
+                        new { mid }, transaction: tx);
+
+                    string? publishState = null;
+                    bool ok = false;
+                    if (locked != null)
+                    {
+                        publishState = (string?)locked.publish_state;
+                        ok = Availability.For(kind, publishState,
+                            (DateTime?)locked.archived_at, locked.is_ghost == true, (string?)locked.invoice_id);
+                    }
                     if (ok)
                     {
-                        await conn.ExecuteAsync("EXEC dbo.sp_SetPublishState @manifest_id = @mid, @publish_state = 'sold'",
+                        // Belt and braces: the proc's UPDATE is unconditional and its
+                        // rowcount is not surfaced, so read back the state it returns and
+                        // insist the transition actually landed. Throwing rolls the whole
+                        // transaction back — payment anchor included — which is the safe
+                        // direction: Square retries rather than us recording a sale that
+                        // did not happen.
+                        var after = await conn.QueryFirstOrDefaultAsync(
+                            "EXEC dbo.sp_SetPublishState @manifest_id = @mid, @publish_state = 'sold'",
                             new { mid }, transaction: tx);
+                        string? afterState = after == null ? null : (string?)after.publish_state;
+                        if (afterState != "sold")
+                            throw new InvalidOperationException(
+                                $"sp_SetPublishState did not move manifest {mid} to sold (order {orderId}, payment {paymentId})");
+
                         await PalletsFunction.InsertHistoryAsync(conn, mid, "publish_state", publishState, "sold", source, tx);
                         await conn.ExecuteAsync(
                             "UPDATE dbo.checkout_order_boxes SET outcome = 'sold', fulfilled_at = SYSUTCDATETIME() WHERE square_order_id = @oid AND manifest_id = @mid",
                             new { oid = orderId, mid }, transaction: tx);
                         sold++;
+                        newlySold++;
                         soldIds.Add(mid);
+                        AddPallet(pallets, palletNumber, mid);
                     }
                     else
                     {
@@ -188,25 +285,44 @@ WHERE b.square_order_id = @oid ORDER BY b.manifest_id",
                             new { oid = orderId, mid }, transaction: tx);
                         unavailable++;
                         refundDue += boxDue;
+                        AddPallet(unavailablePallets, palletNumber, mid);
                         _log.LogWarning("Fulfill: BOX #{Num} on order {OrderId} no longer available (state {State}) — refund due {Due}c incl tax",
-                            (object?)palletNumber, orderId, publishState, boxDue);
+                            (object?)palletNumber, orderId, publishState ?? "(row gone)", boxDue);
                     }
                 }
 
                 long total = (long)order.total_cents;
-                if (sold == 0 && refundDue > 0)
+                // I1: a SECOND, distinct payment id against an order we already
+                // fulfilled. Every box reads 'sold' — sold by US, on the earlier
+                // payment — so nothing transitioned here and the naive arithmetic
+                // says refundDue = 0, COMPLETED. That is money in with nothing newly
+                // sold, which always gets an attention row. Square split tender lands
+                // here too and is the genuine ambiguity, so flag rather than refund
+                // automatically: clearing a flag is one click, silently keeping a
+                // double charge is not.
+                bool duplicateTender = newlySold == 0 && sold > 0 && orderStatus == "paid";
+                if (duplicateTender)
+                {
+                    refundDue = amountCents ?? refundDue;
+                    _log.LogError("Fulfill: payment {PaymentId} sold NOTHING new on order {OrderId}, already paid — possible double charge or split tender, flagged for review ({Amt}c)",
+                        paymentId, orderId, amountCents);
+                }
+                else if (sold == 0 && refundDue > 0)
                 {
                     // Nothing sold: there is no delivery to make either, so the
                     // delivery fee and its own tax go back too. total_cents is
                     // Square's total_money, so this is the whole payment.
                     refundDue = total > 0 ? total : refundDue;
                 }
-                string status = refundDue == 0 ? "COMPLETED" : (sold == 0 ? "REFUND_FLAGGED" : "PARTIAL_REFUND_FLAGGED");
+                bool needsRefund = refundDue > 0 || duplicateTender;
+                string status = duplicateTender ? "REFUND_FLAGGED"
+                    : refundDue == 0 ? "COMPLETED"
+                    : (sold == 0 ? "REFUND_FLAGGED" : "PARTIAL_REFUND_FLAGGED");
                 Guid? single = boxes.Count == 1 ? (Guid)boxes[0].manifest_id : null;
                 await conn.ExecuteAsync(@"
 UPDATE dbo.payments SET manifest_id = @mid, refund_due_cents = @due, needs_refund = @flag, status = @status
 WHERE square_payment_id = @pid",
-                    new { mid = single, due = refundDue > 0 ? refundDue : (long?)null, flag = refundDue > 0, status, pid = paymentId },
+                    new { mid = single, due = refundDue > 0 ? refundDue : (long?)null, flag = needsRefund, status, pid = paymentId },
                     transaction: tx);
                 await conn.ExecuteAsync(
                     "UPDATE dbo.checkout_orders SET status = 'paid', closed_at = SYSUTCDATETIME() WHERE square_order_id = @oid",
@@ -224,9 +340,9 @@ WHERE square_payment_id = @pid",
                     canceled = await CancelOpenLinksForBoxesAsync(conn, tx, soldIds, exceptOrderId: orderId);
 
                 tx.Commit();
-                result = new FulfillResult("fulfilled", sold, unavailable, refundDue, pallets);
-                _log.LogInformation("Fulfill: order {OrderId} payment {PaymentId} via {Source}: {Sold} sold, {Unav} unavailable, refund due {Due}",
-                    orderId, paymentId, source, sold, unavailable, refundDue);
+                result = new FulfillResult("fulfilled", sold, newlySold, unavailable, refundDue, pallets, unavailablePallets);
+                _log.LogInformation("Fulfill: order {OrderId} payment {PaymentId} via {Source}: {Sold} sold ({New} newly), {Unav} unavailable, refund due {Due}",
+                    orderId, paymentId, source, sold, newlySold, unavailable, refundDue);
             }
             catch
             {
@@ -237,6 +353,17 @@ WHERE square_payment_id = @pid",
 
         await RetireLinksAsync(conn, canceled, ct);
         return result;
+    }
+
+    /// <summary>
+    /// manifests.pallet_number is nullable, and a box with no number would silently
+    /// vanish from the buyer's list. Log it rather than drop it quietly — the counts
+    /// on <see cref="FulfillResult"/> stay authoritative either way.
+    /// </summary>
+    private void AddPallet(List<int> into, int? palletNumber, Guid manifestId)
+    {
+        if (palletNumber.HasValue) into.Add(palletNumber.Value);
+        else _log.LogWarning("Fulfill: manifest {ManifestId} has no pallet_number — omitted from the box list", manifestId);
     }
 
     /// <summary>
@@ -280,8 +407,12 @@ WHERE o.status = 'open' AND o.kind = 'link'
                         "UPDATE dbo.checkout_orders SET link_deleted_at = SYSUTCDATETIME() WHERE square_order_id = @oid",
                         new { oid = l.OrderId });
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex)
             {
+                // Catches OperationCanceledException too, deliberately: the sale is
+                // already committed, and a host shutdown cancelling this token must not
+                // turn into an exception out of a method whose whole contract is "never
+                // throws". The undeleted link is left for Reconcile either way.
                 _log.LogError(ex, "RetireLinks: could not delete link {LinkId} (order {OrderId}) — Reconcile will retry", l.LinkId, l.OrderId);
             }
         }

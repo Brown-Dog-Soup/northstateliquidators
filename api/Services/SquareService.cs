@@ -127,14 +127,60 @@ public sealed class SquareService
 
     /// <summary>Manifest ids we stamped as line-item uids on a cart order (webhook fallback correlation).</summary>
     public async Task<List<Guid>> OrderLineUidsAsync(string orderId, CancellationToken ct)
+        => (await OrderLinesAsync(orderId, ct)).Lines.Select(l => l.ManifestId).ToList();
+
+    /// <summary>
+    /// One line of a Square order we can map back to a box: the manifest id we
+    /// stamped as its uid, what the buyer actually paid for it EX tax, and the
+    /// tax Square charged on it. Either amount is null when Square's response
+    /// didn't carry the corresponding money field.
+    /// </summary>
+    public sealed record OrderLine(Guid ManifestId, long? AmountCents, long? TaxCents);
+
+    /// <summary>
+    /// A whole order as Square has it. Used to rebuild an order row whose create
+    /// response we never stored: spec §8.6 says we never compute the authoritative
+    /// tax, so a recovery reads the real per-line and order-level money here
+    /// rather than re-pricing the boxes from today's ask price.
+    /// </summary>
+    public sealed record RecoveredOrder(List<OrderLine> Lines, long? TotalCents, long? TaxCents, long? DeliveryCents);
+
+    /// <summary>
+    /// Retrieve an order and pull out every line we stamped with a manifest-id uid,
+    /// with its money, plus the order totals. Lines whose uid isn't one of our
+    /// manifest ids are skipped. Returns an empty result on 404 / unconfigured.
+    /// </summary>
+    public async Task<RecoveredOrder> OrderLinesAsync(string orderId, CancellationToken ct)
     {
-        var ids = new List<Guid>();
-        using var order = await RetrieveOrderAsync(orderId, ct);
-        if (order == null) return ids;
-        if (order.RootElement.TryGetProperty("order", out var o) && o.TryGetProperty("line_items", out var items))
+        var lines = new List<OrderLine>();
+        using var doc = await RetrieveOrderAsync(orderId, ct);
+        if (doc == null || !doc.RootElement.TryGetProperty("order", out var o))
+            return new RecoveredOrder(lines, null, null, null);
+
+        if (o.TryGetProperty("line_items", out var items))
             foreach (var li in items.EnumerateArray())
-                if (li.TryGetProperty("uid", out var uid) && Guid.TryParse(uid.GetString(), out var g)) ids.Add(g);
-        return ids;
+            {
+                if (!li.TryGetProperty("uid", out var uid) || !Guid.TryParse(uid.GetString(), out var g)) continue;
+                // total_money on a Square line is tax-INCLUSIVE; amount_cents is the
+                // ex-tax price, so prefer the gross-sales figures and only fall back
+                // to total_money minus the line's tax.
+                long? tax = Money(li, "total_tax_money");
+                long? amount = Money(li, "gross_sales_money")
+                            ?? Money(li, "variation_total_price_money")
+                            ?? Money(li, "base_price_money");
+                if (amount == null)
+                {
+                    var totalMoney = Money(li, "total_money");
+                    if (totalMoney != null) amount = totalMoney - (tax ?? 0);
+                }
+                lines.Add(new OrderLine(g, amount, tax));
+            }
+
+        return new RecoveredOrder(lines,
+            Money(o, "total_money"), Money(o, "total_tax_money"), Money(o, "total_service_charge_money"));
+
+        static long? Money(JsonElement el, string name)
+            => el.TryGetProperty(name, out var m) && m.TryGetProperty("amount", out var a) ? a.GetInt64() : null;
     }
 
     /// <summary>Returns the raw order JSON, or null on 404.</summary>

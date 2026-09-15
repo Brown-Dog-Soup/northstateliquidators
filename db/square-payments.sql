@@ -23,7 +23,12 @@ BEGIN
         id                UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
         square_payment_id VARCHAR(64)      NOT NULL,
         square_order_id   VARCHAR(64)      NULL,
-        manifest_id       UNIQUEIDENTIFIER NULL,       -- box it sold; NULL = unmatched (needs attention)
+        -- Box it sold, kept only for single-box orders. NULL no longer means
+        -- "unmatched": since db/cart-checkout.sql a cart order can hold several
+        -- boxes and this column is NULL for every one of them. The boxes an order
+        -- sold are dbo.checkout_order_boxes; "needs attention" is needs_refund = 1
+        -- or status = 'UNMATCHED', never a NULL here.
+        manifest_id       UNIQUEIDENTIFIER NULL,
         amount_cents      BIGINT           NULL,
         currency          VARCHAR(8)       NULL,
         status            VARCHAR(40)      NOT NULL,   -- COMPLETED | REFUND_FLAGGED | ...

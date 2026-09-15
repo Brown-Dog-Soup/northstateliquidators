@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using NSL.Api.Services;
 using Xunit;
 
@@ -61,9 +62,11 @@ public class FulfillMoneyDecisionTests
 
     private static CheckoutFulfillment.PaymentVerdict Decide(
         bool duplicateTender = false, int sold = 0, long refundDueFromLines = 0,
-        long orderTotalCents = Total, long unaccountedGoodsCents = 0, long? paymentAmountCents = Total)
+        long orderTotalCents = Total, long unaccountedGoodsCents = 0, long? paymentAmountCents = Total,
+        bool linesKnownMissing = false)
         => CheckoutFulfillment.DecidePaymentOutcome(
-            duplicateTender, sold, refundDueFromLines, orderTotalCents, unaccountedGoodsCents, paymentAmountCents);
+            duplicateTender, sold, refundDueFromLines, orderTotalCents, unaccountedGoodsCents, paymentAmountCents,
+            linesKnownMissing);
 
     [Fact]
     public void Everything_sold_and_every_line_present_is_a_completed_payment()
@@ -143,7 +146,11 @@ public class FulfillMoneyDecisionTests
     {
         var v = Decide(sold: 2, refundDueFromLines: 0, unaccountedGoodsCents: Box);
         Assert.True(v.NeedsRefund);
-        Assert.NotEqual("COMPLETED", v.Status);
+        // The exact status, not merely "not COMPLETED". Everything else in this
+        // file pins a value, and a status of "not complete" is satisfied by every
+        // wrong one: mutating this to REFUND_FLAGGED (which says the WHOLE order is
+        // going back) survived the looser assertion.
+        Assert.Equal("PARTIAL_REFUND_FLAGGED", v.Status);
     }
 
     /// <summary>
@@ -199,4 +206,124 @@ public class FulfillMoneyDecisionTests
                     withShortfall.RecordedDueCents <= baseline.RecordedDueCents);
         Assert.True(withShortfall.RefundDueCents <= baseline.RefundDueCents);
     }
+
+    // ---- the counted signal, which covers the branch the arithmetic cannot -----
+
+    /// <summary>
+    /// THE BLIND BRANCH, stated as a test. Fulfilment rebuilt this order from
+    /// Square; one line named a box that had been hard-deleted, so no order line
+    /// could be written for it. Square gave no order-level tax, so the recovered
+    /// subtotal was SET to the sum of the rows that WERE written — which is why
+    /// unaccountedGoodsCents is 0 here and not a typo. The arithmetic sees a
+    /// perfectly balanced order. Every surviving box sold, so the lines owe
+    /// nothing either. Before the count, this recorded COMPLETED and walked away
+    /// from a box the buyer had paid for.
+    /// </summary>
+    [Fact]
+    public void A_line_that_never_made_it_into_the_order_flags_even_when_the_arithmetic_balances()
+    {
+        var v = Decide(sold: 2, refundDueFromLines: 0, unaccountedGoodsCents: 0, linesKnownMissing: true);
+        Assert.True(v.NeedsRefund);
+        Assert.Equal("PARTIAL_REFUND_FLAGGED", v.Status);
+    }
+
+    /// <summary>
+    /// And it means the same thing as the arithmetic's version, so it gets the
+    /// same treatment: the flag goes up, the amount stays unstated. A count of
+    /// missing boxes is not a figure anyone can refund.
+    /// </summary>
+    [Fact]
+    public void A_line_that_never_made_it_into_the_order_never_writes_an_owed_figure()
+        => Assert.Null(Decide(sold: 2, refundDueFromLines: 0, linesKnownMissing: true).RecordedDueCents);
+
+    /// <summary>
+    /// The incomplete-debt rule reaches this signal too. One box sold, one was
+    /// unavailable and is owed back, and a THIRD has no line at all — so the
+    /// line-derived figure is real but is not the whole of what is owed, and
+    /// recording it would let a partial refund clear needs_refund with money
+    /// still held.
+    /// </summary>
+    [Fact]
+    public void A_counted_missing_box_also_makes_the_line_figure_an_incomplete_debt()
+    {
+        var v = Decide(sold: 1, refundDueFromLines: Box + BoxTax, linesKnownMissing: true);
+        Assert.Equal(Box + BoxTax, v.RefundDueCents);       // still reported and logged
+        Assert.Null(v.RecordedDueCents);                     // but not offered as the bill
+        Assert.True(v.NeedsRefund);
+    }
+
+    /// <summary>A duplicate tender's figure is the payment, so a count cannot dilute it either.</summary>
+    [Fact]
+    public void A_second_tender_keeps_its_figure_even_with_a_counted_missing_box()
+        => Assert.Equal(Total, Decide(duplicateTender: true, sold: 3, linesKnownMissing: true).RecordedDueCents);
+
+    /// <summary>
+    /// The safety property again, for the new input: however many boxes are
+    /// counted missing, it never makes us owe MORE than the lines alone concluded.
+    /// </summary>
+    [Fact]
+    public void A_counted_missing_box_cannot_inflate_what_we_record_as_owed()
+    {
+        var baseline = Decide(sold: 1, refundDueFromLines: Box + BoxTax);
+        var counted = Decide(sold: 1, refundDueFromLines: Box + BoxTax, linesKnownMissing: true);
+        Assert.True(counted.RecordedDueCents is null || counted.RecordedDueCents <= baseline.RecordedDueCents);
+        Assert.True(counted.RefundDueCents <= baseline.RefundDueCents);
+    }
+
+    /// <summary>
+    /// And the default is off. A caller on any of the paths that cannot learn this
+    /// — every path but recovery — must not be flagging orders because a new
+    /// parameter defaulted the wrong way.
+    /// </summary>
+    [Fact]
+    public void Nothing_is_flagged_by_the_count_on_a_path_that_never_sets_it()
+        => Assert.Equal("COMPLETED", CheckoutFulfillment.DecidePaymentOutcome(false, 3, 0, Total, 0, Total).Status);
+}
+
+/// <summary>
+/// Two source pins, for the one regression in the above that text CAN catch and
+/// that nothing else would: the counted signal going quiet.
+///
+/// WHY IT NEEDS A PIN. `recoveredLinesWithNoBox` is initialised to 0 and only the
+/// recovery path raises it. Delete the assignment — tidy the INSERT back to a bare
+/// `await conn.ExecuteAsync(...)` because "the rowcount isn't used for anything",
+/// or drop the `linesKnownMissing:` argument because "the backstop already covers
+/// it" — and the code still COMPILES, every test above still passes (they call the
+/// pure function directly), and fulfilment is silently blind again on exactly the
+/// branch this round fixed. That is the whole shape of the bug being fixed,
+/// reintroduced by an edit nothing would object to.
+///
+/// What it is not: it reads text. It cannot tell you Dapper still returns the sum
+/// of the rowcounts for a list parameter, that dbo.v_pallets is still one row per
+/// manifest, or that the comparison is the right way round. Those need a database
+/// and are a staging-pass question — see the report.
+/// </summary>
+public class RecoveredLineCountReachesTheDecisionTests
+{
+    private const string ServiceFile = "api/Services/CheckoutFulfillment.cs";
+
+    private static string Source()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, ServiceFile))) dir = dir.Parent;
+        if (dir == null)
+            throw new InvalidOperationException(
+                $"Could not find {ServiceFile} above {AppContext.BaseDirectory} — the repo layout moved and this test is no longer checking anything.");
+        // Comments out: this file explains the mechanism in prose that contains the
+        // very words the patterns below look for.
+        var src = File.ReadAllText(Path.Combine(dir.FullName, ServiceFile));
+        return Regex.Replace(Regex.Replace(src, @"/\*[\s\S]*?\*/", " "), @"//[^\n]*", " ");
+    }
+
+    /// <summary>The recovery INSERT's rowcount is captured, not discarded.</summary>
+    [Fact]
+    public void The_recovery_insert_still_counts_the_rows_it_wrote()
+        => Assert.Matches(
+            new Regex(@"\w+\s*=\s*await\s+conn\.ExecuteAsync\(@""\s*INSERT\s+INTO\s+dbo\.checkout_order_boxes", RegexOptions.IgnoreCase),
+            Source());
+
+    /// <summary>And that count still reaches the money decision.</summary>
+    [Fact]
+    public void The_count_still_reaches_the_payment_verdict()
+        => Assert.Matches(new Regex(@"DecidePaymentOutcome\([^;]*linesKnownMissing\s*:", RegexOptions.Singleline), Source());
 }

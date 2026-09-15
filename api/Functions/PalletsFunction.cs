@@ -477,6 +477,12 @@ FROM dbo.line_items WHERE manifest_id = @sid",
     /// the delete is still owed a refund for it. See the comment at that
     /// statement; the schema note on the missing foreign key
     /// (db/cart-checkout.sql) describes the cleanup this route used to do.
+    ///
+    /// And a box that has ALREADY been sold through the website is not deleted at
+    /// all — see the two checks below. There are two of them, before and after,
+    /// because one of them alone is a race: retaining the order line keeps the
+    /// SALE record, but it does not keep the BOX, and hard-deleting a box a
+    /// customer bought seconds earlier loses its items and its history with it.
     /// </summary>
     [Function("DeletePallet")]
     public async Task<IActionResult> Delete(
@@ -491,6 +497,38 @@ FROM dbo.line_items WHERE manifest_id = @sid",
         {
             try
             {
+                // CLAIM THE BOX BEFORE LOOKING AT ITS MONEY, and claim it on the
+                // MANIFEST row, which is not where the money is. That is the whole
+                // point: dbo.manifests is where a fulfilment makes its decision —
+                // it re-reads this exact row WITH (UPDLOCK, ROWLOCK) before it
+                // sells the box (see "C1" in CheckoutFulfillment) — so taking the
+                // same lock first is what puts this route and that one in a queue
+                // instead of a race.
+                //
+                // Without it the guard below is an unlocked COUNT, and Azure SQL
+                // runs READ_COMMITTED_SNAPSHOT: a fulfilment that has sold this box
+                // and not yet committed is INVISIBLE to that COUNT. It passes, and
+                // the delete goes on to destroy a box a customer bought seconds
+                // ago, with its line items and its whole history. (The order line
+                // itself survives — the UPDATE below is guarded — so the outcome of
+                // that race was the sale record kept and the inventory record
+                // destroyed. Half a guard.)
+                //
+                // Second thing it buys, and it is not a side benefit: LOCK ORDER.
+                // Fulfilment takes manifests before checkout_orders; this route
+                // used to take checkout_orders first (the cancel below) and
+                // manifests last, which is the textbook deadlock cycle. Both now
+                // start at the manifest.
+                //
+                // The result is deliberately discarded. A row that is already gone
+                // is still handled the old way — by the rowcount of the DELETE at
+                // the bottom — so that deleting an already-deleted box goes on
+                // cancelling any open links its SURVIVING order lines are still on.
+                // Returning 404 from here instead would quietly drop that.
+                _ = await conn.ExecuteScalarAsync<Guid?>(
+                    "SELECT id FROM dbo.manifests WITH (UPDLOCK, ROWLOCK) WHERE id = @id",
+                    new { id }, transaction: tx);
+
                 var webSold = await conn.ExecuteScalarAsync<int>(
                     "SELECT COUNT(*) FROM dbo.checkout_order_boxes WHERE manifest_id = @id AND outcome = 'sold'",
                     new { id }, transaction: tx);
@@ -520,16 +558,37 @@ FROM dbo.line_items WHERE manifest_id = @sid",
                 //
                 // WHERE outcome IS NULL, never a blanket SET: a row already
                 // 'sold' or 'unavailable' keeps its own outcome and its original
-                // fulfilled_at. 'sold' should be unreachable — the guard above
-                // refuses the delete — but that guard is an unlocked COUNT under
-                // read-committed snapshot, so a fulfilment committing between it
-                // and here would not be seen by it. The UPDATE's own write lock
-                // does see it, the predicate then matches nothing, and the sale
-                // record survives. Do not "simplify" this predicate away.
+                // fulfilled_at. 'sold' is refused by the guard above and again by
+                // the one below, but this predicate is the last line of defence
+                // and costs nothing: whatever else goes wrong, a settled row is
+                // never overwritten here. Do not "simplify" it away.
                 await conn.ExecuteAsync(@"
 UPDATE dbo.checkout_order_boxes
 SET outcome = 'unavailable', fulfilled_at = SYSUTCDATETIME()
 WHERE manifest_id = @id AND outcome IS NULL", new { id }, transaction: tx);
+
+                // LOOK AGAIN — and this is the check that actually REFUSES the
+                // delete, which is the guard's entire stated purpose. The one at
+                // the top decides before anything is locked; this one decides
+                // after the UPDATE above has taken a write lock on every one of
+                // this box's order lines, so no sale can still be in flight behind
+                // it. If one appeared anyway — the claim above did not hold, or
+                // some path nobody has thought of wrote 'sold' without going
+                // through the manifest row — the box is NOT destroyed.
+                //
+                // Rolling back takes the 'unavailable' marks and the link cancels
+                // with it, which is exactly right: nothing was deleted, so nothing
+                // is unavailable and no link should have been retired. The delete
+                // simply did not happen, and the caller is told so.
+                var soldNow = await conn.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM dbo.checkout_order_boxes WHERE manifest_id = @id AND outcome = 'sold'",
+                    new { id }, transaction: tx);
+                if (soldNow > 0)
+                {
+                    tx.Rollback();
+                    _log.LogWarning("DeletePallet {Id}: a website sale landed while this delete was in flight — refused, box and sale both kept", id);
+                    return new ConflictObjectResult(new { error = "This box was sold through the website — archive it instead of deleting so the sale record stays intact." });
+                }
 
                 // manifest_history has an FK to manifests — clear the audit rows first.
                 await conn.ExecuteAsync(

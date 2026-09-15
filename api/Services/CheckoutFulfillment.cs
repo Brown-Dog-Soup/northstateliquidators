@@ -82,6 +82,14 @@ WHERE NOT EXISTS (SELECT 1 FROM dbo.payments WHERE square_payment_id = @pid)",
                     "SELECT kind, status, total_cents, subtotal_cents FROM dbo.checkout_orders WHERE square_order_id = @oid",
                     new { oid = orderId }, transaction: tx);
 
+                // How many lines Square returned that we could NOT write an order
+                // line for, because the box they name no longer exists. Only the
+                // recovery path below can learn this — on every other path the
+                // order row is ours and its lines were written when the link was
+                // minted — so it stays 0 elsewhere and the goods backstop, which is
+                // exact on those paths, remains the whole of the check there.
+                int recoveredLinesWithNoBox = 0;
+
                 if (order == null)
                 {
                     // Fallback correlation: the line-item uids ARE our manifest ids.
@@ -119,7 +127,25 @@ INSERT INTO dbo.checkout_orders (square_order_id, kind, status, total_cents, del
                     var boxRows = recovered.Lines
                         .Select(l => new { oid = orderId, mid = l.ManifestId, amt = l.AmountCents, tax = l.TaxCents, rate = TaxRate })
                         .ToList();
-                    await conn.ExecuteAsync(@"
+                    // COUNT WHAT THIS ACTUALLY WROTE. Dapper runs the statement once
+                    // per element and returns the SUM of the rowcounts, and the
+                    // statement selects FROM dbo.v_pallets keyed on the manifest —
+                    // a view that is one row per dbo.manifests row, with no filter
+                    // (db/wishlist4.sql). So it writes exactly one row per line
+                    // whose box still exists and NO row for one whose box has been
+                    // hard-deleted, and the shortfall is an exact count of boxes
+                    // this buyer paid for that we cannot record a line for.
+                    //
+                    // This is the ONLY signal that works on both recovery branches.
+                    // The goods backstop after the loop compares the order's
+                    // subtotal against the surviving lines, and on the no-order-tax
+                    // branch below the subtotal is SET to the sum of these very
+                    // rows — so the missing box's money is erased from the subtotal
+                    // by the same statement that should have exposed it, the
+                    // shortfall computes to zero, and the payment completes
+                    // silently. A row count needs no arithmetic and does not care
+                    // which branch ran.
+                    int boxRowsWritten = await conn.ExecuteAsync(@"
 INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents, tax_cents)
 SELECT @oid, p.manifest_id, amt.amount_cents,
        COALESCE(@tax, CAST(ROUND(amt.amount_cents * @rate, 0) AS BIGINT))
@@ -127,6 +153,11 @@ FROM dbo.v_pallets p
 CROSS APPLY (SELECT COALESCE(@amt, CAST(ROUND(COALESCE(p.sale_price, p.list_price, p.total_wholesale, 0) * 100, 0) AS BIGINT)) AS amount_cents) amt
 WHERE p.manifest_id = @mid",
                         boxRows, transaction: tx);
+                    // Strictly less, never "not equal": a duplicated uid or a view
+                    // that ever returned two rows would read as a surplus, and a
+                    // surplus is not a missing box. Only a shortfall flags.
+                    recoveredLinesWithNoBox = recovered.Lines.Count - boxRowsWritten;
+                    if (recoveredLinesWithNoBox < 0) recoveredLinesWithNoBox = 0;
                     if (recovered.TaxCents.HasValue)
                     {
                         // Square's own split. subtotal is what is left of the total once
@@ -366,11 +397,16 @@ WHERE id = @mid",
                 // automatically: clearing a flag is one click, silently keeping a
                 // double charge is not.
                 bool duplicateTender = newlySold == 0 && sold > 0 && orderStatus == "paid";
-                var verdict = DecidePaymentOutcome(duplicateTender, sold, refundDue, total, unaccountedGoods, amountCents);
+                var verdict = DecidePaymentOutcome(duplicateTender, sold, refundDue, total, unaccountedGoods, amountCents,
+                    linesKnownMissing: recoveredLinesWithNoBox > 0);
                 refundDue = verdict.RefundDueCents;
                 if (duplicateTender)
                     _log.LogError("Fulfill: payment {PaymentId} sold NOTHING new on order {OrderId}, already paid — possible double charge or split tender, flagged for review ({Amt}c)",
                         paymentId, orderId, amountCents);
+                if (recoveredLinesWithNoBox > 0)
+                    _log.LogError(
+                        "Fulfill: order {OrderId} payment {PaymentId} — Square returned {Missing} line(s) whose box no longer exists, so no order line could be written for them and nothing above can owe the buyer for them. FLAGGED for a human; refund_due_cents reads {Due}. That figure is NOT the bill — work out what is owed from the Square receipt.",
+                        orderId, paymentId, recoveredLinesWithNoBox, (object?)verdict.RecordedDueCents ?? "(unset, on purpose)");
                 if (unaccountedGoods > 0)
                     _log.LogError(
                         "Fulfill: order {OrderId} payment {PaymentId} is SHORT {Missing}c of goods — its {N} remaining line(s) account for {Accounted}c of a recorded {Recorded}c subtotal. A box this buyer paid for has no order line left at all, so nothing above could owe them for it. FLAGGED for a human; refund_due_cents now reads {Due}. Do not treat that as the bill — the line data is incomplete, so no figure computed from it is the whole debt. Work out what is owed from the Square receipt.",
@@ -441,10 +477,20 @@ WHERE square_payment_id = @pid",
     ///   * invoice — one box, subtotal written as the same figure as the line.
     ///   * recovery, Square gave an order-level tax — subtotal is total - tax -
     ///     delivery, the boxes are Square's own line amounts.
-    ///   * recovery, no order-level tax — subtotal is SET to SUM(amount_cents)
-    ///     over these very rows.
     ///   * the pre-cart migration backfill (db/cart-checkout.sql) — writes the
     ///     order and its single box from the same expression.
+    ///
+    /// THE ONE PATH IT IS STRUCTURALLY BLIND ON, and the reason the caller does
+    /// not rely on this function alone. Recovery with NO order-level tax sets the
+    /// subtotal to SUM(amount_cents) over the rows it just inserted — and that
+    /// insert selects FROM dbo.v_pallets keyed on the manifest, so a box that has
+    /// been hard-deleted produces no row. Its money never enters the subtotal in
+    /// the first place, both sides of the subtraction shrink together, and this
+    /// returns 0 for an order that IS short a box. Nothing about this function can
+    /// see that; the missing line is missing from its input. The caller therefore
+    /// also counts the rows that insert wrote against the lines Square returned
+    /// (linesKnownMissing on <see cref="DecidePaymentOutcome"/>), which is exact
+    /// on both recovery branches and needs no arithmetic at all.
     ///
     /// THE ONE WAY IT CAN OVERSTATE, and it is why the caller only flags. On the
     /// recovery path a line whose money Square did not return is priced from the
@@ -511,12 +557,23 @@ WHERE square_payment_id = @pid",
     ///      "we decline to conclude anything from a number we do not have" this
     ///      file applies to a payment of unknown amount.
     ///
+    /// linesKnownMissing — the same conclusion reached by COUNTING instead of by
+    /// arithmetic: fulfilment rebuilt this order from Square and one of the lines
+    /// Square returned named a box that no longer exists, so no order line could
+    /// be written for it at all. It means exactly what a positive
+    /// unaccountedGoodsCents means and is treated identically, but it is exact
+    /// and it survives a branch the subtotal check cannot: when Square gives no
+    /// order-level tax, the recovered subtotal is SET to the sum of the rows just
+    /// inserted, and the missing box's money is erased from the subtotal by the
+    /// very statement meant to expose it. The arithmetic then reads zero. The
+    /// count does not.
+    ///
     /// duplicateTender keeps its figure regardless: it is the payment amount, not
     /// a sum over lines, so missing lines cannot make it incomplete.
     /// </summary>
     internal static PaymentVerdict DecidePaymentOutcome(
         bool duplicateTender, int sold, long refundDueFromLines, long orderTotalCents,
-        long unaccountedGoodsCents, long? paymentAmountCents)
+        long unaccountedGoodsCents, long? paymentAmountCents, bool linesKnownMissing = false)
     {
         long refundDue = refundDueFromLines;
         if (duplicateTender)
@@ -524,7 +581,7 @@ WHERE square_payment_id = @pid",
         else if (sold == 0 && refundDue > 0)
             refundDue = orderTotalCents > 0 ? orderTotalCents : refundDue;
 
-        bool linesMissing = unaccountedGoodsCents > 0;
+        bool linesMissing = unaccountedGoodsCents > 0 || linesKnownMissing;
         bool needsRefund = refundDue > 0 || duplicateTender || linesMissing;
         string status = duplicateTender ? "REFUND_FLAGGED"
             : refundDue > 0 ? (sold == 0 ? "REFUND_FLAGGED" : "PARTIAL_REFUND_FLAGGED")

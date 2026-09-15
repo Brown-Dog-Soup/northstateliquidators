@@ -79,7 +79,11 @@ public sealed class SquareFunction
                         .ToList();
                     _zipCache = (zips, DateTime.UtcNow);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                // Only OUR cancellation is left alone. Nothing inside this try
+                // makes an HTTP call today, but the next person to add one must
+                // inherit the right shape: a transport timeout arrives as
+                // TaskCanceledException with ct un-signalled, and belongs here.
+                catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
                 {
                     // Serve the last list we had rather than nothing: a quiet
                     // SQL hiccup here would otherwise hide the cart site-wide.
@@ -250,22 +254,11 @@ WHERE o.status = 'open' AND o.kind = 'link' AND o.url IS NOT NULL
         var redirect = $"{_square.PublicBaseUrl}/thanks.html?boxes={string.Join(",", numbers)}";
 
         SquareService.CartLink link;
-        try
         {
-            link = await _square.CreateCartPaymentLinkAsync(lines, redirect,
-                idempotencyKey: $"nsl-cart-{Guid.NewGuid():N}",
-                referenceId: ReferenceId(numbers),
-                paymentNote: SquarePayloads.PaymentNote(numbers), method, deliveryFeeCents, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // A 4xx from Square here is most likely a bad or moved
-            // SQUARE_TAX_CATALOG_ID. The setting's ABSENCE falls back to the
-            // ad-hoc tax; a WRONG value does not, it just fails. Log that guess
-            // explicitly so the cause is obvious from App Insights.
-            _log.LogError(ex, "CreateCheckout: Square rejected the payment link for boxes {Boxes} ({Method}). Most likely cause: SQUARE_TAX_CATALOG_ID is wrong or that catalog tax has moved/been deleted — an absent setting falls back to the ad-hoc tax, a wrong value does not.",
-                string.Join(",", numbers), methodDb);
-            return new ObjectResult(new { error = "Couldn't start checkout — call us at (919) 526-0112 and we'll take care of you." }) { StatusCode = 502 };
+            var (created, linkError) = await TryCreateCartLinkAsync(
+                lines, numbers, redirect, method, methodDb, deliveryFeeCents, ct);
+            if (linkError != null) return linkError;
+            link = created!;
         }
 
         // Every money column below is Square's own number (spec 8.6) — we do
@@ -292,6 +285,43 @@ INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents
         _log.LogInformation("CreateCheckout: {N} box(es) {Boxes} {Method} -> link {LinkId} order {OrderId} subtotal {Sub} tax {Tax} delivery {Del} total {Total}",
             lines.Count, string.Join(",", numbers), methodDb, link.Id, link.OrderId, subtotal, link.TaxCents, link.DeliveryCents, link.TotalCents);
         return new OkObjectResult(new { url = link.Url });
+    }
+
+    /// <summary>
+    /// The Square payment-link call and the 502 that wraps its failures, lifted
+    /// out of <see cref="CreateCartCheckoutCore"/> so the failure path can be
+    /// exercised without a database standing behind it. Returns the link, or the
+    /// answer the shopper gets.
+    ///
+    /// The catch filter is the whole point. HttpClient reports its OWN timeout as
+    /// TaskCanceledException, which derives from OperationCanceledException — so a
+    /// plain `ex is not OperationCanceledException` let the one failure this 502
+    /// copy exists for (Square hung or slow) escape as a bare 500. We decline to
+    /// handle it only when OUR token was actually signalled, i.e. the shopper
+    /// really did disconnect; that still propagates, as it should.
+    /// </summary>
+    internal async Task<(SquareService.CartLink? Link, IActionResult? Error)> TryCreateCartLinkAsync(
+        IReadOnlyList<CartLine> lines, IReadOnlyCollection<int> numbers, string redirect,
+        DeliveryMethod method, string methodDb, long deliveryFeeCents, CancellationToken ct)
+    {
+        try
+        {
+            var link = await _square.CreateCartPaymentLinkAsync(lines, redirect,
+                idempotencyKey: $"nsl-cart-{Guid.NewGuid():N}",
+                referenceId: ReferenceId(numbers),
+                paymentNote: SquarePayloads.PaymentNote(numbers), method, deliveryFeeCents, ct);
+            return (link, null);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            // A 4xx from Square here is most likely a bad or moved
+            // SQUARE_TAX_CATALOG_ID. The setting's ABSENCE falls back to the
+            // ad-hoc tax; a WRONG value does not, it just fails. Log that guess
+            // explicitly so the cause is obvious from App Insights.
+            _log.LogError(ex, "CreateCheckout: Square rejected the payment link for boxes {Boxes} ({Method}). Most likely cause: SQUARE_TAX_CATALOG_ID is wrong or that catalog tax has moved/been deleted — an absent setting falls back to the ad-hoc tax, a wrong value does not.",
+                string.Join(",", numbers), methodDb);
+            return (null, new ObjectResult(new { error = "Couldn't start checkout — call us at (919) 526-0112 and we'll take care of you." }) { StatusCode = 502 });
+        }
     }
 
     /// <summary>

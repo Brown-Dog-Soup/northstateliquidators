@@ -263,8 +263,7 @@ cancels the box's open link orders inside its existing transaction (§4).
    7.25% ADDITIVE `LINE_ITEM`-scope entry, and — only when `delivery='delivery'`
    — one `order.service_charges[]` entry ($10, `SUBTOTAL_PHASE`, `scope:ORDER`,
    `treatment_type:LINE_ITEM_TREATMENT`, `taxable:true`, `applied_taxes` →
-   the same tax uid). Exact shape in §8.1/§8.2. Order `reference_id` = a compact
-   join of pallet numbers. `checkout_options`: `redirect_url =
+   the same tax uid). Exact shape in §8.1/§8.2. Order `reference_id` = the box numbers while they fit Square's 40-character cap, otherwise `NSL <n> boxes` — a human-readable label for the Square dashboard, **not** a correlation key (the line-item `uid` is). `checkout_options`: `redirect_url =
    {baseUrl}/thanks.html?boxes=…` (base from config, not hard-coded),
    `enable_coupon:false`, `allow_tipping:false`, `ask_for_shipping_address`
    omitted (false — §8.3), **no `shipping_fee`** (§8.2),
@@ -288,9 +287,12 @@ with `?boxes=N`) for tabs loaded before the deploy.
 Used by the webhook and Reconcile. Runs **entirely inside one SqlTransaction**
 (pattern from `DeletePallet`; `sp_SetPublishState`'s inner TRAN nests fine):
 1. `payments` INSERT (idempotency anchor). `inserted == 0` → done (`duplicate`).
-2. Order row by `order_id`. None → **fallback**: `RetrieveOrder`, read
-   `reference_id` → pallet numbers → boxes (rescues the deploy gap and a lost
-   insert). Still none → `UNMATCHED` (only for our own products, see L1).
+2. Order row by `order_id`. None → **fallback**: `RetrieveOrder` and read the
+   line-item `uid`s → each one **is** the box's `manifest_id` (that is what the
+   create call stamps them with), so they map straight to boxes and rescue the
+   deploy gap and a lost insert. `reference_id` is **not** a correlation key:
+   Square caps it at 40 characters, so a full cart's box list does not survive
+   there. Still none → `UNMATCHED` (only for our own products, see L1).
 3. Boxes `ORDER BY manifest_id` (deadlock-safe). For each with
    `outcome IS NULL`:
    - **available** = `publish_state='live' AND archived_at IS NULL AND
@@ -374,7 +376,10 @@ report. §8.8.
 - `SalesSummary` web rows and admin-rows `NOT EXISTS` both join
   `payments.square_order_id → checkout_order_boxes` with `outcome='sold'`,
   status test `<> 'REFUNDED'` (not `LIKE 'COMPLETED%'`). Cost = SUM of sold
-  boxes' cost; `margin = amt - refunded - cost`. `SaleRow` gains `boxes`
+  boxes' cost; **the margin formula lives in §8.6 and only there** —
+  `margin_cents = goods_cents − cost`. (An earlier draft of this section said
+  `amt − refunded − cost`; that is wrong and is struck, so nobody "fixes" the
+  code back to it.) `SaleRow` gains `boxes`
   (string, e.g. `#12, #14`); `pallet_number` keeps its type.
 - `ListSquarePayments` adds `boxes` (STRING_AGG) and `refund_due_cents`;
   `staff/js/sales.js` renders `r.boxes || '#'+r.pallet_number` and shows the

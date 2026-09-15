@@ -550,10 +550,33 @@ INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents
                 else
                 {
                     // The money did NOT go back. Re-raise the flag so the refund
-                    // stays on someone's list; an already-REFUNDED payment is left
-                    // alone, since a later failed attempt cannot un-refund it.
-                    await rconn.ExecuteAsync(
-                        "UPDATE dbo.payments SET needs_refund = 1, status = 'REFUND_' + @rs WHERE square_payment_id = @pid AND status <> 'REFUNDED'",
+                    // stays on someone's list — but ONLY where something is still
+                    // owed, which is the exact negation of the test that clears
+                    // the flag in RecordRefundAsync.
+                    //
+                    // Guarding on status <> 'REFUNDED' was the wrong question.
+                    // Refunding exactly the owed amount clears the flag and leaves
+                    // the status at PARTIAL_REFUNDED, because the order was not
+                    // voided. Square does not guarantee ordering and retries across
+                    // 24 hours, so a FAILED event for a DIFFERENT, earlier attempt
+                    // then passed that guard: needs_refund went back to 1 and the
+                    // correct PARTIAL_REFUNDED was clobbered on a payment that is
+                    // fully square. Nothing dedupes this branch by refund id
+                    // either, so one such event could toggle the flag over and
+                    // over. A false "needs refund" row on the staff sales page is
+                    // exactly what db/hotfix-floor-payments.sql exists to punish:
+                    // cry wolf twice and the owners stop reading the flag when it
+                    // is real.
+                    //
+                    // An unknown owed amount (both columns NULL) is NOT "nothing
+                    // owed" — RecordRefundAsync will never clear the flag there, so
+                    // re-raising it cannot contradict a settled payment, and the
+                    // REFUND_FAILED status is what tells staff why it is standing.
+                    await rconn.ExecuteAsync(@"
+UPDATE dbo.payments SET needs_refund = 1, status = 'REFUND_' + @rs
+WHERE square_payment_id = @pid
+  AND (COALESCE(refund_due_cents, amount_cents) IS NULL
+       OR refunded_cents < COALESCE(refund_due_cents, amount_cents))",
                         new { pid = refund.PaymentId, rs = refund.Status });
                     _log.LogError("SquareWebhook: refund {RefundId} {Status} for payment {PaymentId} — re-flagged",
                         refund.RefundId, refund.Status, refund.PaymentId);

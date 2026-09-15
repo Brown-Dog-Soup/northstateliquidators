@@ -373,6 +373,16 @@ WHERE square_payment_id = @pid",
     }
 
     /// <summary>
+    /// SQL Server's two ways of saying "that key is already there": 2627 is a
+    /// PRIMARY KEY or UNIQUE constraint violation, 2601 a unique-index one.
+    /// Deliberately narrow. Widening this to SqlException, or to a deadlock
+    /// (1205) or a timeout (-2), would swallow a refund that genuinely failed to
+    /// record and report it to Square as handled. Only "the row you are inserting
+    /// already exists" is a replay.
+    /// </summary>
+    internal static bool IsDuplicateKey(int sqlErrorNumber) => sqlErrorNumber is 2627 or 2601;
+
+    /// <summary>
     /// Apply one Square refund to our audit row exactly once (spec §8.8).
     ///
     /// Refunds ACCUMULATE: a buyer can be refunded one unavailable box today and
@@ -397,26 +407,82 @@ WHERE square_payment_id = @pid",
     /// logged as a warning naming all three figures. The return value does not
     /// change: the webhook must still answer 200, because a refund we cannot
     /// attribute is not a reason to make Square retry it eleven times.
+    ///
+    /// BOTH statements run in ONE transaction, and that is not housekeeping. The
+    /// INSERT is the dedupe and the UPDATE is the money, so a failure BETWEEN
+    /// them — an Azure SQL transient failover is routine, not exotic — would
+    /// leave the refund claimed and the total unmoved: every later delivery of
+    /// that event sees the row, returns false and does nothing, needs_refund
+    /// stays 1 forever, the cash really did go back to the customer, and NO code
+    /// path can detect or heal it. Self-sealing corruption is strictly worse than
+    /// the double-count the dedupe exists to prevent, so the claim and the money
+    /// commit together or neither does, and true is returned only once the commit
+    /// has succeeded.
     /// </summary>
     /// <returns>true if this refund was newly recorded; false on a replay.</returns>
     public async Task<bool> RecordRefundAsync(SqlConnection conn, string refundId, string paymentId, long amountCents)
     {
-        var inserted = await conn.ExecuteAsync(@"
+        using var tx = conn.BeginTransaction();
+        int inserted;
+        try
+        {
+            inserted = await conn.ExecuteAsync(@"
 INSERT INTO dbo.payment_refunds (square_refund_id, square_payment_id, amount_cents)
 SELECT @rid, @pid, @amt
 WHERE NOT EXISTS (SELECT 1 FROM dbo.payment_refunds WHERE square_refund_id = @rid)",
-            new { rid = refundId, pid = paymentId, amt = amountCents });
-        if (inserted == 0) return false;
+                new { rid = refundId, pid = paymentId, amt = amountCents }, transaction: tx);
+        }
+        catch (SqlException ex) when (IsDuplicateKey(ex.Number))
+        {
+            // WHERE NOT EXISTS does not serialise under read-committed snapshot
+            // isolation, which is the Azure SQL default — the same caveat this
+            // file already makes at the availability re-check. Two simultaneous
+            // deliveries of one refund both pass the NOT EXISTS and the loser
+            // hits the primary key. That loser IS a replay — the winner is
+            // committing the identical row — so it gets a replay's answer rather
+            // than an uncaught SqlException, which would be a 500 and about eleven
+            // Square retries over 24 hours on the one path that exists to give a
+            // customer their money back.
+            _log.LogInformation(
+                "RecordRefund: refund {RefundId} lost the insert race (SQL error {Number}) — another delivery is recording it; answering as a replay",
+                refundId, ex.Number);
+            tx.Rollback();
+            return false;
+        }
+        if (inserted == 0)
+        {
+            tx.Rollback();
+            return false;
+        }
 
         // refunded_cents + @amt, not @amt: every column below is the running
         // total after this refund, so two partials add up instead of the second
         // overwriting the first.
+        //
+        // amount_cents is NULLABLE on dbo.payments (db/square-payments.sql), and
+        // an unknown total is not a zero total. COALESCE(amount_cents, 0) made the
+        // status test "refunded >= 0", always true, so a $1 refund against an
+        // unknown-amount payment declared the whole payment REFUNDED and cleared
+        // the attention flag — reachable whenever Square omits amount_money on an
+        // UNMATCHED payment. Unknown now means we decline to conclude anything:
+        // PARTIAL_REFUNDED, and the flag stays up for a human. Same for what is
+        // OWED — with both refund_due_cents and amount_cents NULL there is no
+        // figure that could have been satisfied, so no arithmetic against a total
+        // we do not know is allowed to clear the flag.
         var matched = await conn.ExecuteAsync(@"
 UPDATE dbo.payments SET
     refunded_cents = refunded_cents + @amt,
-    status = CASE WHEN refunded_cents + @amt >= COALESCE(amount_cents, 0) THEN 'REFUNDED' ELSE 'PARTIAL_REFUNDED' END,
-    needs_refund = CASE WHEN refunded_cents + @amt >= COALESCE(refund_due_cents, amount_cents, 0) THEN 0 ELSE needs_refund END
+    status = CASE WHEN amount_cents IS NOT NULL AND refunded_cents + @amt >= amount_cents
+                  THEN 'REFUNDED' ELSE 'PARTIAL_REFUNDED' END,
+    needs_refund = CASE WHEN COALESCE(refund_due_cents, amount_cents) IS NOT NULL
+                         AND refunded_cents + @amt >= COALESCE(refund_due_cents, amount_cents)
+                  THEN 0 ELSE needs_refund END
 WHERE square_payment_id = @pid", new { pid = paymentId, amt = amountCents });
+
+        // The claim and the money land together. Past this line the refund is
+        // durably recorded AND accumulated, so a later delivery that returns false
+        // is telling the truth.
+        tx.Commit();
 
         // Zero rows means we have no payments row for this payment at all. The
         // refund row above is recorded, but nothing in dbo.payments will ever

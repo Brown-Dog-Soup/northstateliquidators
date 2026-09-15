@@ -172,7 +172,24 @@
     const blurb = p.public_description
       ? (p.public_description.length > 120 ? p.public_description.slice(0, 120) + '…' : p.public_description)
       : '';
-    const struck = onSale ? p.list_price : p.total_msrp;
+    // Price figures (§6.3). Off sale the card is unchanged: ask price, the
+    // struck MSRP, and the % badge. On sale it must still show the MSRP the
+    // badge is computed from, so the markdown reads against both the
+    // manufacturer's price and what this box was listed at before — those two
+    // go on their own labelled row so the live price stays dominant.
+    const struck  = onSale ? null : p.total_msrp;
+    const askVal  = num(p.ask_price);
+    const msrpVal = num(p.total_msrp);
+    const wasVal  = onSale ? num(p.list_price) : null;
+    const showMsrp = msrpVal != null && msrpVal > 0;
+    // A "was" that is not above the ask is not a markdown — never label one.
+    const showWas  = wasVal != null && wasVal > 0 && (askVal == null || wasVal > askVal);
+    const priorHtml = onSale && (showMsrp || showWas)
+      ? `<span class="price-prior">`
+        + (showMsrp ? `<span class="prior"><span class="prior-lbl">MSRP</span><s>${money(msrpVal)}</s></span>` : '')
+        + (showWas  ? `<span class="prior"><span class="prior-lbl">Was</span><s>${money(wasVal)}</s></span>` : '')
+        + `</span>`
+      : '';
     return `
 <article class="box-card" data-id="${esc(p.manifest_id)}" data-state="${esc(p.publish_state)}" data-size="${esc(p.box_size || '')}"${cartHas(p.manifest_id) ? ' data-in-cart' : ''}>
   <div class="box-photo"${photo}>
@@ -185,10 +202,10 @@
     <div class="box-top"><span class="box-no">BOX #${esc(p.pallet_number)}</span><span class="box-cat">${esc(p.category || 'Mixed Goods')}</span></div>
     <h3 class="box-name">${esc(name)}</h3>
     <div class="box-stats">${p.unit_count || 0} units · ${p.item_count || 0} items${weight ? ' · ~' + esc(weight) + ' lb' : ''}</div>
-    <div class="box-price">
+    <div class="box-price${onSale ? ' is-sale' : ''}">
       <span class="price">${money(p.ask_price)}</span>
       ${num(struck) ? `<span class="msrp">${money(struck)}</span>` : ''}
-      <span class="pct">${esc(pctOfMsrp(p.ask_price, p.total_msrp))}</span>
+      <span class="pct">${esc(pctOfMsrp(p.ask_price, p.total_msrp))}</span>${priorHtml}
     </div>
     ${p.condition_mix ? `<div class="box-cond">${condMixHtml(p.condition_mix)}</div>` : ''}
     ${p.highlight_title ? `<div class="box-featured">★ Featured: ${esc(p.highlight_title)}${num(p.highlight_msrp) ? ` · ${money(p.highlight_msrp)} MSRP` : ''}</div>` : ''}

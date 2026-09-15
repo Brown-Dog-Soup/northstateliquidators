@@ -149,6 +149,14 @@ a { color: inherit; }
 .box-price .msrp { font-family: 'Anton', sans-serif; font-size: 24px; color: #777; text-decoration: line-through; line-height: 1; }
 .box-price .pct { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #1B7E3A; background: #E6F4EA; padding: 2px 7px; border-radius: 2px; }
 .box-price .pct:empty { display: none; }
+/* On-sale cards carry three figures. The live ask stays the dominant mark; the
+   manufacturer's MSRP and the pre-markdown list price drop to a labelled row of
+   their own so two struck numbers are never left unexplained side by side. */
+.box-price.is-sale { row-gap: 6px; }
+.box-price .price-prior { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; min-width: 0; }
+.box-price .prior { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+.box-price .prior-lbl { font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #8A8A8A; }
+.box-price .prior s { font-family: 'Anton', sans-serif; font-size: 16px; color: #777; text-decoration: line-through; line-height: 1; }
 .box-cond { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #555; }
 .box-cond .cond-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .box-cond .cond-count { font-weight: 700; color: var(--ink); }

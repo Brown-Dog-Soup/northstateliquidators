@@ -48,10 +48,11 @@ public sealed class PalletsFunction
         decimal? listPrice,    // #3 published ask override; send the key with null to clear
         decimal? salePrice,    // #3 sale price (strike-through on the site); send key with null to clear
         string? boxSize,       // mega_box | mini_pallet | full_pallet | individual; "" (or key present + null) clears
-        decimal? weightLbs);   // B3 box weight for shipping quotes; send the key with null (or <= 0) to clear
+        decimal? weightLbs,    // B3 box weight for shipping quotes; send the key with null (or <= 0) to clear
+        bool?   isHotDeal);    // true = manually featured in Hot Deals, false = not, null = no change
 
     /// <summary>The audited fields (B7) as read straight off dbo.manifests.</summary>
-    private sealed record AuditSnapshot(string? publish_state, decimal? list_price, decimal? sale_price, string? box_size, string? sell_mode);
+    private sealed record AuditSnapshot(string? publish_state, decimal? list_price, decimal? sale_price, string? box_size, string? sell_mode, bool is_hot_deal);
 
     public PalletsFunction(SqlService sql, BlobService blob, CheckoutFulfillment fulfill,
         IConfiguration config, ILogger<PalletsFunction> log)
@@ -64,7 +65,7 @@ public sealed class PalletsFunction
     }
 
     private const string AuditSnapshotSql =
-        "SELECT publish_state, list_price, sale_price, box_size, sell_mode FROM dbo.manifests WHERE id = @id";
+        "SELECT publish_state, list_price, sale_price, box_size, sell_mode, is_hot_deal FROM dbo.manifests WHERE id = @id";
 
     /// <summary>
     /// B7 audit trail: one dbo.manifest_history row per field that differs
@@ -79,12 +80,14 @@ public sealed class PalletsFunction
         var changes = new List<(string field, string? oldV, string? newV)>();
         void Diff(string field, string? a, string? b) { if (!string.Equals(a, b, StringComparison.Ordinal)) changes.Add((field, a, b)); }
         static string? Money(decimal? v) => v?.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+        static string YesNo(bool v) => v ? "yes" : "no";
 
         Diff("publish_state", before.publish_state, after.publish_state);
         Diff("list_price",    Money(before.list_price), Money(after.list_price));
         Diff("sale_price",    Money(before.sale_price), Money(after.sale_price));
         Diff("box_size",      before.box_size, after.box_size);
         Diff("sell_mode",     before.sell_mode, after.sell_mode);
+        Diff("is_hot_deal",   YesNo(before.is_hot_deal), YesNo(after.is_hot_deal));
 
         foreach (var (field, oldV, newV) in changes)
             await InsertHistoryAsync(conn, id, field, oldV, newV, who, tx);
@@ -138,9 +141,11 @@ VALUES (@id, @who, @field, @oldV, @newV)",
         var includeArchived = string.Equals(
             req.Query["includeArchived"].ToString(), "true", StringComparison.OrdinalIgnoreCase);
 
+        // is_hot_deal / hot_deal_at live on dbo.manifests, not on v_pallets — join
+        // rather than re-declare the view (see db/hot-deal-toggle.sql).
         var sql = includeArchived
-            ? "SELECT * FROM dbo.v_pallets ORDER BY received_date DESC, pallet_number DESC"
-            : "SELECT * FROM dbo.v_pallets WHERE archived_at IS NULL ORDER BY received_date DESC, pallet_number DESC";
+            ? "SELECT v.*, m.is_hot_deal, m.hot_deal_at FROM dbo.v_pallets v JOIN dbo.manifests m ON m.id = v.manifest_id ORDER BY v.received_date DESC, v.pallet_number DESC"
+            : "SELECT v.*, m.is_hot_deal, m.hot_deal_at FROM dbo.v_pallets v JOIN dbo.manifests m ON m.id = v.manifest_id WHERE v.archived_at IS NULL ORDER BY v.received_date DESC, v.pallet_number DESC";
 
         await using var conn = await _sql.OpenAsync(ct);
         var rows = (await conn.QueryAsync(sql)).ToList();
@@ -185,7 +190,7 @@ EXEC dbo.sp_CreateManifest
     {
         await using var conn = await _sql.OpenAsync(ct);
         var pallet = await conn.QueryFirstOrDefaultAsync(
-            "SELECT * FROM dbo.v_pallets WHERE manifest_id = @id", new { id });
+            "SELECT v.*, m.is_hot_deal, m.hot_deal_at FROM dbo.v_pallets v JOIN dbo.manifests m ON m.id = v.manifest_id WHERE v.manifest_id = @id", new { id });
         if (pallet == null) return new NotFoundResult();
         SignRowPhotos((object)pallet);
 
@@ -318,6 +323,15 @@ WHERE li.manifest_id = @id ORDER BY li.created_at DESC";
             sets.Add("weight_lbs = @wl");
             p.Add("wl", body?.weightLbs is > 0 ? body?.weightLbs : (decimal?)null);
         }
+        // Hot Deals manual toggle: null = no change (same tri-state as `archived`
+        // above), so this checks HasValue rather than HasKey.
+        if (body?.isHotDeal.HasValue == true)
+        {
+            sets.Add("is_hot_deal = @hd");
+            p.Add("hd", body.isHotDeal.Value);
+            sets.Add("hot_deal_at = @hda");
+            p.Add("hda", body.isHotDeal.Value ? (DateTime?)DateTime.UtcNow : null);
+        }
         doc?.Dispose();
 
         if (sets.Count > 0)
@@ -354,7 +368,7 @@ WHERE li.manifest_id = @id ORDER BY li.created_at DESC";
         }
 
         var updated = await conn.QueryFirstOrDefaultAsync(
-            "SELECT * FROM dbo.v_pallets WHERE manifest_id = @id", new { id });
+            "SELECT v.*, m.is_hot_deal, m.hot_deal_at FROM dbo.v_pallets v JOIN dbo.manifests m ON m.id = v.manifest_id WHERE v.manifest_id = @id", new { id });
         if (updated != null) SignRowPhotos((object)updated);
         return new OkObjectResult(updated);
     }
@@ -820,19 +834,23 @@ ORDER BY changed_at DESC, id DESC", new { id })).ToList();
         CancellationToken ct)
     {
         // Customer-safe column list — NO cost / wholesale / margin / notes, and
-        // never sold_to_inventory_at (it would reveal a fake sale).
+        // never sold_to_inventory_at (it would reveal a fake sale). is_hot_deal /
+        // hot_deal_at live on dbo.manifests, not on v_public_pallets — join
+        // rather than re-declare the view (see db/hot-deal-toggle.sql).
         await using var conn = await _sql.OpenAsync(ct);
         var rows = (await conn.QueryAsync(@"
-SELECT manifest_id, pallet_number, display_name, category, publish_state,
-       received_date, sold_at, live_at, photo_url, public_description,
-       box_size, weight_lbs, item_count, unit_count, total_msrp, list_price, sale_price,
-       condition_mix, highlight_title, highlight_msrp, highlight_photo,
-       is_sold, is_on_sale, ask_price,
-       CAST(CASE WHEN publish_state = 'live' AND live_at >= DATEADD(HOUR, -@hrs, SYSUTCDATETIME())
+SELECT v.manifest_id, v.pallet_number, v.display_name, v.category, v.publish_state,
+       v.received_date, v.sold_at, v.live_at, v.photo_url, v.public_description,
+       v.box_size, v.weight_lbs, v.item_count, v.unit_count, v.total_msrp, v.list_price, v.sale_price,
+       v.condition_mix, v.highlight_title, v.highlight_msrp, v.highlight_photo,
+       v.is_sold, v.is_on_sale, v.ask_price,
+       m.is_hot_deal, m.hot_deal_at,
+       CAST(CASE WHEN v.publish_state = 'live' AND v.live_at >= DATEADD(HOUR, -@hrs, SYSUTCDATETIME())
                  THEN 1 ELSE 0 END AS BIT) AS is_just_dropped
-FROM dbo.v_public_pallets
-ORDER BY CASE WHEN publish_state = 'live' THEN 0 ELSE 1 END,
-         COALESCE(live_at, sold_at, received_date) DESC", new { hrs = JustDroppedHours })).ToList();
+FROM dbo.v_public_pallets v
+JOIN dbo.manifests m ON m.id = v.manifest_id
+ORDER BY CASE WHEN v.publish_state = 'live' THEN 0 ELSE 1 END,
+         COALESCE(v.live_at, v.sold_at, v.received_date) DESC", new { hrs = JustDroppedHours })).ToList();
         SignRowPhotos(rows);
         return new OkObjectResult(rows);
     }

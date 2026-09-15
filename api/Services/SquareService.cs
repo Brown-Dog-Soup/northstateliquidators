@@ -21,6 +21,11 @@ namespace NSL.Api.Services;
 ///   SQUARE_WEBHOOK_URL            the exact notification URL registered with
 ///                                 Square — the HMAC signs url+body, so this
 ///                                 must match character-for-character
+///   SQUARE_PUBLIC_BASE_URL        site origin for redirect URLs (preview slots differ)
+///   SQUARE_SUPPORT_EMAIL          merchant support address on the hosted page
+///   SQUARE_TAX_CATALOG_ID         the account's own NC/Wake sales-tax catalog
+///                                 object; ABSENT falls back to the ad-hoc tax,
+///                                 a WRONG value just fails the link create
 /// </summary>
 public sealed class SquareService
 {
@@ -35,6 +40,9 @@ public sealed class SquareService
     public string LocationId { get; }
     public string SupportEmail { get; }
     public string? TaxCatalogId { get; }
+    /// <summary>Origin the buyer comes back to after paying. Preview slots and
+    /// staging set this so the redirect doesn't bounce them to production.</summary>
+    public string PublicBaseUrl { get; }
     private readonly string _token;
     private readonly string _webhookSignatureKey;
     private readonly string _webhookUrl;
@@ -54,6 +62,7 @@ public sealed class SquareService
         _webhookUrl          = cfg["SQUARE_WEBHOOK_URL"] ?? "";
         SupportEmail = cfg["SQUARE_SUPPORT_EMAIL"] ?? "hello@northstateliquidators.com";
         TaxCatalogId = cfg["SQUARE_TAX_CATALOG_ID"];
+        PublicBaseUrl = (cfg["SQUARE_PUBLIC_BASE_URL"] ?? "https://northstateliquidators.com").TrimEnd('/');
     }
 
     private HttpClient Client()
@@ -484,11 +493,4 @@ public sealed class SquareService
             Encoding.UTF8.GetBytes(computed), Encoding.UTF8.GetBytes(signatureHeader));
     }
 
-    // TEMP shim removed in Task 4 — old single-box link creation.
-    public sealed record PaymentLink(string Id, string OrderId, string Url);
-    public async Task<PaymentLink> CreatePaymentLinkAsync(string name, long amountCents, string redirectUrl, string idempotencyKey, string? note, CancellationToken ct)
-    {
-        var l = await CreateCartPaymentLinkAsync(new[] { new CartLine(Guid.Empty, name, amountCents) }, redirectUrl, idempotencyKey, name, note ?? name, DeliveryMethod.Pickup, ct);
-        return new PaymentLink(l.Id, l.OrderId, l.Url);
-    }
 }

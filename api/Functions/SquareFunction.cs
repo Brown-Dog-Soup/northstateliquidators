@@ -11,13 +11,15 @@ namespace NSL.Api.Functions;
 /// <summary>
 /// Square checkout for one-of-a-kind boxes (SQUARE-INTEGRATION.md).
 ///
-///   GET  /api/public/checkout-status   — is online buying on? (Buy buttons render off this)
-///   POST /api/public/checkout/{id}     — mint/reuse the box's Square payment link
+///   GET  /api/public/checkout-status   — is online buying on, plus the cart's
+///                                        limits and Rob's delivery radius
+///   POST /api/public/checkout          — mint/reuse ONE payment link for a cart of N boxes
+///   POST /api/public/checkout/{id}     — legacy single-box route: a cart of one, pickup
 ///   POST /api/square/webhook           — payment.updated → mark box SOLD (HMAC-authed, anonymous route)
 ///   POST /api/square-reconcile         — staff-triggered sweep healing missed webhooks
 ///
-/// Design invariants: one single-use link per box (deterministic idempotency
-/// key + stored link columns); SOLD only ever set via sp_SetPublishState;
+/// Design invariants: one single-use link per CART (reuse is decided by our own
+/// checkout_orders rows, not Square); SOLD only ever set via sp_SetPublishState;
 /// webhook handler idempotent (UNIQUE square_payment_id + event replays no-op);
 /// "paid" judged by tenders/net-due, never order state (stays OPEN forever).
 /// </summary>
@@ -25,70 +27,276 @@ public sealed class SquareFunction
 {
     private readonly SqlService _sql;
     private readonly SquareService _square;
+    private readonly CheckoutFulfillment _fulfill;
     private readonly ILogger<SquareFunction> _log;
 
-    public SquareFunction(SqlService sql, SquareService square, ILogger<SquareFunction> log)
+    public SquareFunction(SqlService sql, SquareService square, CheckoutFulfillment fulfill, ILogger<SquareFunction> log)
     {
         _sql = sql;
         _square = square;
+        _fulfill = fulfill;
         _log = log;
     }
 
+    public const int CartMax = 20;
+    // The zip list is read on every public page load, so keep an in-process
+    // copy. Rob's edits show up within the TTL, and the checkout call itself
+    // always re-reads dbo.delivery_zips, so the authority never goes stale.
+    private static readonly TimeSpan ZipCacheTtl = TimeSpan.FromMinutes(5);
+    private static (List<DeliveryZip> Zips, DateTime At)? _zipCache;
+    public const string FleaNote = "Fridays at the Raleigh Flea Market — we'll confirm the stall and time by phone.";
+    public sealed record CheckoutRequest(Guid[]? ids, string? delivery, string? zip, string? address, string? memberNumber);
+
+    /// <summary>One row of Rob's delivery radius: the zip and what reaching it costs.</summary>
+    public sealed record DeliveryZip(string Zip, long FeeCents);
+
+    /// <summary>
+    /// A zip only counts as deliverable while its fee_cents matches the amount
+    /// the Square payload actually charges. SquarePayloads builds the delivery
+    /// service charge from a CONSTANT and takes no fee argument, so a zip Rob
+    /// repriced would have the drawer quote one number and the receipt show
+    /// another — a discrepancy on the fee itself. Until the payload takes the
+    /// per-zip fee, such a zip is withheld from the published list AND refused
+    /// at checkout, with the mismatch logged so the cause is obvious.
+    /// </summary>
+    private static bool Deliverable(DeliveryZip z) => z.FeeCents == SquarePayloads.DeliveryCents;
+
     [Function("CheckoutStatus")]
-    public IActionResult Status(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "public/checkout-status")] HttpRequest req)
-        => new OkObjectResult(new { enabled = _square.CheckoutEnabled && _square.Configured });
+    public async Task<IActionResult> Status(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "public/checkout-status")] HttpRequest req,
+        CancellationToken ct)
+    {
+        // Rob's delivery radius, not customer data — safe to publish, and the
+        // drawer needs it to enable/disable the $10 radio without a round trip.
+        // Still re-validated server-side on every checkout (spec 8.3/8.4).
+        List<DeliveryZip> zips = new();
+        if (_square.CheckoutEnabled)
+        {
+            var cached = _zipCache;
+            if (cached != null && DateTime.UtcNow - cached.Value.At < ZipCacheTtl)
+            {
+                zips = cached.Value.Zips;
+            }
+            else
+            {
+                try
+                {
+                    await using var conn = await _sql.OpenAsync(ct);
+                    zips = (await conn.QueryAsync(
+                        "SELECT zip, fee_cents FROM dbo.delivery_zips WHERE active = 1 ORDER BY zip"))
+                        .Select(r => new DeliveryZip((string)r.zip, Convert.ToInt64(r.fee_cents)))
+                        .ToList();
+                    _zipCache = (zips, DateTime.UtcNow);
+                    foreach (var z in zips.Where(z => !Deliverable(z)))
+                        _log.LogError("CheckoutStatus: dbo.delivery_zips {Zip} is priced at {Fee} cents but the cart payload charges a constant {Charged} cents — publishing that zip would quote one fee and charge another, so it is withheld and refused at checkout. Fix: let SquarePayloads.CartLink take the per-zip fee.",
+                            z.Zip, z.FeeCents, SquarePayloads.DeliveryCents);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Serve the last list we had rather than nothing: a quiet
+                    // SQL hiccup here would otherwise hide the cart site-wide.
+                    _log.LogError(ex, "CheckoutStatus: delivery_zips query failed — serving the cached list ({N} zips)", cached?.Zips.Count ?? 0);
+                    zips = cached?.Zips ?? new List<DeliveryZip>();
+                }
+            }
+        }
+        return new OkObjectResult(new
+        {
+            enabled = _square.CheckoutEnabled && _square.Configured,
+            cartMax = CartMax,
+            taxPercent = 7.25m,
+            // The one number the buyer will actually be charged: the same
+            // constant the payload puts on the order, and every zip published
+            // below is filtered to agree with it.
+            deliveryCents = SquarePayloads.DeliveryCents,
+            deliveryZips = zips.Where(Deliverable).Select(z => z.Zip).ToList(),
+            fleaNote = FleaNote
+        });
+    }
+
+    /// <summary>Legacy single-box route (tabs loaded before the cart deploy): a cart of one, pickup.</summary>
+    [Function("CreateCheckoutOne")]
+    public Task<IActionResult> CreateCheckoutOne(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "public/checkout/{id}")] HttpRequest req,
+        Guid id, CancellationToken ct)
+        => CreateCartCheckoutCore(new[] { id }, DeliveryMethod.Pickup, null, null, null, ct);
 
     [Function("CreateCheckout")]
     public async Task<IActionResult> CreateCheckout(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "public/checkout/{id}")] HttpRequest req,
-        Guid id,
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "public/checkout")] HttpRequest req,
         CancellationToken ct)
+    {
+        CheckoutRequest? body;
+        try { body = await JsonSerializer.DeserializeAsync<CheckoutRequest>(req.Body,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct); }
+        catch (JsonException) { return new BadRequestObjectResult(new { error = "Invalid JSON" }); }
+        if (!DeliveryMethods.TryParse(body?.delivery, out var method))
+            return new BadRequestObjectResult(new { error = "Unknown delivery option.", field = "delivery" });
+        return await CreateCartCheckoutCore(body?.ids ?? Array.Empty<Guid>(), method, body?.zip, body?.address, body?.memberNumber, ct);
+    }
+
+    /// <summary>
+    /// Square caps order.reference_id at 40 characters and a full 20-box cart
+    /// is ~144, so build the box list ONLY while it fits; past that a count is
+    /// more use to Rob than a list truncated mid-number. This is a label for
+    /// his Square dashboard, NOT a correlation key — the line-item uid is.
+    /// SquarePayloads' Cap() is a backstop behind this, not the guard.
+    /// </summary>
+    public static string ReferenceId(IReadOnlyCollection<int> palletNumbers)
+    {
+        var boxList = "NSL " + string.Join(" ", palletNumbers.Select(n => "#" + n));
+        return boxList.Length <= 40 ? boxList : $"NSL {palletNumbers.Count} boxes";
+    }
+
+    private async Task<IActionResult> CreateCartCheckoutCore(Guid[] rawIds, DeliveryMethod method,
+        string? rawZip, string? rawAddress, string? rawMember, CancellationToken ct)
     {
         if (!_square.CheckoutEnabled || !_square.Configured)
             return new ObjectResult(new { error = "Online checkout is not available right now." }) { StatusCode = 503 };
 
+        var ids = rawIds.Where(g => g != Guid.Empty).Distinct().OrderBy(g => g).ToArray();
+        if (ids.Length == 0) return new BadRequestObjectResult(new { error = "Add at least one box." });
+        if (ids.Length > CartMax) return new BadRequestObjectResult(new { error = $"A cart holds at most {CartMax} boxes." });
+
+        // Only a delivery order carries a zip/address; the other two ignore them.
+        string? zip = null, address = null;
+        string? member = string.IsNullOrWhiteSpace(rawMember) ? null
+                       : (rawMember!.Trim().Length == 7 ? rawMember.Trim() : null);
+
+        // Shape check first: a malformed zip is answerable from the request
+        // alone and must not cost a pooled SQL connection.
+        if (method == DeliveryMethod.Delivery)
+        {
+            zip = (rawZip ?? "").Trim();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(zip, @"^\d{5}$"))
+                return new BadRequestObjectResult(new { error = "Enter a 5-digit zip code so we can check delivery.", field = "zip" });
+        }
+
         await using var conn = await _sql.OpenAsync(ct);
-        var box = await conn.QueryFirstOrDefaultAsync(@"
-SELECT p.manifest_id, p.pallet_number, p.display_name, p.publish_state, p.is_ghost,
-       p.archived_at, m.checkout_link_id, m.checkout_order_id, m.checkout_url,
+
+        if (method == DeliveryMethod.Delivery)
+        {
+            // The browser's copy of the list is a convenience; this is the authority.
+            var zipRow = await conn.QueryFirstOrDefaultAsync(
+                "SELECT fee_cents FROM dbo.delivery_zips WHERE zip = @zip AND active = 1", new { zip });
+            var outOfRange = $"We can't reach {zip} on our own truck — warehouse pickup and the Friday flea-market drop are both free.";
+            if (zipRow == null)
+                return new BadRequestObjectResult(new { error = outOfRange, field = "zip" });
+
+            // fee_cents is the authority on what delivery to this zip costs, but
+            // the payload's service charge is a constant that takes no fee
+            // argument. Rather than quote Rob's number and charge the constant,
+            // refuse the zip and say why.
+            long feeCents = Convert.ToInt64(zipRow.fee_cents);
+            if (feeCents != SquarePayloads.DeliveryCents)
+            {
+                _log.LogError("CreateCheckout: dbo.delivery_zips {Zip} is priced at {Fee} cents but the cart payload charges a constant {Charged} cents — refusing rather than quoting one fee and charging another. Fix: let SquarePayloads.CartLink take the per-zip fee.",
+                    zip, feeCents, SquarePayloads.DeliveryCents);
+                return new BadRequestObjectResult(new { error = outOfRange, field = "zip" });
+            }
+
+            address = (rawAddress ?? "").Trim();
+            if (address.Length == 0)
+                return new BadRequestObjectResult(new { error = "Add the street address for the delivery.", field = "address" });
+            if (address.Length > 300) address = address[..300];
+        }
+
+        var rows = (await conn.QueryAsync(@"
+SELECT p.manifest_id, p.pallet_number, p.display_name, p.publish_state, p.is_ghost, p.archived_at, m.invoice_id,
        COALESCE(p.sale_price, p.list_price, p.total_wholesale) AS ask_price
-FROM dbo.v_pallets p
-JOIN dbo.manifests m ON m.id = p.manifest_id
-WHERE p.manifest_id = @id", new { id });
+FROM dbo.v_pallets p JOIN dbo.manifests m ON m.id = p.manifest_id
+WHERE p.manifest_id IN @ids", new { ids })).ToDictionary(r => (Guid)r.manifest_id);
 
-        if (box == null) return new NotFoundResult();
-        bool ghost = box.publish_state == "ghost" || box.is_ghost == true;
-        if (box.publish_state != "live" || ghost || box.archived_at != null)
-            return new ConflictObjectResult(new { error = "This box is no longer available." });
+        var unavailable = new List<Guid>();
+        var lines = new List<CartLine>();
+        var numbers = new List<int>();
+        foreach (var id in ids)
+        {
+            if (!rows.TryGetValue(id, out var b)) { unavailable.Add(id); continue; }
+            decimal? ask = (decimal?)b.ask_price;
+            bool ok = Availability.ForLink((string?)b.publish_state, (DateTime?)b.archived_at, b.is_ghost == true, (string?)b.invoice_id)
+                      && ask is > 0;
+            if (!ok) { unavailable.Add(id); continue; }
+            lines.Add(new CartLine(id, SquarePayloads.BoxLineName((int)b.pallet_number, (string?)b.display_name),
+                (long)Math.Round(ask!.Value * 100m)));
+            numbers.Add((int)b.pallet_number);
+        }
+        if (unavailable.Count > 0)
+            return new ConflictObjectResult(new
+            {
+                error = unavailable.Count == ids.Length
+                    ? "These boxes are no longer available."
+                    : "Some boxes in your cart are no longer available.",
+                unavailable
+            });
 
-        decimal? ask = (decimal?)box.ask_price;
-        if (ask is null or <= 0)
-            return new BadRequestObjectResult(new { error = "This box doesn't have a price yet — call us instead." });
+        // Reuse an open link with the IDENTICAL (box, amount) set AND the same
+        // delivery choice — open + identical means current, because price/state
+        // changes cancel links. A different delivery choice prices differently,
+        // so it has to mint a new link (spec 5).
+        var wanted = lines.ToDictionary(l => l.ManifestId, l => l.AmountCents);
+        string methodDb = DeliveryMethods.ToDb(method);
+        var candidates = (await conn.QueryAsync(@"
+SELECT o.square_order_id, o.url, o.delivery_method, o.delivery_zip, o.delivery_address, b.manifest_id, b.amount_cents
+FROM dbo.checkout_orders o
+JOIN dbo.checkout_order_boxes b ON b.square_order_id = o.square_order_id
+WHERE o.status = 'open' AND o.kind = 'link' AND o.url IS NOT NULL
+  AND o.delivery_method = @method
+  AND ((o.delivery_zip IS NULL AND @zip IS NULL) OR o.delivery_zip = @zip)
+  AND ((o.delivery_address IS NULL AND @addr IS NULL) OR o.delivery_address = @addr)
+  AND o.square_order_id IN (SELECT square_order_id FROM dbo.checkout_order_boxes WHERE manifest_id = @first)",
+            new { first = ids[0], method = methodDb, zip, addr = address })).GroupBy(r => (string)r.square_order_id);
+        foreach (var g in candidates)
+        {
+            var set = g.ToDictionary(r => (Guid)r.manifest_id, r => (long)r.amount_cents);
+            if (set.Count == wanted.Count && wanted.All(kv => set.TryGetValue(kv.Key, out var amt) && amt == kv.Value))
+                return new OkObjectResult(new { url = (string)g.First().url });
+        }
 
-        // Reuse the box's existing link: single-use on Square's side, so two
-        // shoppers holding the same URL can still only produce one payment.
-        if (box.checkout_url != null)
-            return new OkObjectResult(new { url = (string)box.checkout_url });
+        var redirect = $"{_square.PublicBaseUrl}/thanks.html?boxes={string.Join(",", numbers)}";
 
-        var name = $"BOX #{box.pallet_number} — {(string?)box.display_name ?? "NSL Box"}";
-        var redirect = $"https://northstateliquidators.com/thanks.html?box={box.pallet_number}";
-        var link = await _square.CreatePaymentLinkAsync(
-            name,
-            (long)Math.Round(ask.Value * 100m),
-            redirect,
-            idempotencyKey: $"nsl-{id}-link-v1",
-            note: $"NSL BOX #{box.pallet_number} ({id})",
-            ct);
+        SquareService.CartLink link;
+        try
+        {
+            link = await _square.CreateCartPaymentLinkAsync(lines, redirect,
+                idempotencyKey: $"nsl-cart-{Guid.NewGuid():N}",
+                referenceId: ReferenceId(numbers),
+                paymentNote: SquarePayloads.PaymentNote(numbers), method, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A 4xx from Square here is most likely a bad or moved
+            // SQUARE_TAX_CATALOG_ID. The setting's ABSENCE falls back to the
+            // ad-hoc tax; a WRONG value does not, it just fails. Log that guess
+            // explicitly so the cause is obvious from App Insights.
+            _log.LogError(ex, "CreateCheckout: Square rejected the payment link for boxes {Boxes} ({Method}). Most likely cause: SQUARE_TAX_CATALOG_ID is wrong or that catalog tax has moved/been deleted — an absent setting falls back to the ad-hoc tax, a wrong value does not.",
+                string.Join(",", numbers), methodDb);
+            return new ObjectResult(new { error = "Couldn't start checkout — call us at (919) 526-0112 and we'll take care of you." }) { StatusCode = 502 };
+        }
 
-        await conn.ExecuteAsync(@"
-UPDATE dbo.manifests SET checkout_link_id = @lid, checkout_order_id = @oid,
-       checkout_url = @url, checkout_created_at = SYSUTCDATETIME()
-WHERE id = @id AND checkout_link_id IS NULL",
-            new { id, lid = link.Id, oid = link.OrderId, url = link.Url });
+        // Every money column below is Square's own number (spec 8.6) — we do
+        // not recompute the tax, so our row can never disagree with the receipt.
+        long subtotal = link.TotalCents - link.TaxCents - link.DeliveryCents;
+        using (var tx = conn.BeginTransaction())
+        {
+            await conn.ExecuteAsync(@"
+INSERT INTO dbo.checkout_orders (square_order_id, kind, square_link_id, url, status,
+                                 subtotal_cents, tax_cents, delivery_cents, total_cents,
+                                 delivery_method, delivery_zip, delivery_address, member_number)
+VALUES (@oid, 'link', @lid, @url, 'open', @sub, @tax, @del, @total, @method, @zip, @addr, @member)",
+                new { oid = link.OrderId, lid = link.Id, url = link.Url,
+                      sub = subtotal, tax = link.TaxCents, del = link.DeliveryCents, total = link.TotalCents,
+                      method = methodDb, zip, addr = address, member }, transaction: tx);
+            foreach (var l in lines)
+                await conn.ExecuteAsync(@"
+INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents, tax_cents) VALUES (@oid, @mid, @amt, @tax)",
+                    new { oid = link.OrderId, mid = l.ManifestId, amt = l.AmountCents,
+                          tax = link.LineTaxCents.TryGetValue(l.ManifestId, out var t) ? t : 0L }, transaction: tx);
+            tx.Commit();
+        }
 
-        _log.LogInformation("CreateCheckout: BOX #{Num} -> link {LinkId} order {OrderId}",
-            (object?)box.pallet_number, link.Id, link.OrderId);
+        _log.LogInformation("CreateCheckout: {N} box(es) {Boxes} {Method} -> link {LinkId} order {OrderId} subtotal {Sub} tax {Tax} delivery {Del} total {Total}",
+            lines.Count, string.Join(",", numbers), methodDb, link.Id, link.OrderId, subtotal, link.TaxCents, link.DeliveryCents, link.TotalCents);
         return new OkObjectResult(new { url = link.Url });
     }
 

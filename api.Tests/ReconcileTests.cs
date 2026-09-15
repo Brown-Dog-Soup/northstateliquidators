@@ -47,11 +47,29 @@ using Xunit;
 ///    staged here. Staging pass.
 ///  * The window and delete-queue SAMPLING, the refund-replay cap, and the
 ///    closed_at/link_deleted_at COALESCE — all SQL Server behaviour.
-///  * THAT AN UNCORROBORATED RUN SKIPS PASS 3 ENTIRELY. The predicate that
-///    decides it is tested here and hard; the branch that acts on it sits
-///    between two SqlConnection calls, so what a wrong-credential run actually
-///    does to link_deleted_at is a staging-pass observation. Likewise the
-///    wrong-merchant ERROR line: the condition is tested, the logging is not.
+///  * WHAT AN UNCORROBORATED RUN DOES TO link_deleted_at. The decision itself is
+///    no longer prose — LinksToRetire is a pure function and is tested below with
+///    BOTH sources handed to it full — but that RetireLinksAsync is then called
+///    with its result, and that Square is never rung, is control flow around a
+///    live connection. Likewise the wrong-merchant ERROR line: the condition is
+///    tested, the logging is not.
+///  * THE RESERVED-DRAW CALL SITE. That the recovery queue is read first with its
+///    own cap and the open orders get OpenBacklogCap of what remains is two
+///    QueryAsync calls in a row; the cap arithmetic and both SQL texts are tested,
+///    the sequencing is a staging-pass observation.
+///  * THE DIAGNOSTIC'S try/catch, and its move to the end of the sweep. Proving a
+///    COUNT(*) can no longer take the refund replay down with it needs a database
+///    that can be made to deadlock.
+///  * THE REFUND LOOP'S SHUTDOWN ABORT. That a cancelled database call is read
+///    from the token rather than from the exception type — so a shutdown can never
+///    be miscounted as a refund error — needs a token tripped inside a live
+///    UPDATE. What can be said here is that the type-based filter is gone.
+///  * THE WRONG-MERCHANT ALARM'S REMAINING BLIND SPOTS, which the minimum sample
+///    reduces rather than removes: a floor genuinely carrying ten or more rows
+///    that 404 forever and nothing readable still repeats every run, and a floor
+///    that never has ten open orders at once cannot trip the detector at all. The
+///    credential is meant to be proved once at setup — that gate is on the
+///    production verification list — not discovered by this sweep.
 ///  * THE HOST-SHUTDOWN 503. The early return needs a cancellation token tripped
 ///    partway through a live Square loop with a database behind it.
 ///  * THE HEALED/PAID-NOTHING-SOLD SPLIT and the per-payment containment on the
@@ -356,6 +374,10 @@ public class ReconcileTests
         };
         Assert.False(SquareFunction.SquareAnswered(checks));
         Assert.Empty(SquareFunction.ClosableOrderIds(checks));
+
+        // And this exact set — one 404 among rate limits — is the partial outage
+        // the alarm used to shout about. It is not evidence about credentials.
+        Assert.False(SquareFunction.LooksLikeWrongMerchant(checks));
     }
 
     /// <summary>
@@ -394,18 +416,81 @@ public class ReconcileTests
         Assert.Equal(new[] { "GONE" }, SquareFunction.ClosableOrderIds(checks));
     }
 
+    private static SquareFunction.OrderCheck[] NotFound(int n)
+        => Enumerable.Range(0, n)
+            .Select(i => new SquareFunction.OrderCheck($"GONE-{i}", SquareFunction.SquareReply.NotFound, false))
+            .ToArray();
+
+    private static SquareFunction.OrderCheck[] Unreachable(int n)
+        => Enumerable.Range(0, n)
+            .Select(i => new SquareFunction.OrderCheck($"429-{i}", SquareFunction.SquareReply.Unreachable, false))
+            .ToArray();
+
     /// <summary>
     /// THE ALARM, which is the only live misconfiguration detector this system
-    /// has. All-404 with no readable order is a state our own data cannot produce:
-    /// we only ever ask about orders we created.
+    /// has. A whole run's worth of 404s with no readable order among them is a
+    /// state our own data cannot produce: we only ever ask about orders we created.
     /// </summary>
     [Fact]
     public void An_all_404_run_is_reported_as_the_wrong_merchant()
-        => Assert.True(SquareFunction.LooksLikeWrongMerchant(new[]
-        {
-            new SquareFunction.OrderCheck("A", SquareFunction.SquareReply.NotFound, false),
-            new SquareFunction.OrderCheck("B", SquareFunction.SquareReply.NotFound, false),
-        }));
+        => Assert.True(SquareFunction.LooksLikeWrongMerchant(
+            NotFound(SquareFunction.ReconcileWrongMerchantMinSample)));
+
+    /// <summary>
+    /// THE QUIET FLOOR — the shape that made this detector worth nothing. A couple
+    /// of stale rows that 404 corroborate no run, so by this sweep's own money rule
+    /// they can never be closed or retired: they are drawn again next run, and the
+    /// old condition shouted about credentials EVERY run, indefinitely. A minimum
+    /// sample is what stops that, and it is why the alarm is not "any 404".
+    /// </summary>
+    [Fact]
+    public void A_quiet_floor_of_a_few_stale_404s_does_not_shout()
+    {
+        // Three, as a flat number and not as a fraction of the constant: whatever
+        // the minimum is set to, a floor carrying a handful of rows Square has
+        // forgotten must never be read as a credential pointing elsewhere.
+        Assert.False(SquareFunction.LooksLikeWrongMerchant(NotFound(3)));
+        Assert.False(SquareFunction.LooksLikeWrongMerchant(
+            NotFound(SquareFunction.ReconcileWrongMerchantMinSample - 1)));
+    }
+
+    /// <summary>
+    /// A PARTIAL OUTAGE IS NOT A CREDENTIAL PROBLEM. One genuinely forgotten order
+    /// plus a rate-limit storm on everything else satisfied the old condition
+    /// outright. The 404s must outnumber everything else the run saw, and a tie is
+    /// not "most" — half the run unreachable is an outage, whatever the other half
+    /// did.
+    /// </summary>
+    [Fact]
+    public void A_run_half_lost_to_rate_limits_is_not_the_wrong_merchant_alarm()
+    {
+        var checks = NotFound(SquareFunction.ReconcileWrongMerchantMinSample)
+            .Concat(Unreachable(SquareFunction.ReconcileWrongMerchantMinSample)).ToArray();
+        Assert.False(SquareFunction.SquareAnswered(checks));
+        Assert.False(SquareFunction.LooksLikeWrongMerchant(checks));
+    }
+
+    /// <summary>
+    /// But it still fires through noise, which is the point of a ratio rather than
+    /// a demand for perfection: a wrong credential during a bad afternoon 404s most
+    /// of what it asks about, and that is precisely the run this exists for.
+    /// </summary>
+    [Fact]
+    public void A_wrong_credential_still_alarms_through_some_rate_limiting()
+        => Assert.True(SquareFunction.LooksLikeWrongMerchant(
+            NotFound(SquareFunction.ReconcileWrongMerchantMinSample + 2).Concat(Unreachable(5)).ToArray()));
+
+    /// <summary>
+    /// And one readable order silences it however many 404s came with it — the
+    /// credential demonstrably reaches our merchant, so the 404s are just orders
+    /// Square has forgotten.
+    /// </summary>
+    [Fact]
+    public void One_readable_order_silences_the_alarm_however_many_404s_came_with_it()
+        => Assert.False(SquareFunction.LooksLikeWrongMerchant(
+            NotFound(SquareFunction.ReconcileWrongMerchantMinSample * 3)
+                .Append(new SquareFunction.OrderCheck("READABLE", SquareFunction.SquareReply.Order, false))
+                .ToArray()));
 
     /// <summary>
     /// And it must not cry wolf on the two states that look similar and are not: a
@@ -421,6 +506,65 @@ public class ReconcileTests
         {
             new SquareFunction.OrderCheck("429", SquareFunction.SquareReply.Unreachable, false),
         }));
+    }
+
+    // ---- LinksToRetire: the branch that actually closes the defect ----------
+    //
+    // The closing predicate above is the tested half of the fix and the lesser
+    // half. Pass 3 does not only delete what this run closed: it samples a
+    // STANDING QUEUE built by earlier healthy runs. A delete that 404s reads as
+    // confirmation, so at the wrong merchant every delete "succeeds" and stamps
+    // link_deleted_at — and a stamped row is out of the backlog recovery window
+    // for good, which is where a wrongly closed PAID order was hiding. That branch
+    // used to be an inline condition between two database calls, defended by
+    // prose. Last round's defect got through as confident prose.
+
+    private static CanceledLink Link(string id) => new(id, "LNK-" + id);
+
+    /// <summary>
+    /// THE ONE THIS EXTRACTION EXISTS FOR. Nothing corroborated the run, so nothing
+    /// is retired — not the standing queue, and not this run's own cancels either,
+    /// even when both are handed over full. Handing it a non-empty closedThisRun is
+    /// the whole point: with no corroboration pass 2 closes nothing, so that list is
+    /// empty in practice today, and the guard must not be leaning on that.
+    /// </summary>
+    [Fact]
+    public void An_uncorroborated_run_retires_nothing_from_either_source()
+        => Assert.Empty(SquareFunction.LinksToRetire(
+            squareAnswered: false,
+            closedThisRun: new[] { Link("CLOSED-NOW") },
+            standingQueueSample: new[] { Link("QUEUED-A"), Link("QUEUED-B") },
+            budget: SquareFunction.ReconcileMaxSquareCalls));
+
+    /// <summary>A corroborated run retires both sources, this run's cancels first — those links are payable right now.</summary>
+    [Fact]
+    public void A_corroborated_run_retires_this_runs_cancels_before_the_queue()
+        => Assert.Equal(new[] { "CLOSED-NOW", "QUEUED-A" }, SquareFunction.LinksToRetire(
+            true, new[] { Link("CLOSED-NOW") }, new[] { Link("QUEUED-A") },
+            SquareFunction.ReconcileMaxSquareCalls).Select(l => l.OrderId));
+
+    /// <summary>A link in both lists is one delete, not two.</summary>
+    [Fact]
+    public void A_link_in_both_sources_is_retired_once()
+        => Assert.Equal(new[] { "BOTH", "QUEUED" }, SquareFunction.LinksToRetire(
+            true, new[] { Link("BOTH") }, new[] { Link("BOTH"), Link("QUEUED") },
+            SquareFunction.ReconcileMaxSquareCalls).Select(l => l.OrderId));
+
+    /// <summary>
+    /// The budget caps the standing queue and never this run's cancels: a link we
+    /// closed a minute ago is payable RIGHT NOW, while a queue row has already
+    /// waited runs and will be sampled again.
+    /// </summary>
+    [Fact]
+    public void The_budget_caps_the_queue_sample_and_not_this_runs_cancels()
+    {
+        var mine = new[] { Link("A"), Link("B") };
+        Assert.Equal(new[] { "A", "B", "Q1" }, SquareFunction
+            .LinksToRetire(true, mine, new[] { Link("Q1"), Link("Q2") }, budget: 3)
+            .Select(l => l.OrderId));
+        Assert.Equal(new[] { "A", "B" }, SquareFunction
+            .LinksToRetire(true, mine, new[] { Link("Q1") }, budget: 1)
+            .Select(l => l.OrderId));
     }
 
     // ---- PaymentOf: "unpaid" must be evidenced, not merely absent -----------
@@ -532,18 +676,57 @@ public class ReconcileTests
     }
 
     /// <summary>
-    /// The recovery route. A link whose order was paid is exactly the link Square
-    /// refuses to cancel, so an unconfirmed deletion is where a wrongly closed
-    /// paid order surfaces. The backlog window must keep reaching those rows —
-    /// it is what makes a closed order reachable by a pass that can still
+    /// The recovery route, and it has its OWN draw now. A link whose order was paid
+    /// is exactly the link Square refuses to cancel, so an unconfirmed deletion is
+    /// where a wrongly closed paid order surfaces. One run must keep reaching those
+    /// rows — it is what makes a closed order reachable by a pass that can still
     /// discover payment, and what lets that row leave the delete queue instead of
     /// blocking every link behind it.
     /// </summary>
     [Fact]
-    public void The_backlog_window_reaches_closed_links_whose_delete_was_never_confirmed()
+    public void The_recovery_queue_has_its_own_reserved_draw()
     {
-        Assert.Contains("status = 'canceled'", SquareFunction.ReconcileBacklogSql);
-        Assert.Contains("link_deleted_at IS NULL", SquareFunction.ReconcileBacklogSql);
+        Assert.Contains("status = 'canceled'", SquareFunction.ReconcileRetireRecheckSql);
+        Assert.Contains("link_deleted_at IS NULL", SquareFunction.ReconcileRetireRecheckSql);
+        Assert.True(SquareFunction.ReconcileRetireRecheckWindow > 0,
+            "the recovery queue's share of the backlog may never be zero");
+        Assert.True(SquareFunction.ReconcileRetireRecheckWindow < SquareFunction.ReconcileBacklogWindow,
+            "nor may it swallow the whole backlog window and starve the open orders");
+    }
+
+    /// <summary>
+    /// AND IT IS NOT SAMPLED TOGETHER WITH THE OPEN ORDERS ANY MORE. That was the
+    /// dilution this round introduced and did not cost: widening the backlog from
+    /// aged orders to ALL open orders also widened what the queue competes with,
+    /// from a small self-draining subset to every open cart on the floor. A few
+    /// hundred carts against a handful of queue rows and a given queue row's odds
+    /// of being drawn in a run collapse — which is a charged buyer's wait, not a
+    /// tidiness point. Put the queue back into this SELECT and it returns.
+    /// </summary>
+    [Fact]
+    public void The_open_backlog_draw_does_not_sample_the_recovery_queue_with_it()
+    {
+        Assert.DoesNotContain("canceled", SquareFunction.ReconcileBacklogSql);
+        Assert.DoesNotContain("link_deleted_at", SquareFunction.ReconcileBacklogSql);
+    }
+
+    /// <summary>
+    /// Reserved, not ring-fenced. An empty queue — the healthy floor — hands the
+    /// whole backlog window back to the open orders, so the split costs nothing
+    /// when there is nothing to recover; a deep queue can never take more than its
+    /// share, so the open orders cannot be starved either.
+    /// </summary>
+    [Fact]
+    public void The_queues_reserved_share_costs_the_open_backlog_nothing_when_it_is_empty()
+    {
+        Assert.Equal(SquareFunction.ReconcileBacklogWindow, SquareFunction.OpenBacklogCap(0));
+        Assert.Equal(SquareFunction.ReconcileBacklogWindow - 1, SquareFunction.OpenBacklogCap(1));
+        Assert.Equal(SquareFunction.ReconcileBacklogWindow - SquareFunction.ReconcileRetireRecheckWindow,
+            SquareFunction.OpenBacklogCap(SquareFunction.ReconcileRetireRecheckWindow));
+        Assert.Equal(SquareFunction.ReconcileBacklogWindow - SquareFunction.ReconcileRetireRecheckWindow,
+            SquareFunction.OpenBacklogCap(SquareFunction.ReconcileRetireRecheckWindow * 5));
+        Assert.True(SquareFunction.OpenBacklogCap(int.MaxValue) > 0,
+            "the open-order draw may never be starved to nothing by the queue");
     }
 
     /// <summary>
@@ -567,17 +750,21 @@ public class ReconcileTests
     /// <summary>
     /// The queue-dilution alarm (there is no terminal state to give a link Square
     /// will never confirm without a schema change, so the pile is made visible
-    /// instead). The threshold has to sit at or below the window that samples the
-    /// queue: past that, one run can no longer reach all of it, which is the point
-    /// where recovery latency starts to stretch rather than the point where it
-    /// already has.
+    /// instead), and the threshold whose justification this round had to repair.
+    ///
+    /// "Past this many rows the sample can no longer reach the whole queue in one
+    /// run" was true of the aged-only backlog and FALSE the moment the queue shared
+    /// one sample with every open cart on the floor: coverage broke down well below
+    /// the number, at a point that moved with the open-order count. This test
+    /// encoded that wrong premise by allowing the whole backlog window. It is
+    /// arithmetic again only because the queue has a reserved draw — more rows than
+    /// that draw can take is exactly when one run stops covering the queue.
     /// </summary>
     [Fact]
-    public void The_retire_queue_warns_before_it_outgrows_the_window_that_samples_it()
+    public void The_retire_queue_warns_exactly_when_one_run_stops_covering_it()
     {
         Assert.True(SquareFunction.ReconcileRetireQueueWarnAt > 0);
-        Assert.True(SquareFunction.ReconcileRetireQueueWarnAt <= SquareFunction.ReconcileBacklogWindow,
-            "warn no later than the point the backlog window can no longer cover the queue in one run");
+        Assert.Equal(SquareFunction.ReconcileRetireRecheckWindow, SquareFunction.ReconcileRetireQueueWarnAt);
     }
 
     /// <summary>
@@ -593,5 +780,7 @@ public class ReconcileTests
         Assert.True(SquareFunction.ReconcileFreshWindow > 0, "the newest-first half of the window may never be zero");
         Assert.Equal(SquareFunction.ReconcileMaxSquareCalls,
             SquareFunction.ReconcileFreshWindow + SquareFunction.ReconcileBacklogWindow);
+        Assert.Equal(SquareFunction.ReconcileBacklogWindow,
+            SquareFunction.ReconcileRetireRecheckWindow + SquareFunction.OpenBacklogCap(SquareFunction.ReconcileRetireRecheckWindow));
     }
 }

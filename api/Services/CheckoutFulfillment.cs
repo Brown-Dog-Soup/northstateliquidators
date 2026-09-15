@@ -183,9 +183,25 @@ WHERE square_order_id = @oid",
                 // of each holding what the other needs. This SELECT itself takes NO
                 // lock — it is the work list, not the decision. The decision is made
                 // per box against a locked re-read inside the loop (see below).
+                //
+                // LEFT JOIN, and that is the money-safe direction, not a style
+                // choice. dbo.checkout_order_boxes has no FK to manifests on
+                // purpose, so a hard-deleted box leaves its order line behind. An
+                // inner join DROPPED that line from this list entirely: on a
+                // multi-box order whose link outlived our cancel, fulfilment would
+                // sell the survivors, compute nothing owed for the box that no
+                // longer exists, and record the payment COMPLETED — the buyer paid
+                // for a box they can never get and only a log warning on the
+                // amount mismatch marked it. Kept in the list, the row falls
+                // through the locked re-read below (which finds no manifest), is
+                // marked 'unavailable' and its money — price AND tax — is added to
+                // refundDue, which is what the buyer is actually owed. Its
+                // pallet_number comes back NULL: a deleted manifest has no BOX #
+                // to report, so it is omitted from the reported numbers while the
+                // counts and the refund total still include it (see AddPallet).
                 var boxes = (await conn.QueryAsync(@"
 SELECT b.manifest_id, b.amount_cents, b.tax_cents, b.outcome, m.pallet_number
-FROM dbo.checkout_order_boxes b JOIN dbo.manifests m ON m.id = b.manifest_id
+FROM dbo.checkout_order_boxes b LEFT JOIN dbo.manifests m ON m.id = b.manifest_id
 WHERE b.square_order_id = @oid ORDER BY b.manifest_id",
                     new { oid = orderId }, transaction: tx)).ToList();
 
@@ -292,8 +308,11 @@ WHERE id = @mid",
                         unavailable++;
                         refundDue += boxDue;
                         AddPallet(unavailablePallets, palletNumber, mid);
+                        // A hard-deleted box has neither a pallet_number nor a
+                        // publish_state to name, so both degrade to a literal
+                        // rather than logging "BOX #" with a hole in it.
                         _log.LogWarning("Fulfill: BOX #{Num} on order {OrderId} no longer available (state {State}) — refund due {Due}c incl tax",
-                            (object?)palletNumber, orderId, publishState ?? "(row gone)", boxDue);
+                            (object?)palletNumber ?? "(deleted)", orderId, publishState ?? "(row gone)", boxDue);
                     }
                 }
 
@@ -365,6 +384,12 @@ WHERE square_payment_id = @pid",
     /// manifests.pallet_number is nullable, and a box with no number would silently
     /// vanish from the buyer's list. Log it rather than drop it quietly — the counts
     /// on <see cref="FulfillResult"/> stay authoritative either way.
+    ///
+    /// Two causes now reach here: a real box whose number was never set, and a
+    /// hard-deleted one, which the work list's LEFT JOIN keeps (so its money stays
+    /// in the refund) with a NULL pallet_number. Neither has a BOX # to report, and
+    /// neither is allowed to throw — the alternative is an NRE that rolls back a
+    /// payment we have already taken.
     /// </summary>
     private void AddPallet(List<int> into, int? palletNumber, Guid manifestId)
     {

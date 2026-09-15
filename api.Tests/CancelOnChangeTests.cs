@@ -116,9 +116,15 @@ public class CancelOnChangeTests
     }
 
     /// <summary>
-    /// Square unconfigured: the link is left open for Reconcile to sweep. Neither
-    /// Square nor the database is touched — the exploding factory and the closed
-    /// port both stay quiet — and link_deleted_at is (correctly) never stamped.
+    /// Square unconfigured: the link is left open for Reconcile to sweep, and NO
+    /// Square call is made — the exploding factory would have turned one into a
+    /// failure, so the zero-calls assertion is real.
+    ///
+    /// What this does NOT prove, despite the closed port: that link_deleted_at is
+    /// never stamped. RetireLinksAsync swallows everything, so an implementation
+    /// that wrongly attempted the stamp would fail against the dead connection,
+    /// have the error swallowed, still make zero Square calls, and pass this test
+    /// unchanged. The stamp-only-on-confirmation half needs a real database.
     /// </summary>
     [Fact]
     public async Task An_unconfigured_square_touches_neither_square_nor_sql()

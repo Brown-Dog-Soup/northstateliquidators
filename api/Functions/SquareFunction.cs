@@ -788,12 +788,26 @@ INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents
             return new ConflictObjectResult(new { error = "Box is sold — the invoice was paid; refund instead." });
 
         await _square.CancelInvoiceAsync((string)box.invoice_id, ct);
-        await conn.ExecuteAsync(@"
+        // ONE transaction, and it is not housekeeping. These two statements used
+        // to be a single statement and could not land half-applied; as an
+        // unwrapped two-statement batch each one auto-commits on its own, and an
+        // Azure SQL transient failover between them (routine, not exotic) would
+        // close the order row while the box still carried its invoice id. The
+        // retry is then a dead end: cancelling an already-cancelled invoice at
+        // Square returns an error and throws before ever reaching this SQL, so the
+        // box stays blocked — no route can clear it — until someone edits the
+        // row by hand. Both land or neither does.
+        using (var tx = conn.BeginTransaction())
+        {
+            await conn.ExecuteAsync(@"
 UPDATE o SET status = 'canceled', closed_at = SYSUTCDATETIME()
 FROM dbo.checkout_orders o
 WHERE o.kind = 'invoice' AND o.status = 'open'
   AND EXISTS (SELECT 1 FROM dbo.checkout_order_boxes b WHERE b.square_order_id = o.square_order_id AND b.manifest_id = @id);
-UPDATE dbo.manifests SET invoice_id = NULL, invoice_url = NULL WHERE id = @id", new { id });
+UPDATE dbo.manifests SET invoice_id = NULL, invoice_url = NULL WHERE id = @id",
+                new { id }, transaction: tx);
+            tx.Commit();
+        }
         _log.LogInformation("CancelBoxInvoice: BOX #{Num} invoice canceled", (object?)box.pallet_number);
         return new OkObjectResult(new { canceled = true });
     }

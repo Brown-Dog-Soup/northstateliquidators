@@ -28,7 +28,6 @@ public sealed class PalletsFunction
 {
     private readonly SqlService _sql;
     private readonly BlobService _blob;
-    private readonly SquareService _square;
     private readonly CheckoutFulfillment _fulfill;
     private readonly string _storageAccount;
     private readonly ILogger<PalletsFunction> _log;
@@ -54,12 +53,11 @@ public sealed class PalletsFunction
     /// <summary>The audited fields (B7) as read straight off dbo.manifests.</summary>
     private sealed record AuditSnapshot(string? publish_state, decimal? list_price, decimal? sale_price, string? box_size, string? sell_mode);
 
-    public PalletsFunction(SqlService sql, BlobService blob, SquareService square, CheckoutFulfillment fulfill,
+    public PalletsFunction(SqlService sql, BlobService blob, CheckoutFulfillment fulfill,
         IConfiguration config, ILogger<PalletsFunction> log)
     {
         _sql = sql;
         _blob = blob;
-        _square = square;
         _fulfill = fulfill;
         _storageAccount = config["StorageAccountName"] ?? "";
         _log = log;
@@ -480,44 +478,64 @@ FROM dbo.line_items WHERE manifest_id = @sid",
         CancellationToken ct)
     {
         await using var conn = await _sql.OpenAsync(ct);
-        using var tx = conn.BeginTransaction();
-        try
+        List<CanceledLink> canceled;
+        int itemRows, palletRows;
+        using (var tx = conn.BeginTransaction())
         {
-            var webSold = await conn.ExecuteScalarAsync<int>(
-                "SELECT COUNT(*) FROM dbo.checkout_order_boxes WHERE manifest_id = @id AND outcome = 'sold'",
-                new { id }, transaction: tx);
-            if (webSold > 0)
+            try
             {
-                tx.Rollback();
-                return new ConflictObjectResult(new { error = "This box was sold through the website — archive it instead of deleting so the sale record stays intact." });
+                var webSold = await conn.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM dbo.checkout_order_boxes WHERE manifest_id = @id AND outcome = 'sold'",
+                    new { id }, transaction: tx);
+                if (webSold > 0)
+                {
+                    tx.Rollback();
+                    return new ConflictObjectResult(new { error = "This box was sold through the website — archive it instead of deleting so the sale record stays intact." });
+                }
+                canceled = await _fulfill.CancelOpenLinksForBoxesAsync(conn, tx, new[] { id }, null);
+                await conn.ExecuteAsync("DELETE FROM dbo.checkout_order_boxes WHERE manifest_id = @id", new { id }, transaction: tx);
+
+                // manifest_history has an FK to manifests — clear the audit rows first.
+                await conn.ExecuteAsync(
+                    "DELETE FROM dbo.manifest_history WHERE manifest_id = @id",
+                    new { id }, transaction: tx);
+                itemRows = await conn.ExecuteAsync(
+                    "DELETE FROM dbo.line_items WHERE manifest_id = @id",
+                    new { id }, transaction: tx);
+                palletRows = await conn.ExecuteAsync(
+                    "DELETE FROM dbo.manifests WHERE id = @id",
+                    new { id }, transaction: tx);
+                tx.Commit();
             }
-            var canceled = await _fulfill.CancelOpenLinksForBoxesAsync(conn, tx, new[] { id }, null);
-            await conn.ExecuteAsync("DELETE FROM dbo.checkout_order_boxes WHERE manifest_id = @id", new { id }, transaction: tx);
-
-            // manifest_history has an FK to manifests — clear the audit rows first.
-            await conn.ExecuteAsync(
-                "DELETE FROM dbo.manifest_history WHERE manifest_id = @id",
-                new { id }, transaction: tx);
-            var itemRows = await conn.ExecuteAsync(
-                "DELETE FROM dbo.line_items WHERE manifest_id = @id",
-                new { id }, transaction: tx);
-            var palletRows = await conn.ExecuteAsync(
-                "DELETE FROM dbo.manifests WHERE id = @id",
-                new { id }, transaction: tx);
-            tx.Commit();
-
-            if (palletRows == 0) return new NotFoundResult();
-            // Only now: a delete that matched no rows cancelled nothing, and
-            // retiring links there would kill live links for a box that still exists.
-            await _fulfill.RetireLinksAsync(conn, canceled, ct);
-            _log.LogInformation("DeletePallet {Id}: removed pallet + {N} item(s)", id, itemRows);
-            return new OkObjectResult(new { id, deleted = true, items_deleted = itemRows });
+            catch
+            {
+                // Guarded: if the throw came OUT of Commit the transaction may
+                // already be done, and an unguarded Rollback would throw over the
+                // top of the real exception and destroy it.
+                try { tx.Rollback(); } catch { /* already finished */ }
+                throw;
+            }
         }
-        catch
-        {
-            tx.Rollback();
-            throw;
-        }
+
+        // Everything below is post-commit and deliberately OUTSIDE the try. There
+        // is nothing left to roll back here, so a throw from RetireLinksAsync must
+        // not reach a catch that would call Rollback() on a completed transaction:
+        // that call throws in turn and the original exception is lost. The helper
+        // is documented never to throw, and is tested from every failure direction
+        // — but the whole point of that guarantee is that nobody reading this route
+        // should have to know it.
+        if (palletRows == 0) return new NotFoundResult();
+        // The ordering buys exactly one thing: on a not-found delete we do not go
+        // on to delete links at SQUARE for a box that still exists. It does NOT
+        // mean nothing was cancelled — CancelOpenLinksForBoxesAsync ran and
+        // committed above, so those orders are already marked canceled in our
+        // tables either way. Reachability is near nil (the row would have to
+        // vanish between this request and the DELETE) and marking an order
+        // canceled without killing its Square link is the safe direction, so this
+        // is the behaviour we want; it is just not the invariant it used to claim.
+        await _fulfill.RetireLinksAsync(conn, canceled, ct);
+        _log.LogInformation("DeletePallet {Id}: removed pallet + {N} item(s)", id, itemRows);
+        return new OkObjectResult(new { id, deleted = true, items_deleted = itemRows });
     }
 
     /// <summary>
@@ -546,6 +564,18 @@ FROM dbo.line_items WHERE manifest_id = @sid",
 
         // Retire every open cart link holding this box BEFORE it reads SOLD.
         // The DB cancel is the fence; Square deletes are best-effort after.
+        //
+        // DELIBERATELY UNCONDITIONAL, and committed BEFORE the proc runs. Do not
+        // "fix" this by moving it after sp_SoldToInventory or making it depend on
+        // the proc succeeding. The proc can still refuse — a ghost box, an
+        // archived one, one already sold — and on a refusal the box is untouched
+        // while every open cart link on it is already marked canceled here and
+        // never retired at Square (the retire below only runs on success). That
+        // is a silent lost sale for a shopper mid-checkout, and it is the price of
+        // the safe direction: the alternative, cancelling only after the proc
+        // succeeds, leaves a window where the box reads SOLD and a live link can
+        // still be paid. The earlier fail-closed version of this — refuse the sale
+        // if Square hiccuped — rejected perfectly good boxes, which is worse.
         List<CanceledLink> canceled;
         using (var tx = conn.BeginTransaction())
         {

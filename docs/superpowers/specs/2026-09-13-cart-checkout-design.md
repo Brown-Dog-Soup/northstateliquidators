@@ -529,9 +529,40 @@ https://www.ncleg.gov/EnactedLegislation/Statutes/PDF/BySection/Chapter_105/GS_1
 so **the $10 delivery is taxed too**: $10.00 of delivery costs the buyer
 $10.73.
 
-Square will not compute this for us. A payment link built from an ad-hoc
-`order` has no catalog item and therefore no catalog tax attached, so we supply
-the tax in the request:
+**Verified against the live Square account, 2026-09-15.** The account already
+carries a catalog tax **"NC & Wake County Sales Tax"**, `catalog_object_id`
+**`NJMJVQ3TQDEYCNQJJ5MGTCXT`**, `percentage 7.25`, `ADDITIVE`, enabled,
+`applies_to_custom_amounts: true`, at the Wake Forest location (27587). Two
+consequences:
+
+1. **NSL is demonstrably registered to collect NC sales tax** — nobody
+   configures that rate and rings it on a terminal otherwise. The blocking
+   open question "is Rob registered with NCDOR" is answered yes in practice;
+   what remains for his accountant is filing frequency, not permission.
+2. **Reference the existing tax rather than inventing our own.** Passing
+   `applied_taxes: [{ catalog_object_id: "NJMJVQ3TQDEYCNQJJ5MGTCXT" }]` makes a
+   web sale land under the *same named tax* as a floor sale in Rob's Square
+   reporting, so his sales-tax total reconciles in one place and a future rate
+   change is one edit in Square rather than a code deploy. Supplying our own
+   ad-hoc 7.25% would produce a second, differently-named tax line in the same
+   reports for the same legal tax. Prefer the catalog reference; keep the
+   ad-hoc shape below as the fallback if the catalog object turns out not to be
+   present at the location used for the link (`present_at_all_locations` is
+   **false**, so confirm it on the first order rather than assuming).
+
+> **A gap that exists right now, before any of this ships.** The live
+> single-box checkout builds its link with `quick_pay { name, price_money }`
+> and **no tax at all** (`SquareService.CreatePaymentLinkAsync`). So the same
+> box costs 7.25% more at the counter than on the website. Exposure to date is
+> nil — `dbo.payments` holds exactly one real web payment ever, the $1.00
+> launch test on 2026-08-28, refunded — but it starts the moment somebody buys
+> a box online, and web checkout is enabled today. Either ship the cart before
+> that happens, add the tax to the existing one-box path as a small standalone
+> change, or turn web checkout off until one of those lands.
+
+Square will not compute the tax for us on an ad-hoc order: a payment link built
+from an ad-hoc `order` has no catalog *item*, so no tax is attached by default
+and we must name one — either the catalog object above, or inline:
 
 ```jsonc
 "order": {

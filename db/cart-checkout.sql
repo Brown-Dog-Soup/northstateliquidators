@@ -162,4 +162,24 @@ BEGIN
 END;
 GO
 
-PRINT 'cart-checkout: checkout_orders + checkout_order_boxes + delivery_zips + payments.refund columns ready.';
+-- One row per Square refund we have applied to payments.refunded_cents, so a
+-- replayed refund.updated (or the admin endpoint and the webhook both seeing
+-- the same refund) can never double-count. The refund id is the primary key:
+-- the INSERT itself is the dedupe, and only a NEW row is allowed to move the
+-- running total on dbo.payments.
+IF OBJECT_ID('dbo.payment_refunds', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.payment_refunds (
+        square_refund_id  VARCHAR(64) NOT NULL PRIMARY KEY,
+        square_payment_id VARCHAR(64) NOT NULL,
+        amount_cents      BIGINT      NOT NULL,
+        created_at        DATETIME2   NOT NULL DEFAULT SYSUTCDATETIME()
+    );
+    CREATE INDEX IX_payment_refunds_payment ON dbo.payment_refunds (square_payment_id);
+END;
+GO
+
+GRANT SELECT, INSERT ON dbo.payment_refunds TO nsl_api;
+GO
+
+PRINT 'cart-checkout: checkout_orders + checkout_order_boxes + delivery_zips + payments.refund columns + payment_refunds ready.';

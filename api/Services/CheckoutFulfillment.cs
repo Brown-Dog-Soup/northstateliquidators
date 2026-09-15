@@ -48,7 +48,13 @@ public sealed class CheckoutFulfillment
     /// owed. db/hotfix-floor-payments.sql exists because that already happened
     /// once; do not regress it.
     /// </summary>
-    public async Task<FulfillResult> FulfillOrderAsync(SqlConnection conn, string orderId, string paymentId,
+    /// <remarks>
+    /// <paramref name="orderId"/> is nullable because a payment from one of our
+    /// own products can still arrive with no order_id at all. Every lookup below
+    /// then misses, the recovery call is skipped, and the payment lands on the
+    /// UNMATCHED / needs_refund path — money in, nothing sold, a human told.
+    /// </remarks>
+    public async Task<FulfillResult> FulfillOrderAsync(SqlConnection conn, string? orderId, string paymentId,
         long? amountCents, string? rawJson, string source, CancellationToken ct)
     {
         List<CanceledLink> canceled = new();
@@ -85,7 +91,7 @@ WHERE NOT EXISTS (SELECT 1 FROM dbo.payments WHERE square_payment_id = @pid)",
                     // computed straight off these rows. Re-pricing the boxes from
                     // today's ask price would refund the wrong amount for any box
                     // whose price moved after the link was minted.
-                    var recovered = _square.Configured
+                    var recovered = orderId != null && _square.Configured
                         ? await _square.OrderLinesAsync(orderId, ct)
                         : new SquareService.RecoveredOrder(new List<SquareService.OrderLine>(), null, null, null);
                     if (recovered.Lines.Count == 0)
@@ -364,6 +370,45 @@ WHERE square_payment_id = @pid",
     {
         if (palletNumber.HasValue) into.Add(palletNumber.Value);
         else _log.LogWarning("Fulfill: manifest {ManifestId} has no pallet_number — omitted from the box list", manifestId);
+    }
+
+    /// <summary>
+    /// Apply one Square refund to our audit row exactly once (spec §8.8).
+    ///
+    /// Refunds ACCUMULATE: a buyer can be refunded one unavailable box today and
+    /// another tomorrow, and Square sends refund.updated several times per refund
+    /// besides. dbo.payment_refunds is keyed on the refund id, so the INSERT is
+    /// the dedupe — only a row that did not exist is allowed to move
+    /// payments.refunded_cents, and a replay is a no-op that returns false.
+    ///
+    /// status: REFUNDED once the whole payment is back, PARTIAL_REFUNDED while
+    /// some of it is. The attention flag is a separate question and clears on a
+    /// separate test — what is OWED (refund_due_cents: the unavailable boxes and
+    /// their tax), not the whole payment — so refunding exactly the one box the
+    /// buyer did not get clears the flag without pretending the order was voided.
+    /// The caller decides what counts as returned: only a COMPLETED refund gets
+    /// here, never one Square has merely accepted.
+    /// </summary>
+    /// <returns>true if this refund was newly recorded; false on a replay.</returns>
+    public static async Task<bool> RecordRefundAsync(SqlConnection conn, string refundId, string paymentId, long amountCents)
+    {
+        var inserted = await conn.ExecuteAsync(@"
+INSERT INTO dbo.payment_refunds (square_refund_id, square_payment_id, amount_cents)
+SELECT @rid, @pid, @amt
+WHERE NOT EXISTS (SELECT 1 FROM dbo.payment_refunds WHERE square_refund_id = @rid)",
+            new { rid = refundId, pid = paymentId, amt = amountCents });
+        if (inserted == 0) return false;
+
+        // refunded_cents + @amt, not @amt: every column below is the running
+        // total after this refund, so two partials add up instead of the second
+        // overwriting the first.
+        await conn.ExecuteAsync(@"
+UPDATE dbo.payments SET
+    refunded_cents = refunded_cents + @amt,
+    status = CASE WHEN refunded_cents + @amt >= COALESCE(amount_cents, 0) THEN 'REFUNDED' ELSE 'PARTIAL_REFUNDED' END,
+    needs_refund = CASE WHEN refunded_cents + @amt >= COALESCE(refund_due_cents, amount_cents, 0) THEN 0 ELSE needs_refund END
+WHERE square_payment_id = @pid", new { pid = paymentId, amt = amountCents });
+        return true;
     }
 
     /// <summary>

@@ -15,7 +15,9 @@ namespace NSL.Api.Functions;
 ///                                        limits and Rob's delivery radius
 ///   POST /api/public/checkout          — mint/reuse ONE payment link for a cart of N boxes
 ///   POST /api/public/checkout/{id}     — legacy single-box route: a cart of one, pickup
-///   POST /api/square/webhook           — payment.updated → mark box SOLD (HMAC-authed, anonymous route)
+///   POST /api/square/webhook           — payment.updated → fulfil the cart's boxes;
+///                                        refund.updated → accumulate what went back
+///                                        (HMAC-authed, anonymous route)
 ///   POST /api/square-reconcile         — staff-triggered sweep healing missed webhooks
 ///
 /// Design invariants: one single-use link per CART (reuse is decided by our own
@@ -322,95 +324,116 @@ INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents
         var root = doc.RootElement;
         var type = SquareEvents.EventType(root);
 
-        // Refunds: mark our audit row REFUNDED (and clear the attention flag)
-        // when Square confirms the money went back — whether we triggered it
-        // via the admin button or someone did it in the Square Dashboard.
+        // Refunds: keep our audit row's running total honest, and clear the
+        // attention flag once what was OWED has actually gone back — whether we
+        // triggered the refund from the admin button or someone did it in the
+        // Square Dashboard.
         if (type is "refund.updated" or "refund.created")
         {
             if (!SquareEvents.TryParseRefund(root, out var refund))
                 return new OkObjectResult(new { ignored = "malformed" });
-            if (refund.Status == "COMPLETED" && refund.PaymentId != null)
+
+            // Square sends refund.updated on every state change. Only a settled
+            // refund moves money: PENDING/APPROVED must leave the flag standing,
+            // or a refund that later fails looks handled.
+            bool settled = refund.Status == "COMPLETED" && refund.AmountCents is > 0;
+            bool lost    = refund.Status is "FAILED" or "REJECTED";
+            bool recorded = false;
+            if (refund.PaymentId != null && (settled || lost))
             {
                 await using var rconn = await _sql.OpenAsync(ct);
-                var n = await rconn.ExecuteAsync(
-                    "UPDATE dbo.payments SET status = 'REFUNDED', needs_refund = 0 WHERE square_payment_id = @pid",
-                    new { pid = refund.PaymentId });
-                _log.LogInformation("SquareWebhook: refund COMPLETED for payment {PaymentId} ({N} row updated)", refund.PaymentId, n);
+                if (settled)
+                {
+                    recorded = await CheckoutFulfillment.RecordRefundAsync(
+                        rconn, refund.RefundId, refund.PaymentId, refund.AmountCents!.Value);
+                    _log.LogInformation("SquareWebhook: refund {RefundId} COMPLETED for payment {PaymentId} ({Amt}c) recorded={Rec}",
+                        refund.RefundId, refund.PaymentId, refund.AmountCents, recorded);
+                }
+                else
+                {
+                    // The money did NOT go back. Re-raise the flag so the refund
+                    // stays on someone's list; an already-REFUNDED payment is left
+                    // alone, since a later failed attempt cannot un-refund it.
+                    await rconn.ExecuteAsync(
+                        "UPDATE dbo.payments SET needs_refund = 1, status = 'REFUND_' + @rs WHERE square_payment_id = @pid AND status <> 'REFUNDED'",
+                        new { pid = refund.PaymentId, rs = refund.Status });
+                    _log.LogError("SquareWebhook: refund {RefundId} {Status} for payment {PaymentId} — re-flagged",
+                        refund.RefundId, refund.Status, refund.PaymentId);
+                }
             }
-            return new OkObjectResult(new { refund = refund.Status });
+            return new OkObjectResult(new { refund = refund.Status, recorded });
         }
 
         if (type != "payment.updated" && type != "payment.created")
-            return new OkObjectResult(new { ignored = type });   // subscribed but not relevant
+            // Subscribed but not relevant — or not an event shape at all. Either
+            // way a 200: a 500 here buys us ~11 Square retries over 24 hours.
+            return new OkObjectResult(new { ignored = type ?? "malformed" });
 
         if (!SquareEvents.TryParsePayment(root, out var pay))
             return new OkObjectResult(new { ignored = "malformed" });
+        // payment.updated fires several times per payment (APPROVED, then
+        // COMPLETED, ...). Only COMPLETED sells a box; the payments row's
+        // UNIQUE square_payment_id dedupes the rest.
         if (pay.Status != "COMPLETED")
             return new OkObjectResult(new { ignored = pay.Status });
 
-        var paymentId = pay.PaymentId;
-        var orderId   = pay.OrderId;
-        long? amount  = pay.AmountCents;
-
-        await using var conn = await _sql.OpenAsync(ct);
-
-        // The merchant account is shared with the floor POS. Match by order
-        // first; a payment that matches no box AND did not come from our
-        // payment links / invoices is a counter sale — not ours, not logged.
-        var box = orderId == null ? null : await conn.QueryFirstOrDefaultAsync(
-            "SELECT id, pallet_number, publish_state FROM dbo.manifests WHERE checkout_order_id = @oid",
-            new { oid = orderId });
-        if (box == null && !SquareEvents.IsOurProduct(pay.Product))
+        IActionResult Floor()
         {
             _log.Log(pay.Product == null ? LogLevel.Warning : LogLevel.Information,
                 "SquareWebhook: ignoring {Product} payment {PaymentId} (floor/other)", pay.Product ?? "unknown", pay.PaymentId);
             return new OkObjectResult(new { ignored = "floor" });
         }
 
-        // Idempotency anchor: one row per Square payment, ever.
-        var inserted = await conn.ExecuteAsync(@"
-INSERT INTO dbo.payments (square_payment_id, square_order_id, amount_cents, currency, status, event_json)
-SELECT @pid, @oid, @amt, 'USD', 'COMPLETED', @json
-WHERE NOT EXISTS (SELECT 1 FROM dbo.payments WHERE square_payment_id = @pid)",
-            new { pid = paymentId, oid = orderId, amt = amount, json = raw });
-        if (inserted == 0)
-            return new OkObjectResult(new { duplicate = true });   // retry/replay — already handled
+        // No order id means there is nothing to look up, so answer before taking
+        // a connection — the counter raises plenty of these.
+        if (pay.OrderId == null && IsFloorPayment(knownOrder: false, pay.Product))
+            return Floor();
 
-        if (box == null)
-        {
-            // Money arrived from OUR product for an order we can't match — flag for a human.
-            await conn.ExecuteAsync(
-                "UPDATE dbo.payments SET needs_refund = 1, status = 'UNMATCHED' WHERE square_payment_id = @pid",
-                new { pid = paymentId });
-            _log.LogError("SquareWebhook: COMPLETED {Product} payment {PaymentId} matched no box (order {OrderId})",
-                pay.Product, paymentId, orderId);
-            return new OkObjectResult(new { unmatched = true });
-        }
+        await using var conn = await _sql.OpenAsync(ct);
 
-        Guid manifestId = (Guid)box.id;
-        if ((string)box.publish_state == "sold")
-        {
-            // The documented delete-race: second payment on an already-sold
-            // box. Keep the money trail, flag for refund.
-            await conn.ExecuteAsync(
-                "UPDATE dbo.payments SET manifest_id = @mid, needs_refund = 1, status = 'REFUND_FLAGGED' WHERE square_payment_id = @pid",
-                new { mid = manifestId, pid = paymentId });
-            _log.LogError("SquareWebhook: payment {PaymentId} for ALREADY-SOLD box #{Num} — flagged for refund",
-                paymentId, (object?)box.pallet_number);
-            return new OkObjectResult(new { refundFlagged = true });
-        }
+        bool known = pay.OrderId != null && await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM dbo.checkout_orders WHERE square_order_id = @oid", new { oid = pay.OrderId }) > 0;
+        if (IsFloorPayment(known, pay.Product))
+            return Floor();
 
-        await conn.ExecuteAsync(
-            "UPDATE dbo.payments SET manifest_id = @mid WHERE square_payment_id = @pid",
-            new { mid = manifestId, pid = paymentId });
-        await conn.ExecuteAsync("EXEC dbo.sp_SetPublishState @manifest_id = @mid, @publish_state = 'sold'",
-            new { mid = manifestId });
-        await PalletsFunction.InsertHistoryAsync(conn, manifestId, "publish_state", (string?)box.publish_state, "sold", "square");
-
-        _log.LogInformation("SquareWebhook: BOX #{Num} SOLD via payment {PaymentId}",
-            (object?)box.pallet_number, paymentId);
-        return new OkObjectResult(new { sold = true, box = (int?)box.pallet_number });
+        var r = await _fulfill.FulfillOrderAsync(conn, pay.OrderId, pay.PaymentId, pay.AmountCents, raw, "square", ct);
+        return new OkObjectResult(FulfillmentBody(r));
     }
+
+    /// <summary>
+    /// Is this payment the floor POS's rather than ours? The Square merchant
+    /// account is shared with the counter, so a cash sale at the register raises
+    /// payment.updated here too. It is ours only if it belongs to an order we
+    /// minted, or came from one of our own products (payment link / invoice) —
+    /// a counter sale is neither, and must be answered 200 and left unrecorded.
+    /// db/hotfix-floor-payments.sql exists because two RETAIL cash sales were
+    /// once recorded and flagged as owing a refund they did not owe.
+    /// </summary>
+    public static bool IsFloorPayment(bool knownOrder, string? product)
+        => !knownOrder && !SquareEvents.IsOurProduct(product);
+
+    /// <summary>
+    /// The webhook's 200 body for a fulfilment. `sold` is
+    /// <see cref="FulfillResult.NewlySold"/>, never <see cref="FulfillResult.Sold"/>:
+    /// on a second tender against an order we already fulfilled every box reads
+    /// 'sold' — sold by US, on the earlier payment — and reporting that tally
+    /// tells the caller N boxes just sold, firing the buyer's confirmation again
+    /// for boxes they already have. `refundDue` is tax-inclusive (spec §8.8).
+    /// </summary>
+    public static object FulfillmentBody(FulfillResult r) => r.Outcome switch
+    {
+        "duplicate" => new { duplicate = true },
+        "unmatched" => new { unmatched = true },
+        _ => new
+        {
+            fulfilled = true,
+            sold = r.NewlySold,
+            unavailable = r.Unavailable,
+            refundDue = r.RefundDueCents,
+            boxes = r.PalletNumbers,
+            unavailableBoxes = r.UnavailablePalletNumbers,
+        },
+    };
 
     public sealed record InvoiceBoxRequest(string? email, string? name, decimal? price);
 

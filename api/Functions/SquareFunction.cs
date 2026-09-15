@@ -375,7 +375,7 @@ INSERT INTO dbo.checkout_order_boxes (square_order_id, manifest_id, amount_cents
         // COMPLETED, ...). Only COMPLETED sells a box; the payments row's
         // UNIQUE square_payment_id dedupes the rest.
         if (pay.Status != "COMPLETED")
-            return new OkObjectResult(new { ignored = pay.Status });
+            return new OkObjectResult(new { ignored = pay.Status ?? "malformed" });
 
         IActionResult Floor()
         {

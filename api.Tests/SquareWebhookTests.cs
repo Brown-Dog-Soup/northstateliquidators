@@ -150,6 +150,15 @@ public class SquareWebhookTests
     public async Task Webhook_acts_only_on_COMPLETED_payments(string status)
         => Assert.Equal(status, Prop(await Post(Payment(status, "ORD1", "ECOMMERCE_API")), "ignored"));
 
+    [Fact]
+    public async Task Webhook_ignores_a_payment_event_with_no_status()
+    {
+        // Not COMPLETED, so nothing happens either way — but the `ignored`
+        // reason is always a string, never a null the log cannot explain.
+        var v = await Post(@"{""type"":""payment.updated"",""data"":{""object"":{""payment"":{""id"":""PAY1""}}}}");
+        Assert.Equal("malformed", Prop(v, "ignored"));
+    }
+
     // ---- the floor / POS filter --------------------------------------------
     //
     // The merchant account is shared with the counter. db/hotfix-floor-payments.sql

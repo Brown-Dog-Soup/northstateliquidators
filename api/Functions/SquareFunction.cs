@@ -50,17 +50,6 @@ public sealed class SquareFunction
     /// <summary>One row of Rob's delivery radius: the zip and what reaching it costs.</summary>
     public sealed record DeliveryZip(string Zip, long FeeCents);
 
-    /// <summary>
-    /// A zip only counts as deliverable while its fee_cents matches the amount
-    /// the Square payload actually charges. SquarePayloads builds the delivery
-    /// service charge from a CONSTANT and takes no fee argument, so a zip Rob
-    /// repriced would have the drawer quote one number and the receipt show
-    /// another — a discrepancy on the fee itself. Until the payload takes the
-    /// per-zip fee, such a zip is withheld from the published list AND refused
-    /// at checkout, with the mismatch logged so the cause is obvious.
-    /// </summary>
-    private static bool Deliverable(DeliveryZip z) => z.FeeCents == SquarePayloads.DeliveryCents;
-
     [Function("CheckoutStatus")]
     public async Task<IActionResult> Status(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "public/checkout-status")] HttpRequest req,
@@ -87,9 +76,6 @@ public sealed class SquareFunction
                         .Select(r => new DeliveryZip((string)r.zip, Convert.ToInt64(r.fee_cents)))
                         .ToList();
                     _zipCache = (zips, DateTime.UtcNow);
-                    foreach (var z in zips.Where(z => !Deliverable(z)))
-                        _log.LogError("CheckoutStatus: dbo.delivery_zips {Zip} is priced at {Fee} cents but the cart payload charges a constant {Charged} cents — publishing that zip would quote one fee and charge another, so it is withheld and refused at checkout. Fix: let SquarePayloads.CartLink take the per-zip fee.",
-                            z.Zip, z.FeeCents, SquarePayloads.DeliveryCents);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -105,11 +91,13 @@ public sealed class SquareFunction
             enabled = _square.CheckoutEnabled && _square.Configured,
             cartMax = CartMax,
             taxPercent = 7.25m,
-            // The one number the buyer will actually be charged: the same
-            // constant the payload puts on the order, and every zip published
-            // below is filtered to agree with it.
+            // What to quote BEFORE a zip is known. Once the shopper types one,
+            // deliveryFees[zip] is the number they will actually be charged —
+            // the same fee_cents this endpoint read and the checkout call puts
+            // on the Square order, so the label and the receipt cannot disagree.
             deliveryCents = SquarePayloads.DeliveryCents,
-            deliveryZips = zips.Where(Deliverable).Select(z => z.Zip).ToList(),
+            deliveryZips = zips.Select(z => z.Zip).ToList(),
+            deliveryFees = zips.ToDictionary(z => z.Zip, z => z.FeeCents),
             fleaNote = FleaNote
         });
     }
@@ -160,6 +148,10 @@ public sealed class SquareFunction
 
         // Only a delivery order carries a zip/address; the other two ignore them.
         string? zip = null, address = null;
+        // A delivery order always overwrites this from its own delivery_zips
+        // row below. It starts at zero so that "nothing set it" can only ever
+        // mean no delivery charge, never a charge nobody asked for.
+        long deliveryFeeCents = 0;
         string? member = string.IsNullOrWhiteSpace(rawMember) ? null
                        : (rawMember!.Trim().Length == 7 ? rawMember.Trim() : null);
 
@@ -183,17 +175,11 @@ public sealed class SquareFunction
             if (zipRow == null)
                 return new BadRequestObjectResult(new { error = outOfRange, field = "zip" });
 
-            // fee_cents is the authority on what delivery to this zip costs, but
-            // the payload's service charge is a constant that takes no fee
-            // argument. Rather than quote Rob's number and charge the constant,
-            // refuse the zip and say why.
-            long feeCents = Convert.ToInt64(zipRow.fee_cents);
-            if (feeCents != SquarePayloads.DeliveryCents)
-            {
-                _log.LogError("CreateCheckout: dbo.delivery_zips {Zip} is priced at {Fee} cents but the cart payload charges a constant {Charged} cents — refusing rather than quoting one fee and charging another. Fix: let SquarePayloads.CartLink take the per-zip fee.",
-                    zip, feeCents, SquarePayloads.DeliveryCents);
-                return new BadRequestObjectResult(new { error = outOfRange, field = "zip" });
-            }
+            // fee_cents is the authority on what reaching this zip costs, and it
+            // is what goes on the Square order — the same number checkout-status
+            // published for this zip, so the drawer's label and the buyer's
+            // receipt are the same figure by construction.
+            deliveryFeeCents = Convert.ToInt64(zipRow.fee_cents);
 
             address = (rawAddress ?? "").Trim();
             if (address.Length == 0)
@@ -234,6 +220,11 @@ WHERE p.manifest_id IN @ids", new { ids })).ToDictionary(r => (Guid)r.manifest_i
         // delivery choice — open + identical means current, because price/state
         // changes cancel links. A different delivery choice prices differently,
         // so it has to mint a new link (spec 5).
+        //
+        // delivery_cents is part of that identity now that the fee is per-zip:
+        // without it, a link minted before Rob repriced a zip would be handed
+        // back at the old fee forever. Missing a reuse only costs an extra
+        // link; reusing an underpriced one costs the difference every time.
         var wanted = lines.ToDictionary(l => l.ManifestId, l => l.AmountCents);
         string methodDb = DeliveryMethods.ToDb(method);
         var candidates = (await conn.QueryAsync(@"
@@ -242,10 +233,11 @@ FROM dbo.checkout_orders o
 JOIN dbo.checkout_order_boxes b ON b.square_order_id = o.square_order_id
 WHERE o.status = 'open' AND o.kind = 'link' AND o.url IS NOT NULL
   AND o.delivery_method = @method
+  AND o.delivery_cents = @del
   AND ((o.delivery_zip IS NULL AND @zip IS NULL) OR o.delivery_zip = @zip)
   AND ((o.delivery_address IS NULL AND @addr IS NULL) OR o.delivery_address = @addr)
   AND o.square_order_id IN (SELECT square_order_id FROM dbo.checkout_order_boxes WHERE manifest_id = @first)",
-            new { first = ids[0], method = methodDb, zip, addr = address })).GroupBy(r => (string)r.square_order_id);
+            new { first = ids[0], method = methodDb, del = deliveryFeeCents, zip, addr = address })).GroupBy(r => (string)r.square_order_id);
         foreach (var g in candidates)
         {
             var set = g.ToDictionary(r => (Guid)r.manifest_id, r => (long)r.amount_cents);
@@ -261,7 +253,7 @@ WHERE o.status = 'open' AND o.kind = 'link' AND o.url IS NOT NULL
             link = await _square.CreateCartPaymentLinkAsync(lines, redirect,
                 idempotencyKey: $"nsl-cart-{Guid.NewGuid():N}",
                 referenceId: ReferenceId(numbers),
-                paymentNote: SquarePayloads.PaymentNote(numbers), method, ct);
+                paymentNote: SquarePayloads.PaymentNote(numbers), method, deliveryFeeCents, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

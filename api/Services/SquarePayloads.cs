@@ -52,6 +52,13 @@ public static class SquarePayloads
     // "taxable": false and no applied_taxes, and NC taxes a delivery charge.
     public const string DeliveryUid  = "NSL-DELIVERY";
     public const string DeliveryName = "Local delivery (within 20 miles)";
+
+    /// <summary>
+    /// The seed/default delivery fee — what dbo.delivery_zips rows are created
+    /// with and what the cart quotes before a zip is known. It is NOT what gets
+    /// charged: CartLink takes the amount as a required argument so the charge
+    /// always comes from the buyer's own zip row, which Rob edits by hand.
+    /// </summary>
     public const long   DeliveryCents = 1000;
 
     /// <summary>Buyer-visible note on each box line — names the handover they picked.</summary>
@@ -62,9 +69,13 @@ public static class SquarePayloads
         _                       => "Pickup in Wake Forest, NC"
     };
 
+    /// <param name="deliveryFeeCents">What THIS buyer's zip costs to reach
+    /// (dbo.delivery_zips.fee_cents). Required, not defaulted: a caller that
+    /// forgot it would silently charge every zip the seed price. Ignored unless
+    /// <paramref name="delivery"/> is Delivery.</param>
     public static object CartLink(IReadOnlyList<CartLine> lines, string locationId, string redirectUrl,
         string idempotencyKey, string referenceId, string paymentNote, string supportEmail,
-        DeliveryMethod delivery, string? taxCatalogId)
+        DeliveryMethod delivery, string? taxCatalogId, long deliveryFeeCents)
     {
         var note = LineNote(delivery);
         var order = new Dictionary<string, object?>
@@ -106,7 +117,7 @@ public static class SquarePayloads
                 {
                     uid = DeliveryUid,
                     name = DeliveryName,
-                    amount_money = new { amount = DeliveryCents, currency = "USD" },
+                    amount_money = new { amount = deliveryFeeCents, currency = "USD" },
                     calculation_phase = "SUBTOTAL_PHASE",   // before tax, so NC's tax lands on it
                     scope = "ORDER",
                     treatment_type = "LINE_ITEM_TREATMENT",

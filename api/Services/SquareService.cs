@@ -81,16 +81,21 @@ public sealed class SquareService
     /// <summary>
     /// One payment link for N boxes: a full `order` with one ad-hoc line item
     /// per box (uid = manifest_id) instead of quick_pay, plus the 7.25% NC tax
-    /// and — for delivery orders — the $10 service charge. Idempotency key is
+    /// and — for delivery orders — the caller's per-zip delivery service charge
+    /// (dbo.delivery_zips.fee_cents, never a constant). Idempotency key is
     /// per attempt (nsl-cart-{guid}); reuse is decided by our DB, not Square.
     /// Every money figure comes back out of Square's own order totals so our
     /// arithmetic can never disagree with what the buyer is charged, and the
     /// per-line tax means a partial refund can return that box's tax exactly.
     /// </summary>
     public async Task<CartLink> CreateCartPaymentLinkAsync(IReadOnlyList<CartLine> lines, string redirectUrl,
-        string idempotencyKey, string referenceId, string paymentNote, DeliveryMethod delivery, CancellationToken ct)
+        string idempotencyKey, string referenceId, string paymentNote, DeliveryMethod delivery,
+        long deliveryFeeCents, CancellationToken ct)
     {
-        var payload = SquarePayloads.CartLink(lines, LocationId, redirectUrl, idempotencyKey, referenceId, paymentNote, SupportEmail, delivery, TaxCatalogId);
+        // deliveryFeeCents is what we ASK Square to charge; the deliveryCents
+        // local below is what Square says it DID charge. Distinct names on
+        // purpose — confusing the two here is a money bug.
+        var payload = SquarePayloads.CartLink(lines, LocationId, redirectUrl, idempotencyKey, referenceId, paymentNote, SupportEmail, delivery, TaxCatalogId, deliveryFeeCents);
         using var client = Client();
         var resp = await client.PostAsync("/v2/online-checkout/payment-links",
             new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"), ct);

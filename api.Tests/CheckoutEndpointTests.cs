@@ -73,6 +73,7 @@ public class CheckoutEndpointTests
         Assert.Equal(7.25m, Prop(v, "taxPercent"));
         Assert.Equal(SquarePayloads.DeliveryCents, Prop(v, "deliveryCents"));
         Assert.Empty((IEnumerable<string>)Prop(v, "deliveryZips")!);
+        Assert.Empty((IReadOnlyDictionary<string, long>)Prop(v, "deliveryFees")!);
         Assert.Equal(SquareFunction.FleaNote, Prop(v, "fleaNote"));
     }
 

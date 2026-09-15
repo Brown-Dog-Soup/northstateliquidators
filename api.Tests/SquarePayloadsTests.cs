@@ -16,9 +16,12 @@ public class SquarePayloadsTests
         => Build(null, delivery, lines);
 
     private static JsonElement Build(string? taxCatalogId, DeliveryMethod delivery, params CartLine[] lines)
+        => Build(taxCatalogId, delivery, SquarePayloads.DeliveryCents, lines);
+
+    private static JsonElement Build(string? taxCatalogId, DeliveryMethod delivery, long deliveryCents, params CartLine[] lines)
     {
         var payload = SquarePayloads.CartLink(lines, "LOC1", "https://x/thanks.html?boxes=1,2",
-            "nsl-cart-abc", "NSL #1, #2", "NSL boxes #1, #2", "hello@example.com", delivery, taxCatalogId);
+            "nsl-cart-abc", "NSL #1, #2", "NSL boxes #1, #2", "hello@example.com", delivery, taxCatalogId, deliveryCents);
         return JsonDocument.Parse(JsonSerializer.Serialize(payload)).RootElement.Clone();
     }
 
@@ -109,6 +112,38 @@ public class SquarePayloadsTests
         Assert.True(sc[0].GetProperty("taxable").GetBoolean());
         // taxable alone does nothing — applied_taxes is what charges the tax.
         Assert.Equal("NC-SALES-725", sc[0].GetProperty("applied_taxes")[0].GetProperty("tax_uid").GetString());
+    }
+
+    /// <summary>
+    /// dbo.delivery_zips.fee_cents is per-zip by design — Rob edits those rows
+    /// by hand. The amount he sets has to be the amount Square charges, and it
+    /// has to be taxed exactly like the default fee is: a service charge that
+    /// slipped out of SUBTOTAL_PHASE or lost its applied_taxes would be charged
+    /// untaxed, which NC does not allow on a delivery charge.
+    /// </summary>
+    [Theory]
+    [InlineData(500)]      // a near zip Rob prices cheaper
+    [InlineData(1500)]     // the far zip that used to disable delivery entirely
+    [InlineData(0)]        // free delivery for a zip, still a taxed $0 charge
+    public void A_per_zip_delivery_fee_is_what_gets_charged_and_it_is_taxed_the_same(long feeCents)
+    {
+        var sc = Build(null, DeliveryMethod.Delivery, feeCents, new CartLine(A, "BOX #1", 18000))
+            .GetProperty("order").GetProperty("service_charges");
+        Assert.Equal(1, sc.GetArrayLength());
+        Assert.Equal(feeCents, sc[0].GetProperty("amount_money").GetProperty("amount").GetInt64());
+        Assert.Equal("USD", sc[0].GetProperty("amount_money").GetProperty("currency").GetString());
+        Assert.Equal("SUBTOTAL_PHASE", sc[0].GetProperty("calculation_phase").GetString());
+        Assert.Equal(SquarePayloads.TaxUid, sc[0].GetProperty("applied_taxes")[0].GetProperty("tax_uid").GetString());
+    }
+
+    [Theory]
+    [InlineData(DeliveryMethod.Pickup)]
+    [InlineData(DeliveryMethod.Flea)]
+    public void A_fee_is_ignored_when_the_buyer_is_not_having_it_delivered(DeliveryMethod m)
+    {
+        // Passing a fee must not conjure a service charge onto a pickup order.
+        var order = Build(null, m, 1500, new CartLine(A, "BOX #1", 18000)).GetProperty("order");
+        Assert.False(order.TryGetProperty("service_charges", out _));
     }
 
     [Fact]

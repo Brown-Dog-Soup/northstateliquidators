@@ -2,7 +2,7 @@
    North State Liquidators — shared public script (Wishlist 4, §6.1)
 
    Classic script (NOT a module). Exposes window.NSL plus the legacy globals
-   index.html relied on: window.nslCheckoutEnabled, window.nslBuyBox,
+   index.html relied on: window.nslCheckoutEnabled, window.nslBuyBox (now: add to cart + open the cart),
    window.showManifest.
 
    Pages use it like this:
@@ -147,15 +147,18 @@
 
   // ── data ─────────────────────────────────────────────────────────────────
   let palletsPromise = null;
+  let lastRows = null;                      // last successful feed — the cart bar totals from it
   function fetchPublicPallets() {
     if (!palletsPromise) {
       palletsPromise = fetch('/api/public/pallets', { credentials: 'omit' })
         .then(r => { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
-        .then(rows => Array.isArray(rows) ? rows : [])
+        .then(rows => { lastRows = Array.isArray(rows) ? rows : []; return lastRows; })
         .catch(err => { palletsPromise = null; throw err; });
     }
     return palletsPromise;
   }
+  // The cart drawer must never trust a feed cached for the page lifetime.
+  function refreshPublicPallets() { palletsPromise = null; return fetchPublicPallets(); }
 
   // ── the ONE box card (§6.3) ──────────────────────────────────────────────
   function boxCardHtml(p) {
@@ -192,7 +195,7 @@
     ${blurb ? `<p class="box-blurb">${esc(blurb)}</p>` : ''}
     <div class="box-actions">
       <a class="view" href="#" data-id="${esc(p.manifest_id)}" data-name="${esc(name)}">View Manifest →</a>
-      ${window.nslCheckoutEnabled && live ? `<a class="view buy" href="#" data-buy="${esc(p.manifest_id)}">Buy now →</a>` : ''}
+      ${window.nslCheckoutEnabled && live ? cartButtonHtml(p.manifest_id) : ''}
     </div>
   </div>
 </article>`;
@@ -202,8 +205,8 @@
     if (mount.dataset.nslBound) return;
     mount.dataset.nslBound = '1';
     mount.addEventListener('click', e => {
-      const buy = e.target.closest('a[data-buy]');
-      if (buy && mount.contains(buy)) { e.preventDefault(); buyBox(buy.getAttribute('data-buy'), buy); return; }
+      const cartBtn = e.target.closest('button[data-cart]');
+      if (cartBtn && mount.contains(cartBtn)) { onCartButton(cartBtn.getAttribute('data-cart')); return; }
       const view = e.target.closest('a.view[data-id]');
       if (view && mount.contains(view)) { e.preventDefault(); showManifest(view.getAttribute('data-id'), view.getAttribute('data-name')); }
     });
@@ -309,26 +312,96 @@
     bar.hidden = false;
   }
 
-  // ── checkout (same behaviour index.html had inline) ──────────────────────
+  // ── cart state (spec §3) ─────────────────────────────────────────────────
   window.nslCheckoutEnabled = window.nslCheckoutEnabled || false;
+  const CART_KEY = 'nsl.cart';
+  let CART_MAX = 20;                        // overwritten by /api/public/checkout-status
+  let cartMem = null;                       // in-memory fallback (private mode / storage blocked)
+  let openCartHook = null;                  // set by the drawer module
 
-  async function buyBox(id, el) {
-    const prev = el ? el.textContent : '';
-    if (el) el.textContent = 'One sec…';
+  function cartIds() {
+    if (cartMem) return cartMem.slice();
     try {
-      const r = await fetch(`/api/public/checkout/${encodeURIComponent(id)}`, { method: 'POST', credentials: 'omit' });
-      const j = await r.json();
-      if (!r.ok) { alert(j.error || 'This box is no longer available.'); location.reload(); return; }
-      window.location.href = j.url;   // Square-hosted checkout
-    } catch {
-      if (el) el.textContent = prev;
-      alert(`Couldn't start checkout — call us at ${PHONE} and we'll take care of you.`);
+      const raw = JSON.parse(localStorage.getItem(CART_KEY) || '[]');
+      return Array.isArray(raw) ? raw.filter(x => typeof x === 'string').map(x => x.toLowerCase()) : [];
+    } catch { return []; }
+  }
+  function saveCart(ids) {
+    const uniq = Array.from(new Set(ids.map(x => String(x).toLowerCase()))).slice(0, CART_MAX);
+    try { localStorage.setItem(CART_KEY, JSON.stringify(uniq)); cartMem = null; }
+    catch { cartMem = uniq; }
+    syncCartUi();
+    return uniq;
+  }
+  function cartHas(id) { return cartIds().includes(String(id).toLowerCase()); }
+  function cartAdd(id) {
+    const ids = cartIds();
+    const key = String(id).toLowerCase();
+    if (ids.includes(key)) return true;
+    if (ids.length >= CART_MAX) {
+      if (openCartHook) openCartHook(`Your cart is full (${CART_MAX} boxes). Remove one to add another.`);
+      return false;
+    }
+    ids.push(key);
+    saveCart(ids);
+    return true;
+  }
+  function cartRemove(id) { saveCart(cartIds().filter(x => x !== String(id).toLowerCase())); }
+  function cartClear() { saveCart([]); }
+
+  function cartButtonHtml(id) {
+    const on = cartHas(id);
+    return `<button type="button" class="cart-btn" data-cart="${esc(id)}" aria-pressed="${on}">${on ? '✓ In cart' : '+ Add to cart'}</button>`;
+  }
+
+  // One tap adds; tapping "✓ In cart" opens the drawer (removal lives there,
+  // so a stray second tap can't silently drop a box).
+  function onCartButton(id) {
+    if (cartHas(id)) { if (openCartHook) openCartHook(); return; }
+    cartAdd(id);
+  }
+
+  function cartTotalCents(ids) {
+    if (!lastRows) return null;
+    const byId = new Map(lastRows.map(r => [String(r.manifest_id).toLowerCase(), r]));
+    let cents = 0;
+    for (const id of ids) { const r = byId.get(id); if (r && isLive(r)) cents += Math.round(Number(r.ask_price || 0) * 100); }
+    return cents;
+  }
+  const dollars = cents => '$' + (cents / 100).toLocaleString('en-US', { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 });
+
+  function syncCartUi() {
+    const ids = cartIds();
+    const n = ids.length;
+    const on = !!window.nslCheckoutEnabled;
+    document.querySelectorAll('button[data-cart]').forEach(b => {
+      const inCart = ids.includes(String(b.getAttribute('data-cart')).toLowerCase());
+      // Kill switch off = no cart controls at all, not a relabelled one.
+      b.hidden = !on;
+      b.setAttribute('aria-pressed', String(inCart));
+      b.textContent = inCart ? '✓ In cart' : '+ Add to cart';
+    });
+    document.querySelectorAll('.box-card[data-id]').forEach(c =>
+      c.toggleAttribute('data-in-cart', ids.includes(String(c.getAttribute('data-id')).toLowerCase())));
+    document.querySelectorAll('.cart-count').forEach(el => { el.textContent = String(n); });
+    document.querySelectorAll('.cart-head-btn').forEach(el => {
+      el.hidden = !on;
+      el.setAttribute('aria-label', `Cart, ${n} box${n === 1 ? '' : 'es'}`);
+    });
+    const bar = document.getElementById('cart-bar');
+    if (bar) {
+      bar.hidden = !(on && n > 0);
+      const cents = cartTotalCents(ids);
+      bar.querySelector('.cart-bar-text').textContent =
+        `${n} box${n === 1 ? '' : 'es'} in your cart` + (cents != null ? ` · ${dollars(cents)}` : '');
     }
   }
-  window.nslBuyBox = buyBox;
+
+  // Legacy global (index.html once called it): add the box and open the cart.
+  window.nslBuyBox = id => { if (cartAdd(id) && openCartHook) openCartHook(); };
 
   // ── manifest modal (§6.5) ────────────────────────────────────────────────
-  const MF_NOTE = 'Pickup in Wake Forest · Free delivery to the Raleigh Flea Market every Friday · $10 delivery within 20 miles of our warehouse · We ship. Call to claim this box.';
+  const MF_NOTE = 'Pickup in Wake Forest · Free delivery to the Raleigh Flea Market every Friday · $10 delivery within 20 miles of our warehouse · Call to claim this box.';
   let mf = null;
   function mountManifestModal() {
     if (mf) return mf;
@@ -359,6 +432,10 @@
     const titleEl = overlay.querySelector('#mf-title');
     const subEl = overlay.querySelector('#mf-sub');
     const bodyEl = overlay.querySelector('#mf-body');
+    bodyEl.addEventListener('click', e => {
+      const b = e.target.closest('button[data-cart]');
+      if (b) onCartButton(b.getAttribute('data-cart'));
+    });
     const close = () => { overlay.hidden = true; document.body.style.overflow = ''; };
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
     overlay.querySelector('.mf-close').addEventListener('click', close);
@@ -389,18 +466,13 @@
       const blurb = (p.public_description
         ? `<p style="font-style:italic;color:#555;margin:0 0 14px;line-height:1.5;">${esc(p.public_description)}</p>`
         : '') + (window.nslCheckoutEnabled && p.publish_state === 'live'
-        ? `<p style="margin:0 0 16px;"><a href="#" data-buy-modal="${esc(p.manifest_id)}" style="display:inline-block;background:#002868;color:#fff;font-weight:700;padding:12px 26px;text-decoration:none;">Buy this box — ${money(p.ask_price)}</a></p>`
+        ? `<p style="margin:0 0 16px;">${cartButtonHtml(p.manifest_id)} <span style="font-family:'Anton',sans-serif;font-size:20px;color:var(--nc-red);margin-left:10px;">${money(p.ask_price)}</span></p>`
         : '');
       const dlLink = items.length
         ? `<p style="margin:0 0 14px;font-size:14px;"><a class="view" href="/api/public/pallets/${encodeURIComponent(id)}/manifest">⬇ Download this manifest (Excel)</a></p>`
         : '';
-      const bindBuy = () => m.bodyEl.querySelector('a[data-buy-modal]')?.addEventListener('click', e => {
-        e.preventDefault();
-        buyBox(e.currentTarget.getAttribute('data-buy-modal'), e.currentTarget);
-      });
       if (items.length === 0) {
         m.bodyEl.innerHTML = blurb + `<p class="mf-empty">No itemized manifest available for this box yet — give us a call for details.</p>`;
-        bindBuy();
         return;
       }
       m.bodyEl.innerHTML = blurb + dlLink + `
@@ -417,7 +489,6 @@
               </tr>`).join('')}
           </tbody>
         </table>`;
-      bindBuy();
     } catch (e) {
       m.bodyEl.innerHTML = `<p class="mf-empty">Couldn't load the manifest right now — please call ${PHONE}.</p>`;
     }
@@ -594,28 +665,56 @@
     const o = opts || {};
     if (!inited) {
       inited = true;
-      // Online checkout: Buy buttons render only when the backend says Square
-      // checkout is enabled (SQUARE_CHECKOUT_ENABLED app setting — the kill switch).
-      checkoutReady();
       mountJoinModal();
+      if (typeof mountCart === 'function') mountCart();          // Task 11 defines it
+      // Cart controls render only when the backend says Square checkout is
+      // enabled (SQUARE_CHECKOUT_ENABLED app setting — the kill switch).
+      checkoutReady().then(syncCartUi);
     }
     if (o.joinTrigger) document.querySelectorAll(o.joinTrigger).forEach(bindJoinTrigger);
     joinTriggers().forEach(bindJoinTrigger);
     relabelTriggers();
-    // Returns the checkout probe so callers that render Buy buttons can await it.
     return checkoutReady();
   }
 
   let checkoutProbe = null;
+  // Delivery config, filled from /api/public/checkout-status. The zip list is
+  // Rob's delivery radius (spec §8.4), not customer data; the server re-checks
+  // every zip on checkout, so this copy is only here to enable/disable a radio
+  // without a round trip.
+  let TAX_PCT = 7.25, DELIVERY_CENTS = 1000, DELIVERY_ZIPS = [], FLEA_NOTE = '';
   function checkoutReady() {
     if (!checkoutProbe) {
       checkoutProbe = fetch('/api/public/checkout-status', { credentials: 'omit' })
         .then(x => x.json())
-        .then(cs => { window.nslCheckoutEnabled = !!cs.enabled; return window.nslCheckoutEnabled; })
+        .then(cs => {
+          window.nslCheckoutEnabled = !!cs.enabled;
+          if (Number(cs.cartMax) > 0) CART_MAX = Number(cs.cartMax);
+          if (Number(cs.taxPercent) > 0) TAX_PCT = Number(cs.taxPercent);
+          if (Number(cs.deliveryCents) > 0) DELIVERY_CENTS = Number(cs.deliveryCents);
+          DELIVERY_ZIPS = Array.isArray(cs.deliveryZips) ? cs.deliveryZips.map(String) : [];
+          FLEA_NOTE = cs.fleaNote || '';
+          return window.nslCheckoutEnabled;
+        })
         .catch(() => false);
     }
     return checkoutProbe;
   }
+
+  // ── delivery choice (spec §8.3) ──────────────────────────────────────────
+  // Remembered per device, like the cart itself. 'pickup' is always the safe
+  // default: it is free and it is what NSL did before this existed.
+  const DELIV_KEY = 'nsl.delivery';
+  function storedZip()  { try { return localStorage.getItem('nsl.zip')  || ''; } catch { return ''; } }
+  function storedAddr() { try { return localStorage.getItem('nsl.addr') || ''; } catch { return ''; } }
+  function zipQualifies(z) { return /^\d{5}$/.test(z) && DELIVERY_ZIPS.includes(z); }
+  function deliveryChoice() {
+    let d = 'pickup';
+    try { d = localStorage.getItem(DELIV_KEY) || 'pickup'; } catch { /* private mode */ }
+    if (d === 'delivery' && !zipQualifies(storedZip())) return 'pickup';   // never leave a $10 selected that no longer qualifies
+    return (d === 'delivery' || d === 'flea') ? d : 'pickup';
+  }
+  function setDeliveryChoice(d) { try { localStorage.setItem(DELIV_KEY, d); } catch { /* ignore */ } }
 
   // Auto-bind openers even on pages that never call initPage.
   if (document.readyState === 'loading') {
@@ -631,7 +730,9 @@
     // rendering
     boxCardHtml, renderBoxCards, renderJustDropped, renderRecentlySold, renderCounts, condPill, condMixHtml,
     // modal + checkout
-    showManifest, buyBox, initPage, openJoin, checkoutReady,
+    showManifest, initPage, openJoin, checkoutReady,
+    // cart
+    cartIds, cartHas, cartAdd, cartRemove, cartClear, cartButtonHtml, syncCartUi, refreshPublicPallets,
     // helpers
     esc, money, pctOfMsrp,
   };

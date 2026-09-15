@@ -159,6 +159,12 @@ a { color: inherit; }
 .view:hover { text-decoration: underline; }
 .view.buy { color: #fff; background: var(--nc-navy); padding: 8px 12px; }
 .view.buy:hover { background: #001a45; text-decoration: none; }
+
+/* Cart control on cards + manifest modal (spec §3) */
+.cart-btn { background: var(--nc-navy); color: #fff; border: 0; cursor: pointer; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 9px 12px; min-height: 40px; }
+.cart-btn:hover { background: #001a45; }
+.cart-btn[aria-pressed="true"] { background: var(--warehouse-yellow); color: var(--ink); }
+.box-card[data-in-cart] { outline: 3px solid var(--warehouse-yellow); outline-offset: -3px; }
 @media (max-width: 900px) { .box-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 560px) { .box-grid { grid-template-columns: 1fr; } }
 

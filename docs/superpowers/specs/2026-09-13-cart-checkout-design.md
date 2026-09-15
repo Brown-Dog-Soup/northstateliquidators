@@ -424,9 +424,14 @@ floor sale after deploy (no new `UNMATCHED` row).
 1. Apply `db/cart-checkout.sql` to prod (additive), then seed
    `dbo.delivery_zips` from the list Rob confirms (§8.4). Open PR → preview
    build is the compile check (no local .NET SDK).
-2. Sandbox (local Functions host with sandbox settings): two-box cart pays →
+2. **Production verification — there is no sandbox for this account** (Jeff,
+   2026-09-15). Disposable `ZZ TEST — DO NOT BUY` boxes at $18/$25, every
+   payment refunded at once, the live webhook subscription never touched (a
+   missed webhook is simulated in the DB instead), and the API never run
+   locally against production Square. Ground rules and the full scenario list
+   live in the plan's Task 14. In outline: two-box cart pays →
    both SOLD, one `payments` row, order `paid`; overlap A{1,2} / B{2,3}: pay
-   A → B canceled + deleted; force-pay B in sandbox → box 3 sells, box 2
+   A → B canceled + deleted; force-pay B → box 3 sells, box 2
    `unavailable`, `refund_due_cents` = box 2, admin refund refunds exactly
    that; unsubscribe webhook, pay, run Reconcile → healed; price change on a
    box in an open cart → link canceled.

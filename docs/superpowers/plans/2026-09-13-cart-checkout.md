@@ -31,6 +31,7 @@
 - SOLD only via `EXEC dbo.sp_SetPublishState`; history rows via `PalletsFunction.InsertHistoryAsync` with `changed_by='square'`.
 - DB migrations are hand-applied to prod with Invoke-Sqlcmd (server `sql-nsl-prod-nc5h2y.database.windows.net`, db `sqldb-nsl-prod`, Entra token). `db/cart-checkout.sql` is additive and idempotent; `db/cart-checkout-drop.sql` runs days after deploy.
 - `dotnet build api/api.csproj` and `dotnet test api.Tests/api.Tests.csproj` must pass locally; the PR preview build is the deploy-shaped check.
+- **No Square sandbox exists for this account** (Jeff, 2026-09-15). All end-to-end verification runs against production with disposable test boxes and immediate refunds — see Task 14 Step 0 for the ground rules, including: never delete the live webhook subscription, and never run the API locally against production Square.
 - Never render cost/margin on any `/api/public/*` route or in `js/site.js`.
 - Commit messages end with the two attribution lines given in the session.
 
@@ -2612,12 +2613,12 @@ body:has(.cart-bar:not([hidden])) { padding-bottom: 64px; }
 .cart-empty { color: #555; font-size: 15px; padding: 24px 0; text-align: center; line-height: 1.6; }
 ```
 
-- [ ] **Step 4: Manual check (Playwright MCP or a browser) against the local SWA CLI with sandbox settings, then commit**
+- [ ] **Step 4: Manual check (Playwright MCP or a browser). Serve the static files locally — do NOT run the API against production Square (see Task 14 Step 0 rule 7); the cart drawer, badge and prune paths all work against the live read-only `/api/public/pallets`. Then commit**
 
 - Add two boxes → header badge "2" (desktop) / bottom bar "2 boxes · $410" at 400px width.
 - Open drawer → both rows, total, Checkout enabled; remove one → row gone, total updates, card control flips back.
 - In admin, archive a box that is in the cart → reopen drawer → notice "BOX #N was just sold — removed", row gone.
-- Checkout → Square sandbox page loads; browser Back → button reads "Checkout with Square →" again (pageshow).
+- Checkout → the Square hosted page loads (minting a link charges nothing); browser Back → button reads "Checkout with Square →" again (pageshow).
 - Second tab: add a box → first tab badge updates (storage event).
 - Keyboard: Tab cycles inside the drawer, Escape closes, focus returns to the header button.
 ```powershell
@@ -2750,42 +2751,64 @@ Rollout (Task 14) sets `RECONCILE_CRON_KEY` on the SWA and `NSL_RECONCILE_KEY` i
 
 ---
 
-### Task 14: Sandbox end-to-end, PR, rollout, docs
+### Task 14: Production end-to-end (real money, controlled), PR, rollout, docs
 
 **Files:**
 - Modify: `SQUARE-INTEGRATION.md` (architecture + invariants), `docs/superpowers/specs/2026-09-13-cart-checkout-design.md` (status line)
 
-- [ ] **Step 1: Local sandbox run**
+> **There is no Square sandbox for this account** — Jeff's call, 2026-09-15: "We don't need sandbox for Square use prod." The tenant has only `SQUARE_PROD_ACCESS_TOKEN` / `SQUARE_PROD_LOCATION_ID`, and standing up a sandbox app is work nobody wants for a storefront this size. Every scenario below therefore runs against the **live Square account with real cards and real money**, which changes the rules rather than the coverage. Read Step 0 before touching anything.
 
-Create `api/local.settings.json` (gitignored — confirm with `git check-ignore api/local.settings.json`; if not ignored, add it to `.gitignore` first) with `SqlConnectionString` (prod, read from the SWA settings — the additive tables are already there), `SQUARE_ENVIRONMENT=sandbox`, the sandbox token/location from the Square Developer Console, `SQUARE_CHECKOUT_ENABLED=true`, `SQUARE_PUBLIC_BASE_URL=http://localhost:4280`. Run `swa start . --api-location api` (SWA CLI) and open `http://localhost:4280/shop.html?view=all`. For webhooks, expose the local API with a tunnel (`ngrok http 4280` or VS Code port forwarding) and register `https://<tunnel>/api/square/webhook` as a sandbox subscription; put its signature key + exact URL in `SQUARE_SANDBOX_WEBHOOK_SIGNATURE_KEY` / `SQUARE_SANDBOX_WEBHOOK_URL`.
+- [ ] **Step 0: Ground rules for testing with real money**
 
-- [ ] **Step 2: Scenarios (record the outcome of each in the PR body)**
+These are not optional. Every one of them exists because the sandbox safety net is gone.
 
-1. **Two-box cart pays, pickup, taxed.** Add boxes A ($180) and B ($250) → the drawer receipt reads Subtotal $430.00 / Sales tax (7.25%) $31.18 / **Total $461.18** → Checkout → the Square page shows the same total and **one** "NC sales tax (7.25%)" line, no shipping line → pay with sandbox card `4111 1111 1111 1111`, CVV 111, any future expiry → webhook → both boxes `sold`; `SELECT status, subtotal_cents, tax_cents, delivery_cents, total_cents, delivery_method FROM dbo.checkout_orders WHERE square_order_id=…` = `paid, 43000, 3118, 0, 46118, pickup` and **subtotal+tax+delivery = total**; one `payments` row, `amount_cents = 46118`, `status='COMPLETED'`, `manifest_id IS NULL`, **no "amount != order total" warning in the log**; two `checkout_order_boxes` rows with `outcome='sold'` and `tax_cents` summing to `checkout_orders.tax_cents` exactly (Square rounds per line — $250 x 7.25% = $18.125 may land on .12 or .13, so assert the SUM matches the order, not a hand-typed cent); thanks page shows both numbers and the cart is empty. On the staff sales page the row reads **$430.00** (goods), with $31.18 in the Tax/Del column — not $461.18.
-2. **Overlap, first pays.** Cart A `{1,2}` (tab 1) and cart B `{2,3}` (tab 2), both click Checkout (two links). Pay A → order B `status='canceled'`, `link_deleted_at` set (or `NULL` + a warning log if Square answered without `cancelled_order_id` — then run Reconcile and confirm it becomes set). Tab 2's Square page refuses to complete.
-3. **Partial refund path, with tax.** Cart C `{4,5}` → get to the Square page but do not pay; in admin mark box 4 SOLD (PATCH publishState=sold) → the link is canceled in the DB. Simulate the delete race: temporarily set order C back to `open` with SQL, then pay it → box 5 `sold`, box 4 `outcome='unavailable'`, `payments.status='PARTIAL_REFUND_FLAGGED'`, and **`refund_due_cents` = box 4's `amount_cents` + its `tax_cents`**, not the bare price — check the arithmetic by hand against `SELECT amount_cents, tax_cents FROM dbo.checkout_order_boxes WHERE manifest_id = <box 4>`. In `staff/sales.html` the attention row shows "some boxes were already sold — partial refund due" with the tax-inclusive amount; click Refund → Square refund for exactly that amount; the `refund.updated` webhook sets `refunded_cents`, `status='PARTIAL_REFUNDED'`, `needs_refund=0`.
-4. **Missed webhook.** Delete the sandbox subscription, pay a one-box cart, `POST /api/square-reconcile` from the staff page → `healed: 1`, box sold, `payments.status='COMPLETED'`. Re-create the subscription.
-5. **Price change cancels.** Add box D to a cart, click Checkout (link minted, don't pay); PATCH `listPrice` → `checkout_orders` row canceled; re-open the drawer → still there at the new price; Checkout → a NEW link (different `square_order_id`).
-6. **Floor sale ignored.** In the sandbox Dashboard/Point of Sale simulator create a cash payment → webhook 200 `ignored: floor`, no `payments` row.
-7. **Kill switch.** Set `SQUARE_CHECKOUT_ENABLED=false` → cards have no control, header button hidden, bottom bar hidden, `localStorage['nsl.cart']` untouched, `POST /api/public/checkout` → 503 and the drawer shows the "paused" notice.
-8. **Delivery order, taxed fee (spec §8.1–§8.2).** Clear `localStorage['nsl.zip']`. Open the drawer with one $180 box → the **Delivered to you** radio is **disabled** with the zip prompt showing. Type `28202` → Check → "We can't reach 28202…" and the radio stays disabled. Type `27587` → Check → radio enables, label reads "(to 27587)", the street-address field appears. Enter an address, select the radio → receipt reads Subtotal $180.00 / Delivery $10.00 / Sales tax (7.25%) $13.78 / **Total $203.78** — i.e. the tax is charged on $190, **not** $180. Checkout → the Square page shows a separate "Local delivery (within 20 miles)" line **and** a tax line; pay → `checkout_orders` = `subtotal_cents 18000, delivery_cents 1000, tax_cents 1378, total_cents 20378, delivery_method 'delivery', delivery_zip '27587'`, `delivery_address` = what was typed. This scenario is the whole point of choosing `service_charges[]` over `checkout_options.shipping_fee`: **if `tax_cents` comes back 1305 ($180 × 7.25%) instead of 1378, the delivery charge is not being taxed and the payload is wrong.**
-9. **Flea market.** Same box, choose the Friday flea-market option → no Delivery line in the receipt, total = $180.00 + $13.05 tax; the Square line-item note reads "Friday pickup at the Raleigh Flea Market"; `delivery_method='flea'`, `delivery_cents=0`, `delivery_zip IS NULL`.
-10. **Zip list is server-authoritative.** With the drawer open and `27587` qualifying, run `UPDATE dbo.delivery_zips SET active = 0 WHERE zip = '27587'`, then click Checkout without reloading → `400 { field: "zip" }`, the drawer flips back to pickup and shows the reason, nothing is minted at Square. Re-activate the zip.
-11. **Delivery choice changes the link.** Pickup cart → Checkout (link 1, don't pay) → close, switch to delivery with a qualifying zip → Checkout → **a different `square_order_id`** with `delivery_cents = 1000`; the pickup order row is still `open` (it ages out at 7 days or dies with the first competing sale). Then click Checkout twice on the *same* delivery choice → the identical link is returned, no second order row.
+1. **Dedicated test boxes, never real stock.** Create two draft boxes named `ZZ TEST — DO NOT BUY` priced **$18.00** and **$25.00**, plus a third at **$18.00** for the delivery scenarios. Cheap enough that a mistake costs coffee money, large enough that the 7.25% arithmetic is checkable. Set them `live` only for the minutes a scenario needs them and **archive them the moment it is done**. Never use a box Rob is actually trying to sell.
+2. **Tell Rob and Norman first.** Test boxes flash SOLD on the live site and test payments land in the Square dashboard they read. Warn them in the thread, and say when you are finished. An unexplained $46 sale is a phone call.
+3. **Refund every test payment immediately** and record the `square_payment_id` of each. Note: Square may not return the processing fee (2.9% + 30¢) on a refund — confirm on the first one and expect each paid scenario to cost roughly a dollar in fees, not the ticket price.
+4. **Almost nothing here costs money.** Adding to the cart, the drawer, the zip check, the receipt arithmetic and even minting the Square link are all free — a payment link is not a charge. Only the explicit "pay it" steps below move money, and they are marked **💵**. Run every free check first; if any of them is wrong, you never reach the paid ones.
+5. **Never delete the production webhook subscription.** The plan's old sandbox step did this to simulate a missed webhook; in production that drops real sales for the duration. Scenario 4 below simulates it in the database instead.
+6. **The kill switch is the abort button.** `SQUARE_CHECKOUT_ENABLED=false` on the SWA takes the cart off the site in one command. At the first sign of anything wrong, flip it, then investigate.
+7. **Do not run the API locally against production Square.** A local host holding the prod token and the prod connection string can mint real links and mark real boxes sold, and a second instance consuming the same webhooks is a second thing that can get it wrong. `api/local.settings.json` is gitignored (verified), but the hazard is the process, not the file. Test on the deployed site.
+8. **Pick a quiet window.** The floor currently carries a single-digit number of live boxes and the site sees little traffic, so a short window with the cart live is a small real risk — but it is not zero, and it is smallest in the early morning.
 
-- [ ] **Step 3: Browser pass at phone width**
+- [ ] **Step 1: Deploy first, then test the deployed site**
 
-With Playwright (MCP) at 400×800: bottom bar visible with a non-empty cart; drawer is full-width; rows readable; Checkout button ≥ 48px tall; no horizontal scroll.
+Merge order is the reverse of the sandbox plan: apply `db/cart-checkout.sql`, merge, let the deploy finish, then run the scenarios against `https://northstateliquidators.com`. There is no local run and no tunnel — the production webhook subscription already points at the live site, which is exactly the path being tested.
 
-- [ ] **Step 4: Update the docs**
+- [ ] **Step 2: Free scenarios — no money moves (record each in the PR body)**
 
-In `SQUARE-INTEGRATION.md` replace the "One link per box, links are single-use." bullet and the "New pieces" table rows for `CheckoutFunction` / `manifests columns` with a short "Cart model (2026-09)" paragraph: one link per checkout attempt in `checkout_orders` (+ `checkout_order_boxes`, per-box `outcome`), fulfilment transactional in `CheckoutFulfillment`, competing links canceled DB-first, partial refunds via `refund_due_cents`, Reconcile ages links out at 7 days and runs from the GitHub cron. Point to the spec for detail. Add a line to the "Cart model (2026-09)" paragraph: orders carry 7.25% NC sales tax as an ADDITIVE LINE_ITEM-scope tax and, for delivery orders, a $10 taxed service charge; the sales dashboard reports goods only. Change the spec's **Status** line to `APPROVED 2026-09-14 (v3) — implemented in PR #<n>`.
+1. **Receipt arithmetic, pickup.** Add the $18.00 and $25.00 test boxes → drawer reads Subtotal $43.00 / Sales tax (7.25%) $3.12 / **Total $46.12**. (Per line: 18.00 × .0725 = 1.305 → 1.31; 25.00 × .0725 = 1.8125 → 1.81. Assert the **sum**, not a hand-typed cent — Square rounds per line.)
+2. **Delivery arithmetic — the payload check.** Clear `localStorage['nsl.zip']`. One $18.00 box → **Delivered to you** is disabled with the zip prompt. Enter `28202` → "We can't reach 28202…", still disabled. Enter `27587` → enables, label reads "(to 27587)", the address field appears. Choose it → Subtotal $18.00 / Delivery $10.00 / Sales tax (7.25%) $2.03 / **Total $30.03**. The tax is on **$28.00, not $18.00**. **If it reads $1.31, the delivery fee is not being taxed and the Square payload is wrong — stop here.** This is the whole reason the design uses `service_charges[]` instead of `checkout_options.shipping_fee`.
+3. **Flea market.** Same box, Friday flea-market option → no Delivery line, total $18.00 + $1.31 tax = $19.31.
+4. **The Square page agrees.** Click Checkout on scenario 1 (mints a link, charges nothing) → the hosted page shows **$46.12**, one "NC sales tax (7.25%)" line, no shipping line. Close the tab without paying. Repeat for the delivery cart → a separate "Local delivery (within 20 miles)" line **and** a tax line.
+5. **Zip list is server-authoritative.** Drawer open with `27587` qualifying → `UPDATE dbo.delivery_zips SET active = 0 WHERE zip = '27587'` → click Checkout without reloading → `400 { field: "zip" }`, drawer flips to pickup with the reason, nothing minted at Square. Re-activate.
+6. **Delivery choice changes the link.** Pickup cart → Checkout (link 1, don't pay) → switch to delivery with a qualifying zip → Checkout → a **different** `square_order_id` with `delivery_cents = 1000`. Click Checkout twice on the same choice → identical link, no second order row.
+7. **Price change cancels.** Box D in a cart, Checkout (don't pay) → PATCH `listPrice` → its `checkout_orders` row is `canceled`; reopen the drawer → box still there at the new price; Checkout → a new `square_order_id`.
+8. **Kill switch.** `SQUARE_CHECKOUT_ENABLED=false` → no cart controls, header button and bottom bar hidden, `localStorage['nsl.cart']` untouched, `POST /api/public/checkout` → 503 and the drawer shows the paused notice. Turn it back on.
+9. **Phone width.** Playwright at 400×800: bottom bar visible with a non-empty cart, drawer full-width, rows readable, Checkout button ≥ 48px tall, no horizontal scroll.
+
+- [ ] **Step 3: 💵 Paid scenarios — real charges, refunded immediately**
+
+10. **💵 Two-box cart pays, pickup, taxed.** Pay scenario 1's link with a real card. Then: both boxes `sold`; `SELECT status, subtotal_cents, tax_cents, delivery_cents, total_cents, delivery_method FROM dbo.checkout_orders WHERE square_order_id=…` = `paid, 4300, 312, 0, 4612, pickup`, and **subtotal + tax + delivery = total**; one `payments` row with `amount_cents = 4612`, `status='COMPLETED'`, `manifest_id IS NULL`; two `checkout_order_boxes` rows, `outcome='sold'`, whose `tax_cents` **sum** to the order's 312; **no "amount != order total" warning in the log**; thanks page lists both numbers and the cart is empty. Staff sales page shows **$43.00** in the goods column with $3.12 in Tax/Del — not $46.12. **Refund it**, then re-list the boxes as draft.
+11. **💵 Delivery order pays.** Pay scenario 2's link → `subtotal_cents 1800, delivery_cents 1000, tax_cents 203, total_cents 3003, delivery_method 'delivery', delivery_zip '27587'`, `delivery_address` as typed. **Refund it.**
+12. **💵 Overlap, first pays.** Two tabs: cart A `{test1, test2}`, cart B `{test2, test3}`, both click Checkout. Pay A → order B `status='canceled'` and `link_deleted_at` set (or NULL plus a warning if Square answered without `cancelled_order_id` — then run Reconcile and confirm it stamps). Tab B's page refuses to complete. **Refund A.**
+13. **💵 Partial refund path, with tax.** Cart C `{test4, test5}` → reach the Square page, don't pay → mark test4 SOLD in admin (its link is canceled in the DB) → set order C back to `open` with SQL to simulate the documented delete race → pay it. Expect: test5 `sold`, test4 `outcome='unavailable'`, `payments.status='PARTIAL_REFUND_FLAGGED'`, and **`refund_due_cents` = test4's `amount_cents` + its `tax_cents`** — check by hand against `SELECT amount_cents, tax_cents FROM dbo.checkout_order_boxes WHERE manifest_id = <test4>`. The staff attention row shows the tax-inclusive amount; click Refund → Square refunds exactly that; the `refund.updated` webhook sets `refunded_cents`, `status='PARTIAL_REFUNDED'`, `needs_refund=0`. **Refund the remainder.**
+14. **Missed webhook — simulated in the database, not at Square.** Take the paid order from scenario 10 **before** refunding it: `DELETE FROM dbo.payments WHERE square_payment_id = '<id>'`, reset the boxes to `live` via `sp_SetPublishState`, and `UPDATE dbo.checkout_orders SET status='open', closed_at=NULL WHERE square_order_id='<id>'`. Now `POST /api/square-reconcile` → `healed: 1`, boxes sold again, a `payments` row restored with `status='COMPLETED'`. This exercises the identical `FulfillOrderAsync` path a missed webhook would take, without touching the live subscription.
+15. **Floor sale ignored.** Already proven in production by the Phase 0 hotfix (two RETAIL cash sales stopped being flagged, and `dbo.payments` has had no `UNMATCHED` row since). Confirm rather than re-test: after Rob rings any cash sale, `SELECT COUNT(*) FROM dbo.payments WHERE status='UNMATCHED'` is still 0.
+
+- [ ] **Step 4: Clean up**
+
+Archive all test boxes. Confirm `SELECT COUNT(*) FROM dbo.payments WHERE needs_refund = 1` is 0 and every test payment shows refunded in the Square dashboard. Post the payment ids and refund confirmations in the thread so Rob's books match.
+
+- [ ] **Step 5: Update the docs**
+
+In `SQUARE-INTEGRATION.md` replace the "One link per box, links are single-use." bullet and the "New pieces" table rows for `CheckoutFunction` / `manifests columns` with a short "Cart model (2026-09)" paragraph: one link per checkout attempt in `checkout_orders` (+ `checkout_order_boxes`, per-box `outcome`), fulfilment transactional in `CheckoutFulfillment`, competing links canceled DB-first, partial refunds via `refund_due_cents`, Reconcile ages links out at 7 days and runs from the GitHub cron. Add: orders carry 7.25% NC sales tax as an ADDITIVE LINE_ITEM-scope tax and, for delivery orders, a $10 taxed service charge; the sales dashboard reports goods only. Add a line recording that **this account has no sandbox — all verification is done against production with disposable test boxes**, and point at Step 0's ground rules. Change the spec's **Status** line to `APPROVED 2026-09-14 (v3) — implemented in PR #<n>`.
 ```powershell
 git add SQUARE-INTEGRATION.md docs/superpowers/specs/2026-09-13-cart-checkout-design.md
 git commit -m "docs: cart model in SQUARE-INTEGRATION.md; spec marked approved"
 ```
 
-- [ ] **Step 5: PR**
+- [ ] **Step 6: PR**
 
 ```powershell
 git push -u origin feature/cart-checkout
@@ -2800,8 +2823,8 @@ Norm: "we need an add to cart button so people can buy multiple items." Rob (9/1
 - Tests: api.Tests (SquarePayloads incl. tax/service-charge shape, Availability)
 - **No card surcharge** — Square does not support it on payment links and no network allows surcharging debit; spec §7.1 has the full reasoning and the cash-discount alternative.
 
-## Sandbox scenarios run
-(paste results from Task 14 Step 2, 1–11)
+## Production verification run
+No Square sandbox exists for this account, so every scenario was run against the live account with disposable $18/$25 test boxes and every payment refunded. (paste results from Task 14, scenarios 1–15; note which were free and which moved money)
 
 ## Needs Rob before the live test
 - NCDOR sales-tax registration + filing frequency (spec §8.9 Q1) — **blocking**
@@ -2822,7 +2845,7 @@ gh pr checks --watch
 ```
 Expected: `Build and Deploy pass`. Merge is Jeff's call.
 
-- [ ] **Step 6: Production rollout (after merge)**
+- [ ] **Step 7: Production rollout (after merge)**
 
 1. Set the SWA application settings listed in the PR body (Azure Portal → `stapp-nsl-website` → Environment variables). Production webhook subscription must include `payment.updated`, `payment.created`, `refund.updated`, `refund.created`.
 2. Re-run `db/cart-checkout.sql` (Task 1 Step 3 command).

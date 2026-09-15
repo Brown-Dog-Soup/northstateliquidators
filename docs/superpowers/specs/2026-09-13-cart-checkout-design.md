@@ -1,8 +1,9 @@
 # Cart + Combined Checkout — Design
 
-**Status:** REVISED DRAFT v3 (2026-09-14). v2 (2026-09-13) came out of a
+**Status:** APPROVED 2026-09-14 (v3) — implemented on `feature/cart-checkout`
+(PR not yet opened as of this note). v2 (2026-09-13) came out of a
 four-track review (backend audit, spec-vs-code, front-end, Square API
-verification) and a production data check; nothing in it has been built yet.
+verification) and a production data check.
 v3 folds in Rob's 2026-09-14 checkout requests — **7.25% NC sales tax**, a
 **three-way delivery choice**, and the member street address — and records the
 decision **not** to add a card surcharge. All of that lives in **§8**; §1, §2,

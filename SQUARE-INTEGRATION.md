@@ -64,10 +64,12 @@ index.html (public)          api/ (.NET 8 isolated Functions)         Square
   the box (`nsl-{manifest_id}-link-v1`) so a double-clicked Buy button can
   never mint two links. Response carries `payment_link.id`, **`order_id`**
   (the correlation key), and the `https://square.link/u/…` URL.
-- **One link per box, links are single-use.** Two shoppers clicking Buy get
-  the SAME link; Square only lets the hosted page complete one payment. No
-  inventory "hold" state needed — a box stays live until money clears, so an
-  abandoned checkout never hides a box from other buyers.
+- **One link per checkout attempt, not one link per box** (see "Cart model
+  (2026-09)" below — this superseded the original one-box-per-link design).
+  Two shoppers whose carts overlap on a box both get a link; whoever pays
+  first wins and the other's link is DB-canceled. No inventory "hold" state
+  needed — a box stays live until money clears, so an abandoned checkout
+  never hides a box from other buyers.
 - **Paid signal = webhook**, not the redirect. Subscribe to
   **`payment.updated`**; act when `payment.status == "COMPLETED"`, matching
   `data.object.payment.order_id` to the stored order_id. Verify the
@@ -83,9 +85,10 @@ index.html (public)          api/ (.NET 8 isolated Functions)         Square
 - **Polling fallback / reconciliation:** `GET /v2/orders/{order_id}`.
   GOTCHA: paid payment-link orders go `DRAFT → OPEN` and **stay OPEN
   forever** — "paid" = `tenders[]` present / `net_amount_due_money == 0`,
-  NEVER `state == "COMPLETED"`. A timer Function sweeps boxes with open
-  links: paid-but-not-sold ⇒ mark sold + alert; box archived/pulled ⇒
-  `DELETE /v2/online-checkout/payment-links/{id}` (cancels the order).
+  NEVER `state == "COMPLETED"`. Reconcile sweeps open orders on this basis:
+  paid-but-not-sold ⇒ heal it; box archived/pulled or the link aged out ⇒
+  `DELETE /v2/online-checkout/payment-links/{id}` (cancels the order). It is
+  NOT a timer — see "Cart model (2026-09)" below for how it actually runs.
 - **The narrow race** (payment completing mid-delete, or a second payment
   slipping through): webhook handler tolerates a COMPLETED payment for an
   already-sold/canceled box by flagging it for refund
@@ -94,18 +97,94 @@ index.html (public)          api/ (.NET 8 isolated Functions)         Square
   with `application_details.square_product` ECOMMERCE_API or INVOICES are
   ours; unmatched payments from other products are ignored (2026-09-13 hotfix).
 
+### Cart model (2026-09)
+
+The site sells a cart of boxes as one Square order per checkout attempt, not
+one link per box. What a maintainer needs to know before touching any of
+this:
+
+- **One checkout attempt = one `dbo.checkout_orders` row** (subtotal, tax,
+  delivery, total, delivery method/zip/address, status) **+ one
+  `dbo.checkout_order_boxes` row per box** in it (that box's own price, its
+  own tax, and an `outcome` of `sold`/`unavailable` once fulfilled). This
+  retires the `manifests.checkout_link_id` / `checkout_order_id` /
+  `checkout_url` / `checkout_created_at` columns this document used to
+  describe — they no longer exist.
+- **Fulfilment is one routine, one transaction, two callers.**
+  `CheckoutFulfillment.FulfillOrderAsync` (`api/Services/CheckoutFulfillment.cs`)
+  is called by both the webhook and Reconcile, so there is only one copy of
+  the sold-or-refund decision to keep correct. Everything from the
+  `payments` INSERT (the idempotency anchor) through the per-box row-locked
+  availability check to the competing-link cancel runs inside one
+  `SqlTransaction` — a crash mid-way rolls the anchor back and Square's own
+  retry redoes the whole thing safely.
+- **The database, not Square's delete response, is the source of truth for
+  "this link is dead."** Square has acknowledged `DELETE
+  /v2/online-checkout/payment-links/{id}` can return success without
+  actually cancelling the link. So every cancel — a sale, a price change, a
+  box pulled from live, an invoice, a fake-sale, a delete — writes
+  `checkout_orders.status = 'canceled'` first, inside the same transaction
+  as whatever caused it (`CheckoutFulfillment.CancelOpenLinksForBoxesAsync`).
+  Only after that commits does the code best-effort ask Square to delete the
+  link (`RetireLinksAsync`); if Square can't confirm it, Reconcile keeps
+  retrying. **Do not reorder this to call Square first** — that is exactly
+  the ordering that makes the unreliable delete dangerous.
+- **An order line deliberately outlives the box it names.**
+  `checkout_order_boxes.manifest_id` carries no foreign key to `manifests`,
+  on purpose: a box can be hard-deleted or pulled after its link was minted,
+  and the row has to survive that so fulfilment's `LEFT JOIN` can still see
+  it, add the box's price *and* tax to `refund_due_cents` (always
+  tax-inclusive), and flag the payment. **An orphaned
+  `checkout_order_boxes` row is a debt owed to a customer, not garbage —
+  never add the FK back, never write a job that cleans these up.**
+- **Reconcile treats a Square "not found" as evidence only once something
+  else in the same run proves the credential reaches our own merchant** (one
+  order of ours reading back). Otherwise a rotated/misconfigured access
+  token would read every order as "not found," and the sweep would close out
+  — and stop ever looking at again — orders that are in reality still open
+  and paid at the real merchant. See `SquareFunction.SquareAnswered` /
+  `LooksLikeWrongMerchant`.
+- **Tax and the delivery fee are never revenue or margin.** The 7.25% NC +
+  Wake County tax is sent as an `ADDITIVE`, `LINE_ITEM`-scope tax (via the
+  account's own Square catalog tax object when `SQUARE_TAX_CATALOG_ID` is
+  set, so the buyer's receipt and Rob's Square dashboard both read "NC &
+  Wake County Sales Tax" — unset or wrong, it silently falls back to an
+  ad-hoc tax with a different name but the same amount). A delivery order
+  also carries a per-zip (`dbo.delivery_zips.fee_cents`, $10 default), taxed
+  `service_charges[]` line — never `checkout_options.shipping_fee`, which
+  Square marks non-taxable. `SalesSummary` reports **goods only**; keep tax
+  and delivery out of any revenue/margin figure.
+- **Reconcile has two triggers and only one is dependable.** SWA-managed
+  Functions have no timer trigger, so the "sweep open links hourly" line
+  this document used to have was never true of the cart build. The staff
+  Reconcile button on `staff/sales.html` (`POST /api/square-reconcile`) is
+  the path to trust. A GitHub Actions workflow
+  (`.github/workflows/square-reconcile.yml`) also calls a keyed route
+  (`POST /api/public/reconcile-tick`, header `x-nsl-cron-key` =
+  `RECONCILE_CRON_KEY`) every 15 minutes as a convenience — but **GitHub
+  disables a schedule automatically after 60 days with no repository
+  activity**, so it is not something to depend on staying alive unattended.
+  Either way, an open link is force-closed after 7 days
+  (`ReconcileLinkMaxAgeDays`).
+- **This Square account has no sandbox.** All verification — including the
+  production go-live run for the cart — happens against the live account,
+  with disposable, low-priced test boxes that get refunded immediately after
+  each paid scenario. Square does not reliably return the 2.9% + 30¢
+  processing fee on a refund, so budget roughly a dollar in fees per paid
+  test scenario.
+
 ### New pieces
 
 | Piece | What it does |
 |---|---|
-| NuGet **`Square`** (v46+) | Official SDK — post-v41 rewrite; avoid `Square.Legacy` / old `Square.Connect` samples. Covers the 3 API calls + webhook signature helper. |
+| NuGet **`Square`** (v46+) | Official SDK — post-v41 rewrite; avoid `Square.Legacy` / old `Square.Connect` samples. Covers the API calls + webhook signature helper. |
 | `SquareService` (api/Services) | Wraps create/retrieve/delete payment link + retrieve order. Sandbox/production base URL from config. |
-| `CheckoutFunction` | `POST /api/public/checkout/{id}` — anonymous; validates live+unsold; creates or returns the box's link. |
-| `SquareWebhookFunction` | `POST /api/square/webhook` — anonymous route; Square's signature IS the auth. Marks sold via existing `sp_SetPublishState`. |
-| `ReconcileFunction` | Timer (hourly): sweep open links via RetrieveOrder; heal missed webhooks; flag refund cases. |
-| `dbo.payments` table | square_payment_id (UNIQUE), square_order_id, manifest_id, amount, status, event JSON, created_at. |
-| `manifests` columns | `checkout_link_id`, `checkout_order_id`, `checkout_url`, `checkout_created_at`. |
-| Buy button + `/thanks.html` | On live boxes (homepage row + manifest modal). Thanks page: "You got BOX #N — we'll be in touch about pickup." |
+| `SquareFunction.CreateCheckout` | `POST /api/public/checkout` — anonymous; body `{ids, delivery, zip, address, memberNumber}`; validates every box in the cart, reuses an identical open link, else mints one Square order covering the whole cart. |
+| `SquareWebhookFunction` | `POST /api/square/webhook` — anonymous route; Square's signature IS the auth. Delegates the sold/refund decision to `CheckoutFulfillment.FulfillOrderAsync`. |
+| `SquareFunction.Reconcile` / `ReconcileTick` | `POST /api/square-reconcile` (staff button) and `POST /api/public/reconcile-tick` (keyed cron) run the same sweep — heal missed webhooks, close dead links, retry unconfirmed deletes, replay orphaned refunds. See "Cart model (2026-09)" above. |
+| `dbo.payments` table | square_payment_id (UNIQUE), square_order_id, manifest_id, amount, status, refund_due_cents, refunded_cents, needs_refund, event JSON, created_at. |
+| `dbo.checkout_orders` / `dbo.checkout_order_boxes` | One row per checkout attempt, one row per box in it. See "Cart model (2026-09)" above. |
+| Buy button + `/thanks.html` | Add-to-cart on live boxes (homepage row + manifest modal), header badge, phone bottom bar, drawer with delivery choice. Thanks page: lists every box bought. |
 
 ### Config (SWA application settings on `stapp-nsl-website` — never committed)
 
